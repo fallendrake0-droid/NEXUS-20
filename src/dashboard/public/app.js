@@ -94,6 +94,31 @@
     const triggerRefresh = () => {
       if (!document.hidden) refreshStatusAndTasks();
     };
+    es.addEventListener('summary', (ev) => {
+      if (document.hidden) return;
+      try {
+        const envelope = JSON.parse(ev.data || '{}');
+        const events = Array.isArray(envelope.events) ? envelope.events : [];
+        let needsStatus = false;
+        let needsKnowledge = false;
+        for (const item of events) {
+          const t = String(item.eventType || '');
+          if (t === 'knowledge.updated') {
+            needsKnowledge = true;
+          } else {
+            needsStatus = true;
+          }
+        }
+        if (needsStatus) refreshStatusAndTasks();
+        if (needsKnowledge) refreshKnowledge();
+      } catch {
+        refreshStatusAndTasks();
+      }
+    });
+    es.addEventListener('reload_required', () => {
+      connectSse();
+      if (!document.hidden) refreshAll();
+    });
     es.addEventListener('task.created', triggerRefresh);
     es.addEventListener('task.updated', triggerRefresh);
     es.addEventListener('task.cancelled', triggerRefresh);
@@ -618,6 +643,10 @@
     try {
       const sess = await api('/api/v1/auth/session');
       if (sess.authenticated && sess.actor) {
+        if (sess.csrfToken) {
+          state.csrfToken = sess.csrfToken;
+          sessionStorage.setItem('nexus_csrf', sess.csrfToken);
+        }
         enterShell(sess.actor);
       } else {
         renderAuthScreen(sess.bootstrapRequired);

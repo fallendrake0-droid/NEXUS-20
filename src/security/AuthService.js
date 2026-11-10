@@ -68,10 +68,34 @@ class AuthService {
     // Precomputed dummy scrypt hash to prevent username enumeration timing leaks
     this._dummySaltHex = crypto.randomBytes(16).toString('hex');
     this._dummyKeyHex = crypto.randomBytes(KEYLEN).toString('hex');
+    /** @type {Buffer|null} */
+    this._csrfHmacKey = null;
 
     /** @type {Map<string, { count: number, resetAtMs: number }>} */
     this._rateBuckets = new Map();
     this._maxRateBuckets = 1024;
+  }
+
+  _getOrCreateCsrfHmacKey() {
+    if (this._csrfHmacKey) return this._csrfHmacKey;
+    const existing = this._store.getSetting('auth_csrf_hmac_secret', null);
+    if (typeof existing === 'string' && existing.length >= 64) {
+      this._csrfHmacKey = Buffer.from(existing, 'hex');
+      return this._csrfHmacKey;
+    }
+    const secretHex = crypto.randomBytes(32).toString('hex');
+    this._store.setSetting('auth_csrf_hmac_secret', secretHex, new Date(this._now()).toISOString());
+    this._csrfHmacKey = Buffer.from(secretHex, 'hex');
+    return this._csrfHmacKey;
+  }
+
+  deriveCsrfToken(sessionToken) {
+    if (!sessionToken || typeof sessionToken !== 'string') return null;
+    const sessionHash = sha256Hex(sessionToken);
+    return crypto
+      .createHmac('sha256', this._getOrCreateCsrfHmacKey())
+      .update(sessionHash, 'utf8')
+      .digest('base64url');
   }
 
   get kdfQueueDepth() {
@@ -234,8 +258,8 @@ class AuthService {
     }
 
     const sessionToken = crypto.randomBytes(32).toString('base64url');
-    const csrfToken = crypto.randomBytes(32).toString('base64url');
     const sessionHash = sha256Hex(sessionToken);
+    const csrfToken = this.deriveCsrfToken(sessionToken);
     const csrfHash = sha256Hex(csrfToken);
     const idleExpiresAt = new Date(nowMs + this._idleTimeoutMs).toISOString();
     const absoluteExpiresAt = new Date(nowMs + this._absoluteTimeoutMs).toISOString();

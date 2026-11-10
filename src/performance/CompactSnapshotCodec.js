@@ -125,6 +125,7 @@ function toCompactBotSnapshot(rawBot, options = {}) {
         : maxDur !== null
           ? Math.max(0, maxDur - durUsed)
           : null;
+    if (rem !== null && rem <= 0) return;
     const parsed = classifyToolItem(it.name, rem, maxDur);
     if (!parsed) return;
     const prev = bestToolsByClass[parsed.toolClass];
@@ -184,12 +185,19 @@ function toCompactBotSnapshot(rawBot, options = {}) {
     considerTool(held);
     const maxDurability = typeof held.maxDurability === 'number' ? held.maxDurability : null;
     const durUsed = typeof held.durabilityUsed === 'number' ? held.durabilityUsed : 0;
-    const remaining = maxDurability !== null ? Math.max(0, maxDurability - durUsed) : null;
-    activeTool = {
-      name: String(held.name).slice(0, 64),
-      durabilityBand:
-        remaining !== null && maxDurability ? bandFromRatio(remaining, maxDurability) : 'unknown'
-    };
+    const remaining =
+      typeof held.remainingDurability === 'number'
+        ? held.remainingDurability
+        : maxDurability !== null
+          ? Math.max(0, maxDurability - durUsed)
+          : null;
+    if (remaining === null || remaining > 0) {
+      activeTool = {
+        name: String(held.name).slice(0, 64),
+        durabilityBand:
+          remaining !== null && maxDurability ? bandFromRatio(remaining, maxDurability) : 'unknown'
+      };
+    }
   }
 
   const allKeys = Object.keys(counts).sort();

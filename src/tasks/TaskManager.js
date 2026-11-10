@@ -8,8 +8,8 @@ const LEGAL_TASK_TRANSITIONS = Object.freeze({
   queued: new Set(['planning', 'paused', 'cancelled']),
   planning: new Set(['ready', 'clarification_required', 'paused', 'failed', 'cancelled']),
   clarification_required: new Set(['planning', 'cancelled']),
-  ready: new Set(['running', 'paused', 'blocked', 'completed', 'cancelled']),
-  running: new Set(['paused', 'blocked', 'completed', 'failed', 'cancelled']),
+  ready: new Set(['running', 'planning', 'paused', 'blocked', 'completed', 'cancelled']),
+  running: new Set(['planning', 'ready', 'paused', 'blocked', 'completed', 'failed', 'cancelled']),
   paused: new Set(['queued', 'planning', 'ready', 'running', 'cancelled']),
   blocked: new Set(['planning', 'ready', 'paused', 'failed', 'cancelled']),
   completed: new Set(),
@@ -354,13 +354,24 @@ class TaskManager extends EventEmitter {
       // Cancel & fence any superseded non-completed objectives omitted from the new plan
       for (const oldObj of existingObjs) {
         if (!localToGlobalId.has(oldObj.local_id) && oldObj.state !== 'completed' && oldObj.state !== 'cancelled') {
-          this._store.run(
-            `UPDATE assignments
-             SET state = 'revoked', completed_at = ?
+          const staleSuperseded = this._store.all(
+            `SELECT * FROM assignments
              WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
-            nowIso,
             oldObj.objective_id
           );
+          for (const asg of staleSuperseded) {
+            this._store.run(
+              `UPDATE assignments SET state = 'revoked', completed_at = ? WHERE assignment_id = ?`,
+              nowIso,
+              asg.assignment_id
+            );
+            this._enqueueWorkerCommand(asg.worker_id, 'cancel', {
+              assignmentId: asg.assignment_id,
+              leaseId: asg.lease_id,
+              botId: asg.bot_id,
+              reason: 'replan_objective_removed'
+            });
+          }
           this._store.run(
             `UPDATE objectives
              SET state = 'cancelled', reserved_quantity = 0, allocation_epoch = allocation_epoch + 1, version = version + 1
@@ -402,27 +413,67 @@ class TaskManager extends EventEmitter {
             JSON.stringify(obj.constraints)
           );
         } else {
+          const specChanged =
+            prev.kind !== obj.kind ||
+            prev.resource_id !== canonicalRes ||
+            prev.verification_policy !== obj.verification ||
+            (prev.target_quantity !== null && obj.target.quantity === null);
+
+          let nextReserved = prev.reserved_quantity;
+          let nextState = prev.state === 'blocked' ? 'pending' : prev.state;
+          let epochBump = 0;
+
+          if (specChanged) {
+            const activeOnPrev = this._store.all(
+              `SELECT * FROM assignments
+               WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+              globalId
+            );
+            for (const asg of activeOnPrev) {
+              this._store.run(
+                `UPDATE assignments SET state = 'revoked', completed_at = ? WHERE assignment_id = ?`,
+                nowIso,
+                asg.assignment_id
+              );
+              this._enqueueWorkerCommand(asg.worker_id, 'cancel', {
+                assignmentId: asg.assignment_id,
+                leaseId: asg.lease_id,
+                botId: asg.bot_id,
+                reason: 'replan_spec_changed'
+              });
+            }
+            nextReserved = 0;
+            if (['assigned', 'running', 'verifying'].includes(nextState)) {
+              nextState = 'pending';
+            }
+            epochBump = 1;
+          }
+
           const safeTargetQty =
             obj.target.quantity !== null
-              ? Math.max(prev.verified_quantity + prev.reserved_quantity, obj.target.quantity)
+              ? Math.max(prev.verified_quantity + nextReserved, obj.target.quantity)
               : null;
           this._store.run(
             `UPDATE objectives
-             SET kind = ?, resource_id = ?, target_quantity = ?, region_label = ?,
-                 description = ?, parallelism = ?, worker_count_hint = ?,
+             SET kind = ?, resource_id = ?, target_quantity = ?, reserved_quantity = ?,
+                 region_label = ?, description = ?, parallelism = ?, worker_count_hint = ?,
                  verification_policy = ?, constraints_json = ?,
-                 state = CASE WHEN state = 'blocked' THEN 'pending' ELSE state END,
+                 allocation_epoch = allocation_epoch + ?,
+                 state = ?,
                  version = version + 1
              WHERE objective_id = ?`,
             obj.kind,
             canonicalRes,
             safeTargetQty,
+            nextReserved,
             obj.target.regionLabel,
             obj.target.description,
             obj.parallelism,
             obj.workerCountHint,
             obj.verification,
             JSON.stringify(obj.constraints),
+            epochBump,
+            nextState,
             globalId
           );
         }
@@ -449,17 +500,28 @@ class TaskManager extends EventEmitter {
       // Unlock root objectives & `start_with` companions whose prerequisites are ready/completed
       this._unlockReadyObjectivesInTx(taskId);
 
+      const hasRunningAfterReplan = this._store.get(
+        `SELECT assignment_id FROM assignments
+         WHERE task_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
+         LIMIT 1`,
+        taskId
+      );
+      const interimTaskState = hasRunningAfterReplan ? 'running' : 'ready';
+
       this._store.run(
         `UPDATE tasks
-         SET intent_summary = ?, state = 'ready', risk_level = ?, plan_version = ?,
+         SET intent_summary = ?, state = ?, risk_level = ?, plan_version = ?,
              clarification_question = NULL, pause_reason = NULL, version = version + 1, updated_at = ?
          WHERE task_id = ?`,
         plan.intentSummary,
+        interimTaskState,
         plan.riskLevel,
         nextPlanVersion,
         nowIso,
         taskId
       );
+
+      this._finalizeObjectiveAndTaskProgressInTx(taskId, nowIso);
 
       return this.getTask(taskId);
     });
@@ -522,9 +584,42 @@ class TaskManager extends EventEmitter {
     );
     const result = [];
     for (const r of rows) {
+      let missingPartitions = null;
       if (r.target_quantity !== null) {
         const rem = r.target_quantity - r.verified_quantity - r.reserved_quantity;
         if (rem <= 0) continue;
+      } else if (r.parallelism === 'spatial') {
+        const asgs = this._store.all(
+          'SELECT state, scope_json FROM assignments WHERE objective_id = ?',
+          r.objective_id
+        );
+        if (asgs.length > 0) {
+          const coveredPartitions = new Set();
+          const missingByPartition = new Map();
+          for (const a of asgs) {
+            let scope = {};
+            try {
+              scope = JSON.parse(a.scope_json || '{}');
+            } catch {
+              scope = {};
+            }
+            const pid = scope.partitionId || null;
+            if (!pid) continue;
+            if (['completed', 'offered', 'accepted', 'running', 'reporting', 'verifying'].includes(a.state)) {
+              coveredPartitions.add(pid);
+              missingByPartition.delete(pid);
+            } else if (!coveredPartitions.has(pid)) {
+              missingByPartition.set(pid, {
+                partitionId: pid,
+                regionBounds: scope.regionBounds || null
+              });
+            }
+          }
+          missingPartitions = Array.from(missingByPartition.values());
+          if (missingPartitions.length === 0) continue;
+        } else if (r.state !== 'ready') {
+          continue;
+        }
       } else if (r.state !== 'ready') {
         continue;
       }
@@ -532,7 +627,11 @@ class TaskManager extends EventEmitter {
         'SELECT * FROM objective_dependencies WHERE objective_id = ?',
         r.objective_id
       );
-      result.push(this._formatObjectiveRow(r, deps));
+      const formatted = this._formatObjectiveRow(r, deps);
+      if (missingPartitions && missingPartitions.length > 0) {
+        formatted.missingPartitions = missingPartitions;
+      }
+      result.push(formatted);
     }
     return result;
   }
@@ -727,7 +826,14 @@ class TaskManager extends EventEmitter {
         throw new DomainError('NOT_FOUND', `Assignment ${assignmentId} not found for worker ${workerId}`);
       }
       const obj = this._store.get('SELECT * FROM objectives WHERE objective_id = ?', asg.objective_id);
-      if (!obj || obj.allocation_epoch !== allocationEpoch || Date.parse(asg.expires_at) <= nowMs) {
+      const isFencedAsg = ['expired', 'revoked', 'failed'].includes(asg.state);
+      if (
+        !obj ||
+        allocationEpoch < asg.allocation_epoch ||
+        allocationEpoch > obj.allocation_epoch ||
+        (isFencedAsg && allocationEpoch < obj.allocation_epoch) ||
+        Date.parse(asg.expires_at) <= nowMs
+      ) {
         return { status: 'stale_rejected', rejectionCode: 'STALE_ALLOCATION_EPOCH' };
       }
 
@@ -946,7 +1052,13 @@ class TaskManager extends EventEmitter {
     }
 
     const obj = this._store.get('SELECT * FROM objectives WHERE objective_id = ?', asg.objective_id);
-    if (!obj || report.allocationEpoch !== obj.allocation_epoch) {
+    const isFencedAsg = ['expired', 'revoked', 'failed'].includes(asg.state);
+    if (
+      !obj ||
+      report.allocationEpoch < asg.allocation_epoch ||
+      report.allocationEpoch > obj.allocation_epoch ||
+      (isFencedAsg && report.allocationEpoch < obj.allocation_epoch)
+    ) {
       return {
         messageId: envelope.messageId,
         workerSequence: envelope.workerSequence,
@@ -1086,16 +1198,97 @@ class TaskManager extends EventEmitter {
       }
 
       if (unusedQuota > 0 && freshObj.state !== 'completed') {
+        const remainingActiveForQuota = this._store.get(
+          `SELECT COUNT(*) AS cnt FROM assignments
+           WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+          freshObj.objective_id
+        );
+        const nextQuotaState =
+          Number(remainingActiveForQuota?.cnt || 0) > 0 ? freshObj.state : 'ready';
         this._store.run(
           `UPDATE objectives
            SET reserved_quantity = MAX(0, reserved_quantity - ?),
-               state = CASE WHEN reserved_quantity - ? <= 0 THEN 'ready' ELSE state END,
+               state = ?,
                version = version + 1
            WHERE objective_id = ?`,
           unusedQuota,
-          unusedQuota,
+          nextQuotaState,
           freshObj.objective_id
         );
+      } else if (freshObj.target_quantity === null && freshObj.state !== 'completed') {
+        const remainingActive = this._store.get(
+          `SELECT COUNT(*) AS cnt FROM assignments
+           WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+          freshObj.objective_id
+        );
+        const activeCount = Number(remainingActive?.cnt || 0);
+
+        // Check whether this is a `start_with` role_duration companion whose guarded objective is not yet complete
+        let blockedByStartWithCompanion = false;
+        if (freshObj.verification_policy === 'role_duration') {
+          const startDeps = this._store.all(
+            `SELECT o.state AS target_state
+             FROM objective_dependencies d
+             JOIN objectives o ON o.objective_id = d.depends_on_objective_id
+             WHERE d.objective_id = ? AND d.edge_type = 'start_with'`,
+            freshObj.objective_id
+          );
+          if (startDeps.length > 0 && !startDeps.every((d) => d.target_state === 'completed')) {
+            blockedByStartWithCompanion = true;
+          }
+        }
+
+        // For spatial objectives, verify every assigned sector partition has at least one completed assignment
+        let hasUnfinishedSpatialSector = false;
+        if (freshObj.parallelism === 'spatial') {
+          const allSpatialAsgs = this._store.all(
+            'SELECT state, scope_json FROM assignments WHERE objective_id = ?',
+            freshObj.objective_id
+          );
+          const completedSectors = new Set();
+          const allSectors = new Set();
+          for (const sa of allSpatialAsgs) {
+            let sc = {};
+            try {
+              sc = JSON.parse(sa.scope_json || '{}');
+            } catch {
+              sc = {};
+            }
+            if (sc.partitionId) {
+              allSectors.add(sc.partitionId);
+              if (sa.state === 'completed') completedSectors.add(sc.partitionId);
+            }
+          }
+          for (const pid of allSectors) {
+            if (!completedSectors.has(pid)) {
+              hasUnfinishedSpatialSector = true;
+              break;
+            }
+          }
+        }
+
+        const canCompleteNonQuantified =
+          report.outcome === 'completed' &&
+          freshAsg.credited_quantity > 0 &&
+          activeCount === 0 &&
+          !blockedByStartWithCompanion &&
+          !hasUnfinishedSpatialSector;
+
+        if (canCompleteNonQuantified) {
+          this._store.run(
+            `UPDATE objectives
+             SET state = 'completed', reserved_quantity = 0, version = version + 1
+             WHERE objective_id = ?`,
+            freshObj.objective_id
+          );
+        } else if (activeCount === 0) {
+          this._store.run(
+            `UPDATE objectives
+             SET state = 'ready', version = version + 1
+             WHERE objective_id = ?`,
+            freshObj.objective_id
+          );
+        }
       }
     }
 
@@ -1138,7 +1331,13 @@ class TaskManager extends EventEmitter {
     }
 
     const obj = this._store.get('SELECT * FROM objectives WHERE objective_id = ?', asg.objective_id);
-    if (!obj || failReport.allocationEpoch !== obj.allocation_epoch) {
+    const isFencedFailAsg = ['expired', 'revoked', 'failed'].includes(asg.state);
+    if (
+      !obj ||
+      failReport.allocationEpoch < asg.allocation_epoch ||
+      failReport.allocationEpoch > obj.allocation_epoch ||
+      (isFencedFailAsg && failReport.allocationEpoch < obj.allocation_epoch)
+    ) {
       return {
         messageId: envelope.messageId,
         workerSequence: envelope.workerSequence,
@@ -1278,15 +1477,30 @@ class TaskManager extends EventEmitter {
   /**
    * Fence expired leases (`allocation_epoch + 1`) BEFORE releasing unverified quota (`G-08`, `G-15`).
    */
-  expireLeases(nowIso = this._nowIso()) {
+  expireLeases(nowIso = this._nowIso(), forcedLeaseIds = []) {
     const expired = [];
     this._store.transaction(() => {
-      const rows = this._store.all(
-        `SELECT * FROM assignments
-         WHERE state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
-           AND expires_at <= ?`,
-        nowIso
-      );
+      const forced = Array.isArray(forcedLeaseIds)
+        ? forcedLeaseIds.filter((id) => typeof id === 'string' && id.length > 0)
+        : [];
+      let rows;
+      if (forced.length > 0) {
+        const placeholders = forced.map(() => '?').join(', ');
+        rows = this._store.all(
+          `SELECT * FROM assignments
+           WHERE state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
+             AND (expires_at <= ? OR lease_id IN (${placeholders}))`,
+          nowIso,
+          ...forced
+        );
+      } else {
+        rows = this._store.all(
+          `SELECT * FROM assignments
+           WHERE state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
+             AND expires_at <= ?`,
+          nowIso
+        );
+      }
       if (rows.length === 0) return;
 
       const objectivesToFence = new Set(rows.map((r) => r.objective_id));
@@ -1299,7 +1513,9 @@ class TaskManager extends EventEmitter {
         );
       }
 
+      const affectedTaskIds = new Set();
       for (const asg of rows) {
+        affectedTaskIds.add(asg.task_id);
         const uncredited =
           asg.quota_quantity !== null ? Math.max(0, asg.quota_quantity - asg.credited_quantity) : 0;
         this._store.run(
@@ -1351,6 +1567,10 @@ class TaskManager extends EventEmitter {
           newAllocationEpoch: obj ? obj.allocation_epoch : asg.allocation_epoch + 1
         });
       }
+
+      for (const tid of affectedTaskIds) {
+        this._finalizeObjectiveAndTaskProgressInTx(tid, nowIso);
+      }
     });
 
     for (const item of expired) {
@@ -1393,7 +1613,8 @@ class TaskManager extends EventEmitter {
           asg &&
           obj &&
           asg.lease_id === item.leaseId &&
-          obj.allocation_epoch === item.allocationEpoch &&
+          item.allocationEpoch >= asg.allocation_epoch &&
+          item.allocationEpoch <= obj.allocation_epoch &&
           ['offered', 'accepted', 'running', 'reporting', 'verifying'].includes(asg.state) &&
           Date.parse(asg.expires_at) > nowMs &&
           obj.state !== 'completed';
@@ -1401,7 +1622,7 @@ class TaskManager extends EventEmitter {
         actions.push({
           assignmentId: String(item.assignmentId || ''),
           directive: stillValid ? 'continue' : 'stop_and_fence',
-          currentAllocationEpoch: obj ? obj.allocation_epoch : null
+          currentAllocationEpoch: stillValid ? asg.allocation_epoch : obj ? obj.allocation_epoch : null
         });
       }
 
@@ -1450,7 +1671,22 @@ class TaskManager extends EventEmitter {
     return this._store.transaction(() => {
       const task = this._store.get('SELECT * FROM tasks WHERE task_id = ?', taskId);
       if (!task) throw new DomainError('NOT_FOUND', `Task ${taskId} not found`);
-      const nextState = task.plan_version === 0 ? 'queued' : 'ready';
+
+      const activeAsgs = this._store.all(
+        `SELECT * FROM assignments
+         WHERE task_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+        taskId
+      );
+      for (const asg of activeAsgs) {
+        this._enqueueWorkerCommand(asg.worker_id, 'resume', {
+          assignmentId: asg.assignment_id,
+          leaseId: asg.lease_id,
+          botId: asg.bot_id
+        });
+      }
+
+      const nextState =
+        task.plan_version === 0 ? 'queued' : activeAsgs.length > 0 ? 'running' : 'ready';
       assertTaskTransition(task.state, nextState);
 
       this._store.run(
@@ -1459,6 +1695,9 @@ class TaskManager extends EventEmitter {
         nowIso,
         taskId
       );
+      if (task.plan_version > 0) {
+        this._finalizeObjectiveAndTaskProgressInTx(taskId, nowIso);
+      }
       return this._formatTaskSummary(this._store.get('SELECT * FROM tasks WHERE task_id = ?', taskId));
     });
   }
@@ -1559,10 +1798,14 @@ class TaskManager extends EventEmitter {
           `UPDATE objectives
            SET allocation_epoch = allocation_epoch + 1,
                reserved_quantity = MAX(0, reserved_quantity - ?),
-               state = CASE WHEN state = 'assigned' THEN 'ready' ELSE state END,
+               state = CASE
+                 WHEN state = 'assigned' AND (SELECT COUNT(*) FROM assignments WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')) = 0 THEN 'ready'
+                 ELSE state
+               END,
                version = version + 1
            WHERE objective_id = ? AND state NOT IN ('completed', 'cancelled')`,
           uncredited,
+          asg.objective_id,
           asg.objective_id
         );
         this._enqueueWorkerCommand(asg.worker_id, 'cancel', {

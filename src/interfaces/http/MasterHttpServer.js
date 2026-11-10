@@ -224,13 +224,14 @@ class MasterHttpServer {
         total += chunk.byteLength;
         if (total > maxBytes) {
           aborted = true;
+          req._nexusOversizeClose = true;
+          req.pause();
           reject(
             new DomainError(
-              'SCHEMA_VALIDATION_FAILED',
+              'PAYLOAD_TOO_LARGE',
               `Request body exceeded ${maxBytes} byte limit`
             )
           );
-          req.resume();
           return;
         }
         chunks.push(chunk);
@@ -284,6 +285,9 @@ class MasterHttpServer {
       return;
     }
     const envelope = toErrorEnvelope(err, requestId);
+    if (envelope.httpStatus === 413) {
+      res.setHeader('Connection', 'close');
+    }
     this._sendJson(res, envelope.httpStatus, envelope.body);
   }
 
@@ -363,17 +367,23 @@ class MasterHttpServer {
 
     if (method === 'GET' && pathname === '/api/v1/auth/session') {
       const bootstrapRequired = !this._auth.hasAnyPrincipal();
+      const cookies = parseCookies(req.headers.cookie);
       try {
         const actor = this._authenticateOperator(req, 'GET');
+        const csrfToken = cookies.nexus_session
+          ? this._auth.deriveCsrfToken(cookies.nexus_session)
+          : null;
         this._sendJson(res, 200, {
           authenticated: true,
           bootstrapRequired,
+          csrfToken,
           actor
         });
       } catch {
         this._sendJson(res, 200, {
           authenticated: false,
           bootstrapRequired,
+          csrfToken: null,
           actor: null
         });
       }
@@ -418,13 +428,22 @@ class MasterHttpServer {
     }
 
     if (method === 'POST' && pathname === '/api/v1/auth/logout') {
-      const actor = this._authenticateOperator(req, 'POST');
       const cookies = parseCookies(req.headers.cookie);
+      let principalId = null;
+      try {
+        const actor = this._authenticateOperator(req, 'POST');
+        principalId = actor.principalId;
+      } catch (err) {
+        if (err && err.code === 'FORBIDDEN') {
+          throw err;
+        }
+        // Session already expired/unknown: still clear cookie cleanly
+      }
       if (cookies.nexus_session) {
         this._auth.logout(cookies.nexus_session);
       }
       res.setHeader('Set-Cookie', this._clearSessionCookie());
-      this._sendJson(res, 200, { ok: true, principalId: actor.principalId });
+      this._sendJson(res, 200, { ok: true, principalId });
       return;
     }
 
@@ -499,6 +518,13 @@ class MasterHttpServer {
       const events = Array.isArray(body.events) ? body.events : [];
       const results = await this._coordinator.handleWorkerEventBatch(authWorker, events);
       this._sendJson(res, 200, { results });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/worker/v1/reconcile') {
+      const body = await this._readJsonBody(req, 65_536);
+      const reconciled = this._tasks.reconcileWorker(authWorker.workerId, body);
+      this._sendJson(res, 200, reconciled);
       return;
     }
 
@@ -729,6 +755,19 @@ class MasterHttpServer {
         ttlMs: body.ttlMs
       });
       this._sendJson(res, 201, minted);
+      return;
+    }
+
+    const workerRevokeMatch = /^\/api\/v1\/workers\/([^/]+)\/revoke$/.exec(pathname);
+    if (method === 'POST' && workerRevokeMatch) {
+      authorizeRole(actor, 'admin');
+      const workerId = decodeURIComponent(workerRevokeMatch[1]);
+      const body = await this._readJsonBody(req, 4096);
+      const revoked = this._registry.revoke(workerId, body.reason || 'operator_revoked');
+      if (!this._coordinator.safeMode) {
+        await this._coordinator.scheduleReadyObjectives(null);
+      }
+      this._sendJson(res, 200, revoked);
       return;
     }
 

@@ -1,7 +1,7 @@
 # Mineflayer AI Swarm — Development Status & Specialist Task Packages
 
 **Last Updated:** 2026-11-10  
-**Current Stage:** NEXUS-20 Phase 0 Audit + Phase 1 Master Control Plane, Modes, Knowledge, Auth & Control Centre Complete (`45/45` tests passing)  
+**Current Stage:** NEXUS-20 Phase 0 Audit + Phase 1 Master Control Plane + v0.3.1 Deep Audit Bugfixes Complete (`50/50` tests passing, `3/3` leak suites passing)  
 **Integration Owner:** Lead Software Engineer & Repository Integration Owner
 
 ---

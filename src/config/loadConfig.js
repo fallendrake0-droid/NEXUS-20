@@ -419,7 +419,19 @@ function validateConfig(config) {
  * Parse, validate and deeply freeze application configuration at startup.
  */
 function loadConfig(env = process.env, fileConfig = {}) {
-  const raw = buildRawConfig(env, fileConfig);
+  let actualEnv = env;
+  let actualFileConfig = fileConfig;
+  if (
+    env &&
+    typeof env === 'object' &&
+    (Object.prototype.hasOwnProperty.call(env, 'env') ||
+      Object.prototype.hasOwnProperty.call(env, 'fileConfig')) &&
+    !Object.keys(env).some((k) => k.startsWith('SWARM_') || k === 'PORT')
+  ) {
+    actualEnv = env.env || process.env;
+    actualFileConfig = env.fileConfig || fileConfig;
+  }
+  const raw = buildRawConfig(actualEnv, actualFileConfig);
   const check = validateConfig(raw);
   if (!check.valid) {
     throw new DomainError(

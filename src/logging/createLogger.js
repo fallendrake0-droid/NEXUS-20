@@ -53,11 +53,11 @@ function createLogger(options = {}) {
       ? options.boundedLogger
       : new BoundedLogger({
           level: options.level || 'info',
-          ringSize: options.ringSize || 200,
+          ringCapacity: options.ringCapacity || options.ringSize || 200,
           filePath: options.filePath || null,
           maxFileBytes: options.maxFileBytes || 5 * 1024 * 1024,
           maxFiles: options.maxFiles || 3,
-          dedupWindowMs: options.dedupWindowMs
+          rateLimitWindowMs: options.rateLimitWindowMs || options.dedupWindowMs
         });
 
   return createChildFacade(root, options.defaultFields || {});

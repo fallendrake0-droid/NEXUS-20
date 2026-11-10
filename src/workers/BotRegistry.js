@@ -212,6 +212,18 @@ class BotRegistry extends EventEmitter {
         );
       }
 
+      const seenBatchBotIds = new Set();
+      for (const b of configuredBots) {
+        const candidateBotId = String(b.botId || '').trim();
+        if (seenBatchBotIds.has(candidateBotId)) {
+          throw new DomainError(
+            'SCHEMA_VALIDATION_FAILED',
+            `Duplicate botId ${candidateBotId} in configuredBots registration batch`
+          );
+        }
+        seenBatchBotIds.add(candidateBotId);
+      }
+
       // Mark bootstrap token consumed
       this._store.run(
         `UPDATE worker_bootstrap_tokens
@@ -250,17 +262,21 @@ class BotRegistry extends EventEmitter {
             nowIso,
             asg.assignment_id
           );
-          if (uncredited > 0) {
-            this._store.run(
-              `UPDATE objectives
-               SET reserved_quantity = MAX(0, reserved_quantity - ?),
-                   state = CASE WHEN state IN ('assigned', 'running') THEN 'ready' ELSE state END,
-                   version = version + 1
-               WHERE objective_id = ?`,
-              uncredited,
-              asg.objective_id
-            );
-          }
+          this._store.run(
+            `UPDATE objectives
+             SET reserved_quantity = MAX(0, reserved_quantity - ?),
+                 state = CASE
+                   WHEN state = 'completed' THEN 'completed'
+                   WHEN (SELECT COUNT(*) FROM assignments WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')) > 0 THEN state
+                   WHEN state IN ('assigned', 'running', 'verifying') THEN 'ready'
+                   ELSE state
+                 END,
+                 version = version + 1
+             WHERE objective_id = ?`,
+            uncredited,
+            asg.objective_id,
+            asg.objective_id
+          );
         }
 
         // Reset inbound event sequence & dedup table for freshly enrolled worker incarnation
@@ -546,16 +562,21 @@ class BotRegistry extends EventEmitter {
           nowIso,
           asg.assignment_id
         );
-        if (uncredited > 0) {
-          this._store.run(
-            `UPDATE objectives
-             SET reserved_quantity = MAX(0, reserved_quantity - ?),
-                 state = CASE WHEN state IN ('assigned', 'running') THEN 'ready' ELSE state END
-             WHERE objective_id = ?`,
-            uncredited,
-            asg.objective_id
-          );
-        }
+        this._store.run(
+          `UPDATE objectives
+           SET reserved_quantity = MAX(0, reserved_quantity - ?),
+               state = CASE
+                 WHEN state = 'completed' THEN 'completed'
+                 WHEN (SELECT COUNT(*) FROM assignments WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')) > 0 THEN state
+                 WHEN state IN ('assigned', 'running', 'verifying') THEN 'ready'
+                 ELSE state
+               END,
+               version = version + 1
+           WHERE objective_id = ?`,
+          uncredited,
+          asg.objective_id,
+          asg.objective_id
+        );
       }
 
       this._store.recordAudit({

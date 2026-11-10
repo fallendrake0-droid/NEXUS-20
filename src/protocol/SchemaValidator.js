@@ -168,7 +168,7 @@ function validateBotAssignmentV1(value) {
   if (!Number.isSafeInteger(value.allocationEpoch) || value.allocationEpoch < 1) {
     errors.push('allocationEpoch must be integer >= 1');
   }
-  if (typeof value.objectiveId !== 'string' || value.objectiveId.length < 1 || value.objectiveId.length > 64) {
+  if (typeof value.objectiveId !== 'string' || value.objectiveId.length < 1 || value.objectiveId.length > 128) {
     errors.push('objectiveId invalid');
   }
   if (typeof value.workerId !== 'string' || value.workerId.length < 1 || value.workerId.length > 64) {
@@ -178,11 +178,16 @@ function validateBotAssignmentV1(value) {
     errors.push('botId invalid');
   }
   if (!ACTION_TYPES.has(value.actionType)) errors.push(`Unsupported actionType: ${value.actionType}`);
-  if (value.resourceId !== null && !RESOURCE_ID_RE.test(String(value.resourceId))) {
+  if (
+    value.resourceId !== null &&
+    value.resourceId !== undefined &&
+    !RESOURCE_ID_RE.test(String(value.resourceId))
+  ) {
     errors.push('resourceId must be null or namespace:id');
   }
   if (
     value.quotaQuantity !== null &&
+    value.quotaQuantity !== undefined &&
     (!Number.isSafeInteger(value.quotaQuantity) || value.quotaQuantity < 1 || value.quotaQuantity > 1_000_000)
   ) {
     errors.push('quotaQuantity must be null or integer 1..1000000');
@@ -281,7 +286,11 @@ function validateTaskCompletionReportV1(value) {
       if (!EVIDENCE_KINDS.has(ev.kind)) {
         errors.push(`evidence[${i}].kind unsupported: ${ev.kind}`);
       }
-      if (ev.itemKey !== null && !RESOURCE_ID_RE.test(String(ev.itemKey))) {
+      if (
+        ev.itemKey !== null &&
+        ev.itemKey !== undefined &&
+        !RESOURCE_ID_RE.test(String(ev.itemKey))
+      ) {
         errors.push(`evidence[${i}].itemKey invalid`);
       }
       if (!Number.isSafeInteger(ev.claimedDelta) || ev.claimedDelta < 0 || ev.claimedDelta > 100_000) {
@@ -337,7 +346,7 @@ function validateFailureReportV1(value) {
   if (typeof value.summary !== 'string' || value.summary.length < 1 || value.summary.length > 240) {
     errors.push('summary must be 1..240 chars');
   }
-  if (value.partialReport !== null) {
+  if (value.partialReport !== null && value.partialReport !== undefined) {
     const sub = validateTaskCompletionReportV1(value.partialReport);
     if (!sub.valid) {
       for (const e of sub.errors) errors.push(`partialReport.${e}`);

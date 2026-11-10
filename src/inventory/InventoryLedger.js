@@ -402,7 +402,7 @@ class InventoryLedger extends EventEmitter {
     );
 
     const objectiveCompleted =
-      obj.target_quantity !== null ? newVerified >= obj.target_quantity : clamped > 0;
+      obj.target_quantity !== null ? newVerified >= obj.target_quantity : false;
 
     this._store.run(
       `UPDATE objectives

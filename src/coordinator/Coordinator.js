@@ -914,7 +914,7 @@ class Coordinator {
     }
 
     if (ack.expiredLeaseIds.length > 0 && !this._safeMode) {
-      this._tasks.expireLeases(ack.serverTime);
+      this._tasks.expireLeases(ack.serverTime, ack.expiredLeaseIds);
     }
     if (!this._safeMode) {
       await this.scheduleReadyObjectives(null);

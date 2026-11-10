@@ -79,9 +79,12 @@ class ChatHistoryGuard {
       return { accepted: false, reason: 'BOT_ORIGINATED' };
     }
 
-    // 2. O(1) prefix check BEFORE trimming/splitting/allocating substrings for 99.9% of chat!
+    // 2. O(1) prefix + word-boundary check BEFORE trimming/splitting/allocating substrings!
     const raw = msg.text;
-    if (!raw.startsWith(this._prefix)) {
+    if (
+      !raw.startsWith(this._prefix) ||
+      (raw.length > this._prefix.length && !/\s/.test(raw[this._prefix.length]))
+    ) {
       this._droppedNonPrefixed += 1;
       return { accepted: false, reason: 'NOT_PREFIXED' };
     }

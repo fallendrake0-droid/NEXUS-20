@@ -221,7 +221,11 @@ class TaskScheduler {
 
     if (objective.kind === 'mine') {
       const reqRank = requiredPickaxeTierRank(objective.resourceId);
-      const pick = candidate.toolClasses?.pickaxe || null;
+      const rawPick = candidate.toolClasses?.pickaxe || null;
+      const pick =
+        rawPick && (rawPick.remainingDurability === null || rawPick.remainingDurability === undefined || rawPick.remainingDurability > 0)
+          ? rawPick
+          : null;
       const heldRank = pick ? TOOL_TIER_RANK[pick.tier] ?? 1 : 0;
 
       if (reqRank > 0 && heldRank < reqRank) {
@@ -410,19 +414,41 @@ class TaskScheduler {
         reason = 'distributed_independent_assignment';
       }
     } else if (objective.parallelism === 'spatial') {
-      const desiredK =
-        mode === 'SYNCHRONIZED' ? cap : Math.min(cap, Math.max(1, objective.workerCountHint || 2));
-      quotas = partitionRegion(
-        { dimension: 'minecraft:overworld', minX: -64, maxX: 64, minZ: -64, maxZ: 64 },
-        scored.slice(0, desiredK).map((s) => s.candidate)
-      );
-      selectedSubsetP90Sec = singleBotP90Sec / Math.max(1, quotas.length);
-      reason =
-        mode === 'SYNCHRONIZED' && quotas.length > 1
-          ? `synchronized_spatial_${quotas.length}_bots`
-          : quotas.length > 1
-            ? 'spatial_sector_partition'
-            : 'single_bot_spatial';
+      const missingSectors = Array.isArray(objective.missingPartitions)
+        ? objective.missingPartitions
+        : [];
+      if (missingSectors.length > 0) {
+        const take = Math.min(cap, missingSectors.length);
+        quotas = [];
+        for (let i = 0; i < take; i += 1) {
+          const cand = scored[i].candidate;
+          const sec = missingSectors[i];
+          quotas.push({
+            botId: cand.botId,
+            workerId: cand.workerId,
+            quantity: null,
+            partitionId: sec.partitionId || `sector-${i + 1}`,
+            regionBounds: sec.regionBounds || null,
+            role: 'explorer'
+          });
+        }
+        selectedSubsetP90Sec = singleBotP90Sec / Math.max(1, quotas.length);
+        reason = 'spatial_sector_recovery';
+      } else {
+        const desiredK =
+          mode === 'SYNCHRONIZED' ? cap : Math.min(cap, Math.max(1, objective.workerCountHint || 2));
+        quotas = partitionRegion(
+          { dimension: 'minecraft:overworld', minX: -64, maxX: 64, minZ: -64, maxZ: 64 },
+          scored.slice(0, desiredK).map((s) => s.candidate)
+        );
+        selectedSubsetP90Sec = singleBotP90Sec / Math.max(1, quotas.length);
+        reason =
+          mode === 'SYNCHRONIZED' && quotas.length > 1
+            ? `synchronized_spatial_${quotas.length}_bots`
+            : quotas.length > 1
+              ? 'spatial_sector_partition'
+              : 'single_bot_spatial';
+      }
     } else if (objective.remainingQuantity !== null && objective.remainingQuantity > 1) {
       const pool = scored.slice(0, cap).map((s) => ({
         botId: s.candidate.botId,

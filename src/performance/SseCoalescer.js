@@ -76,6 +76,10 @@ class SseCoalescer {
     this._pendingByKey.clear();
   }
 
+  dispose() {
+    this.stop();
+  }
+
   /**
    * Dynamically adjust flush cadence and max client cap from WorkloadGovernor.
    * @param {{ flushIntervalMs?: number, maxClients?: number }} policy

@@ -191,7 +191,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       for (const item of drained) {
         try {
           const summary = taskManager.resumeTask(item.taskId);
-          if (summary.state === 'ready') {
+          if (['ready', 'running'].includes(summary.state)) {
             coordinator.scheduleReadyObjectives(item.taskId).catch((err) => {
               logger.warn('Deferred task schedule retry failed', {
                 taskId: item.taskId,
@@ -297,9 +297,17 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
           config.capacity.heartbeatIntervalMs,
           () => {
             if (!stateStore.isOpen || stopping) return;
-            taskManager.expireLeases();
-            botRegistry.sweepLiveness();
+            const expired = taskManager.expireLeases();
+            const liveness = botRegistry.sweepLiveness();
             inventoryLedger.expireStaleTransfers();
+            if (
+              !coordinator.safeMode &&
+              (expired.length > 0 || liveness.some((t) => t.to === 'unreachable'))
+            ) {
+              coordinator.scheduleReadyObjectives(null).catch((err) => {
+                logger.warn('Periodic sweep re-allocation failed', { err: err.message });
+              });
+            }
           }
         );
 
@@ -363,7 +371,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
         await httpServer.stop();
         stopSweep?.();
         stopMaint?.();
-        sseCoalescer.dispose?.();
+        sseCoalescer.stop();
         monitor.stop();
         timers.dispose();
         governor.off('workload.changed', onGovernorChange);

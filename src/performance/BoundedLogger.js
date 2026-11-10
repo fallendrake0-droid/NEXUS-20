@@ -88,11 +88,11 @@ class BoundedLogger {
     const levelName = String(options.level || 'info').toLowerCase();
     this._minLevel = LEVELS[levelName] || LEVELS.info;
     this._levelName = LEVELS[levelName] ? levelName : 'info';
-    this._ring = new RingBuffer(options.ringCapacity || 200);
+    this._ring = new RingBuffer(options.ringCapacity || options.ringSize || 200);
     this._filePath = options.filePath || null;
     this._maxFileBytes = options.maxFileBytes || 5 * 1024 * 1024;
     this._maxFiles = options.maxFiles || 3;
-    this._rateLimitWindowMs = options.rateLimitWindowMs || 10_000;
+    this._rateLimitWindowMs = options.rateLimitWindowMs || options.dedupWindowMs || 10_000;
     this._maxRepeatsPerWindow = options.maxRepeatsPerWindow || 5;
     this._now = options.now || Date.now;
 
