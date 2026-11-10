@@ -11,6 +11,74 @@ const STATE_RANK = Object.freeze({
 
 const RANK_TO_STATE = Object.freeze(['normal', 'constrained', 'critical']);
 
+const PERFORMANCE_PROFILES = Object.freeze({
+  ULTRA_LOW: Object.freeze({
+    profile: 'ULTRA_LOW',
+    botCapFraction: 0.25,
+    allowNonEssentialScanning: false,
+    scanIntervalMultiplier: 4,
+    maxBlockSearchRadius: 12,
+    dashboardFlushIntervalMs: 3000,
+    maxSseClients: 2,
+    backgroundCalcBudget: 'minimal',
+    maxCandidateSubsetSearch: 2,
+    allowNonEssentialAi: false,
+    maxConcurrentAi: 1
+  }),
+  LOW: Object.freeze({
+    profile: 'LOW',
+    botCapFraction: 0.5,
+    allowNonEssentialScanning: true,
+    scanIntervalMultiplier: 2,
+    maxBlockSearchRadius: 16,
+    dashboardFlushIntervalMs: 2000,
+    maxSseClients: 4,
+    backgroundCalcBudget: 'reduced',
+    maxCandidateSubsetSearch: 4,
+    allowNonEssentialAi: false,
+    maxConcurrentAi: 1
+  }),
+  BALANCED: Object.freeze({
+    profile: 'BALANCED',
+    botCapFraction: 1.0,
+    allowNonEssentialScanning: true,
+    scanIntervalMultiplier: 1,
+    maxBlockSearchRadius: 32,
+    dashboardFlushIntervalMs: 1000,
+    maxSseClients: 16,
+    backgroundCalcBudget: 'full',
+    maxCandidateSubsetSearch: 8,
+    allowNonEssentialAi: true,
+    maxConcurrentAi: 1
+  }),
+  PERFORMANCE: Object.freeze({
+    profile: 'PERFORMANCE',
+    botCapFraction: 1.0,
+    allowNonEssentialScanning: true,
+    scanIntervalMultiplier: 1,
+    maxBlockSearchRadius: 48,
+    dashboardFlushIntervalMs: 750,
+    maxSseClients: 20,
+    backgroundCalcBudget: 'full',
+    maxCandidateSubsetSearch: 12,
+    allowNonEssentialAi: true,
+    maxConcurrentAi: 2
+  }),
+  MAXIMUM_THROUGHPUT: Object.freeze({
+    profile: 'MAXIMUM_THROUGHPUT',
+    botCapFraction: 1.0,
+    allowNonEssentialScanning: true,
+    scanIntervalMultiplier: 1,
+    maxBlockSearchRadius: 64,
+    dashboardFlushIntervalMs: 500,
+    maxSseClients: 24,
+    backgroundCalcBudget: 'full',
+    maxCandidateSubsetSearch: 20,
+    allowNonEssentialAi: true,
+    maxConcurrentAi: 2
+  })
+});
+
 /**
  * Adaptive Workload Governor (PERFORMANCE_PLAN.md §5 + Prompt "Adaptive workload controller").
  *
@@ -40,13 +108,24 @@ class WorkloadGovernor extends EventEmitter {
    */
   constructor(options = {}) {
     super();
+    const maxArchBots = options.maxArchitecturalBots ?? 20;
+    if (!Number.isSafeInteger(maxArchBots) || maxArchBots < 1 || maxArchBots > 500) {
+      throw new RangeError('maxArchitecturalBots must be an integer in [1..500]');
+    }
     const configuredGlobal = options.globalBotCap ?? 20;
-    if (!Number.isSafeInteger(configuredGlobal) || configuredGlobal < 1 || configuredGlobal > 20) {
-      throw new RangeError('Global bot cap must be between 1 and 20 (MASTER_SPEC.md §2)');
+    if (!Number.isSafeInteger(configuredGlobal) || configuredGlobal < 1 || configuredGlobal > maxArchBots) {
+      throw new RangeError(`Global bot cap must be between 1 and ${maxArchBots} (ADR-002)`);
     }
 
+    const initialProfile = String(options.profile || 'BALANCED').trim().toUpperCase();
+    if (!PERFORMANCE_PROFILES[initialProfile]) {
+      throw new RangeError(`Unsupported performance profile: ${initialProfile}`);
+    }
+
+    this._maxArchitecturalBots = maxArchBots;
     this._globalBotCap = configuredGlobal;
     this._configuredBotCap = Math.min(configuredGlobal, options.initialBotCap ?? 2);
+    this._profile = initialProfile;
     this._recoveryCooldownMs = options.recoveryCooldownMs ?? 15_000;
     this._now = options.now || Date.now;
 
@@ -99,8 +178,35 @@ class WorkloadGovernor extends EventEmitter {
     return this._state;
   }
 
+  get profile() {
+    return this._profile;
+  }
+
   get pausedTaskCount() {
     return this._pausedLowPriorityTasks.size;
+  }
+
+  setProfile(profileName) {
+    const normalized = String(profileName || '').trim().toUpperCase();
+    if (!PERFORMANCE_PROFILES[normalized]) {
+      throw new RangeError(
+        `Invalid performance profile "${profileName}". Expected one of: ${Object.keys(PERFORMANCE_PROFILES).join(', ')}`
+      );
+    }
+    const previousProfile = this._profile;
+    this._profile = normalized;
+    if (previousProfile !== normalized) {
+      const evt = {
+        type: 'profile_changed',
+        occurredAt: new Date(this._now()).toISOString(),
+        previousProfile,
+        profile: normalized,
+        state: this._state
+      };
+      this._reports.push(evt);
+      this.emit('workload.changed', evt);
+    }
+    return this.getDirectives();
   }
 
   setConfiguredBotCap(botCap) {
@@ -303,17 +409,20 @@ class WorkloadGovernor extends EventEmitter {
     const workerSlots = Math.max(0, Math.trunc(capacity.workerAvailableSlots ?? this._configuredBotCap));
     const eligibleBots = Math.max(0, Math.trunc(capacity.capabilityEligibleBots ?? this._configuredBotCap));
 
+    const profileCfg = PERFORMANCE_PROFILES[this._profile] || PERFORMANCE_PROFILES.BALANCED;
+    const profileBotCap = Math.max(1, Math.floor(this._configuredBotCap * profileCfg.botCapFraction));
+
     let governorConcurrencyCap;
     if (this._state === 'normal') {
-      governorConcurrencyCap = this._configuredBotCap;
+      governorConcurrencyCap = profileBotCap;
     } else if (this._state === 'constrained') {
-      governorConcurrencyCap = Math.max(1, Math.floor(this._configuredBotCap * 0.5));
+      governorConcurrencyCap = Math.max(1, Math.floor(profileBotCap * 0.5));
     } else {
       // Critical: 0 new optional assignments; active leases safely pause/finish
       governorConcurrencyCap = 0;
     }
 
-    // PERFORMANCE_PLAN.md §5: Concurrency is bounded by the minimum of all 5 caps
+    // PERFORMANCE_PLAN.md §5: Concurrency is bounded by the minimum of all caps
     const effectiveBotConcurrency = Math.min(
       this._globalBotCap,
       this._configuredBotCap,
@@ -326,17 +435,18 @@ class WorkloadGovernor extends EventEmitter {
     if (this._state === 'normal') {
       return {
         state: 'normal',
+        profile: this._profile,
         admitOptionalTasks: true,
         lowPriorityAction: 'execute',
-        allowNonEssentialScanning: true,
-        scanIntervalMultiplier: 1,
-        maxBlockSearchRadius: 32,
-        dashboardFlushIntervalMs: 1000,
-        maxSseClients: this._thresholds.normalMaxSseClients,
-        backgroundCalcBudget: 'full',
-        maxCandidateSubsetSearch: 8,
-        allowNonEssentialAi: true,
-        maxConcurrentAi: 1,
+        allowNonEssentialScanning: profileCfg.allowNonEssentialScanning,
+        scanIntervalMultiplier: profileCfg.scanIntervalMultiplier,
+        maxBlockSearchRadius: profileCfg.maxBlockSearchRadius,
+        dashboardFlushIntervalMs: profileCfg.dashboardFlushIntervalMs,
+        maxSseClients: Math.min(this._thresholds.normalMaxSseClients, profileCfg.maxSseClients),
+        backgroundCalcBudget: profileCfg.backgroundCalcBudget,
+        maxCandidateSubsetSearch: profileCfg.maxCandidateSubsetSearch,
+        allowNonEssentialAi: profileCfg.allowNonEssentialAi,
+        maxConcurrentAi: profileCfg.maxConcurrentAi,
         effectiveBotConcurrency,
         governorConcurrencyCap,
         // Mandatory safety & survival preservation invariants:
@@ -349,15 +459,16 @@ class WorkloadGovernor extends EventEmitter {
     if (this._state === 'constrained') {
       return {
         state: 'constrained',
+        profile: this._profile,
         admitOptionalTasks: false,
         lowPriorityAction: 'pause_and_defer',
-        allowNonEssentialScanning: true,
-        scanIntervalMultiplier: 3,
-        maxBlockSearchRadius: 16,
-        dashboardFlushIntervalMs: 3000,
-        maxSseClients: this._thresholds.constrainedSseClients,
+        allowNonEssentialScanning: profileCfg.allowNonEssentialScanning,
+        scanIntervalMultiplier: Math.max(3, profileCfg.scanIntervalMultiplier),
+        maxBlockSearchRadius: Math.min(16, profileCfg.maxBlockSearchRadius),
+        dashboardFlushIntervalMs: Math.max(3000, profileCfg.dashboardFlushIntervalMs),
+        maxSseClients: Math.min(this._thresholds.constrainedSseClients, profileCfg.maxSseClients),
         backgroundCalcBudget: 'reduced',
-        maxCandidateSubsetSearch: 3,
+        maxCandidateSubsetSearch: Math.min(3, profileCfg.maxCandidateSubsetSearch),
         allowNonEssentialAi: false,
         maxConcurrentAi: 1,
         effectiveBotConcurrency,
@@ -370,6 +481,7 @@ class WorkloadGovernor extends EventEmitter {
 
     return {
       state: 'critical',
+      profile: this._profile,
       admitOptionalTasks: false,
       lowPriorityAction: 'pause_and_defer',
       allowNonEssentialScanning: false,
@@ -558,4 +670,4 @@ class WorkloadGovernor extends EventEmitter {
   }
 }
 
-module.exports = { WorkloadGovernor, STATE_RANK };
+module.exports = { WorkloadGovernor, STATE_RANK, PERFORMANCE_PROFILES };

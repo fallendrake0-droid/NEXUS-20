@@ -15,6 +15,9 @@ const { BotRegistry } = require('../workers/BotRegistry');
 const { TaskManager } = require('../tasks/TaskManager');
 const { TaskScheduler } = require('../scheduler/TaskScheduler');
 const { Coordinator } = require('../coordinator/Coordinator');
+const { WorldKnowledgeStore } = require('../knowledge/WorldKnowledgeStore');
+const { AuthService } = require('../security/AuthService');
+const { MasterHttpServer } = require('../interfaces/http/MasterHttpServer');
 
 /**
  * Master Runtime Bootstrap (`MODULE_INTERFACES.md` §3.1).
@@ -45,8 +48,10 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
   const governor =
     dependencies.governor ||
     new WorkloadGovernor({
+      maxArchitecturalBots: config.capacity.maxArchitecturalBots ?? 20,
       globalBotCap: config.capacity.globalMaxBots,
-      initialBotCap: config.capacity.initialEnabledBots
+      initialBotCap: config.capacity.initialEnabledBots,
+      profile: config.performanceProfile || 'BALANCED'
     });
 
   const monitor =
@@ -110,6 +115,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
   const aiController =
     dependencies.aiController ||
     new AiEfficiencyController({
+      provider: config.ai.provider || 'ollama',
       ollamaBaseUrl: config.ai.enabled ? config.ai.ollamaBaseUrl : null,
       model: config.ai.model,
       enforceRemoteOnController: config.role === 'master',
@@ -121,6 +127,21 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       transportOverride: dependencies.aiTransportOverride || null
     });
 
+  const worldKnowledgeStore =
+    dependencies.worldKnowledgeStore ||
+    new WorldKnowledgeStore({
+      stateStore,
+      logger: logger.child({ module: 'WorldKnowledgeStore' })
+    });
+
+  const authService =
+    dependencies.authService ||
+    new AuthService({
+      stateStore,
+      config,
+      logger: logger.child({ module: 'AuthService' })
+    });
+
   const taskScheduler =
     dependencies.taskScheduler ||
     new TaskScheduler({
@@ -129,6 +150,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       botRegistry,
       governor,
       config,
+      operatingMode: config.operatingMode || 'HYBRID',
       logger: logger.child({ module: 'TaskScheduler' })
     });
 
@@ -145,6 +167,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       eventBus,
       sseCoalescer,
       taskScheduler,
+      worldKnowledgeStore,
       logger: logger.child({ module: 'Coordinator' })
     });
 
@@ -189,6 +212,40 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
   let stopSweep = null;
   let stopMaint = null;
 
+  const healthProbe = async () => {
+    const dbHealth = stateStore.health();
+    const pressure = monitor.pressureState();
+    const healthy = started && !coordinator.safeMode && dbHealth.status === 'healthy';
+    return {
+      schemaVersion: 1,
+      status: healthy ? (pressure === 'normal' ? 'ok' : 'degraded') : 'unhealthy',
+      started,
+      httpListening: Boolean(httpServer && httpServer.listening),
+      httpPort: httpServer ? httpServer.port : null,
+      operatingMode: coordinator.operatingMode,
+      performanceProfile: governor.profile,
+      safeMode: coordinator.safeMode,
+      governorState: governor.state,
+      pressure,
+      enabledBotsCap: botRegistry.enabledBotsCap,
+      persistence: dbHealth
+    };
+  };
+
+  const httpServer =
+    dependencies.httpServer ||
+    new MasterHttpServer({
+      config,
+      coordinator,
+      authService,
+      botRegistry,
+      taskManager,
+      sseCoalescer,
+      monitor,
+      logger: logger.child({ module: 'MasterHttpServer' }),
+      healthProbe
+    });
+
   return {
     config,
     logger,
@@ -204,19 +261,35 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
     taskManager,
     taskScheduler,
     aiController,
+    worldKnowledgeStore,
+    authService,
+    httpServer,
     coordinator,
 
-    async start() {
+    async start(startOptions = {}) {
+      const shouldListenHttp =
+        startOptions.listenHttp !== undefined
+          ? Boolean(startOptions.listenHttp)
+          : Boolean(config.http?.enabled);
+
       if (started) {
-        return { host: config.http.host, port: config.http.port };
+        if (shouldListenHttp && !httpServer.listening) {
+          await httpServer.start();
+        }
+        return {
+          host: config.http.host,
+          port: httpServer.port || config.http.port
+        };
       }
       try {
         stateStore.open();
         monitor.registerEmitter('eventBus', eventBus);
         monitor.registerQueueProbe('governorPaused', () => governor.pausedTaskCount);
+        monitor.registerQueueProbe('authKdfQueue', () => authService.kdfQueueDepth);
         monitor.start();
 
         const recoveryReport = await coordinator.recover();
+        await authService.ensureEnvAdminBootstrap();
 
         // Consolidate lease expiry + worker liveness onto shared TimerRegistry bucket
         stopSweep = timers.registerInterval(
@@ -237,25 +310,39 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
         });
 
         started = true;
+        if (shouldListenHttp) {
+          await httpServer.start();
+        }
+
+        const effectivePort = httpServer.port || config.http.port;
         eventBus.publish('master.started', {
           host: config.http.host,
-          port: config.http.port,
+          port: effectivePort,
+          httpListening: httpServer.listening,
+          operatingMode: coordinator.operatingMode,
+          performanceProfile: governor.profile,
           recoveryReport
         });
         logger.info('Master runtime started', {
           host: config.http.host,
-          port: config.http.port,
+          port: effectivePort,
+          httpListening: httpServer.listening,
+          operatingMode: coordinator.operatingMode,
+          performanceProfile: governor.profile,
           enabledBotsCap: botRegistry.enabledBotsCap
         });
 
         return {
           host: config.http.host,
-          port: config.http.port,
+          port: effectivePort,
+          httpListening: httpServer.listening,
           recoveryReport
         };
       } catch (err) {
         // Reverse-order teardown on partial startup failure (`MODULE_INTERFACES.md` §3.1)
+        started = false;
         try {
+          await httpServer.stop();
           monitor.stop();
           timers.dispose();
           stateStore.close();
@@ -273,6 +360,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       logger.info('Master runtime stopping gracefully');
 
       try {
+        await httpServer.stop();
         stopSweep?.();
         stopMaint?.();
         sseCoalescer.dispose?.();
@@ -289,21 +377,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       }
     },
 
-    async health() {
-      const dbHealth = stateStore.health();
-      const pressure = monitor.pressureState();
-      const healthy = started && !coordinator.safeMode && dbHealth.status === 'healthy';
-      return {
-        schemaVersion: 1,
-        status: healthy ? (pressure === 'normal' ? 'ok' : 'degraded') : 'unhealthy',
-        started,
-        safeMode: coordinator.safeMode,
-        governorState: governor.state,
-        pressure,
-        enabledBotsCap: botRegistry.enabledBotsCap,
-        persistence: dbHealth
-      };
-    }
+    health: healthProbe
   };
 }
 

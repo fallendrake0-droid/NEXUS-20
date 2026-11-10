@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-10T06:21:26.697Z",
+  "generatedAt": "2026-11-10T06:59:25.007Z",
   "environment": {
     "note": "Measured in Linux CI/sandbox VM; physical Samsung Galaxy A06 Termux Node 24.17.0 validation required to close U-03/U-12.",
     "nodeVersion": "v22.22.3",
@@ -19,7 +19,7 @@
         "mode": "before",
         "totalBots": 0,
         "workerTopology": [],
-        "durationMs": 375.2,
+        "durationMs": 360.3,
         "quotaInvariantPassed": true,
         "sseClientRxKB": 0.04,
         "ollamaRemoteServer": {
@@ -33,22 +33,22 @@
           "expectedBots": 0,
           "registeredBots": 0,
           "memory": {
-            "rssPeakMB": 61.41,
-            "rssPostGcMB": 61.41,
-            "heapUsedPeakMB": 5.93,
-            "heapUsedPostGcMB": 5.43,
+            "rssPeakMB": 59.52,
+            "rssPostGcMB": 59.52,
+            "heapUsedPeakMB": 5.97,
+            "heapUsedPostGcMB": 5.45,
             "heapTotalMB": 10.35,
             "externalMB": 2.05
           },
           "cpu": {
-            "percentNormalizedP50": 8.61,
-            "percentNormalizedP95": 86.65,
-            "totalCpuMs": 121.71
+            "percentNormalizedP50": 11.77,
+            "percentNormalizedP95": 81.85,
+            "totalCpuMs": 120.82
           },
           "eventLoopDelayMs": {
             "p50": 0,
-            "p95": 20.15,
-            "max": 20.15
+            "p95": 20.23,
+            "max": 20.23
           },
           "network": {
             "rxKB": 0,
@@ -112,7 +112,7 @@
         "mode": "after",
         "totalBots": 0,
         "workerTopology": [],
-        "durationMs": 357.5,
+        "durationMs": 375.1,
         "quotaInvariantPassed": true,
         "sseClientRxKB": 0.04,
         "ollamaRemoteServer": {
@@ -126,17 +126,17 @@
           "expectedBots": 0,
           "registeredBots": 0,
           "memory": {
-            "rssPeakMB": 59.88,
-            "rssPostGcMB": 59.88,
-            "heapUsedPeakMB": 6.04,
-            "heapUsedPostGcMB": 5.5,
+            "rssPeakMB": 59.91,
+            "rssPostGcMB": 59.91,
+            "heapUsedPeakMB": 6.05,
+            "heapUsedPostGcMB": 5.52,
             "heapTotalMB": 10.35,
             "externalMB": 2.05
           },
           "cpu": {
-            "percentNormalizedP50": 10.32,
-            "percentNormalizedP95": 86.45,
-            "totalCpuMs": 123.27
+            "percentNormalizedP50": 10.89,
+            "percentNormalizedP95": 84.6,
+            "totalCpuMs": 137
           },
           "eventLoopDelayMs": {
             "p50": 0,
@@ -239,13 +239,13 @@
         "workerTopology": [
           1
         ],
-        "durationMs": 712.9,
+        "durationMs": 718.9,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 711.38,
+        "sseClientRxKB": 702.28,
         "ollamaRemoteServer": {
           "totalCalls": 20,
           "peakConcurrent": 4,
-          "rxKB": 2485.25,
+          "rxKB": 2458.73,
           "txKB": 16.14
         },
         "masterController": {
@@ -253,31 +253,31 @@
           "expectedBots": 1,
           "registeredBots": 1,
           "memory": {
-            "rssPeakMB": 65.4,
-            "rssPostGcMB": 64.59,
-            "heapUsedPeakMB": 8.88,
-            "heapUsedPostGcMB": 6.39,
-            "heapTotalMB": 11.6,
+            "rssPeakMB": 65.59,
+            "rssPostGcMB": 63.06,
+            "heapUsedPeakMB": 9.21,
+            "heapUsedPostGcMB": 6.41,
+            "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 9.67,
-            "percentNormalizedP95": 85.25,
-            "totalCpuMs": 212.57
+            "percentNormalizedP50": 10.19,
+            "percentNormalizedP95": 81.4,
+            "totalCpuMs": 213.85
           },
           "eventLoopDelayMs": {
-            "p50": 20.38,
-            "p95": 20.91,
-            "max": 20.91
+            "p50": 20.79,
+            "p95": 21.91,
+            "max": 21.91
           },
           "network": {
-            "rxKB": 260.41,
-            "txKB": 3203.56,
-            "httpRequestsTotal": 93
+            "rxKB": 257.44,
+            "txKB": 3167.92,
+            "httpRequestsTotal": 92
           },
           "queues": {
             "peakTaskQueue": 4,
-            "peakEventQueue": 44,
+            "peakEventQueue": 42,
             "peakAiQueue": 4
           },
           "timers": {
@@ -289,8 +289,8 @@
             "domainBusListeners": 20
           },
           "caches": {
-            "entries": 77,
-            "bytesKB": 234.4
+            "entries": 75,
+            "bytesKB": 231.42
           },
           "ai": {
             "totalRequests": 20,
@@ -302,18 +302,18 @@
           },
           "dashboard": {
             "activeClients": 3,
-            "rawEventsIngested": 49,
-            "framesSerialized": 147,
-            "serializedKB": 711.34
+            "rawEventsIngested": 48,
+            "framesSerialized": 144,
+            "serializedKB": 702.24
           },
           "db": {
-            "commits": 37,
+            "commits": 36,
             "latencyMs": {
-              "min": 0.045539999999959946,
-              "p50": 0.13546700000000556,
-              "p95": 0.44910200000001055,
-              "p99": 0.7311130000000503,
-              "max": 0.7311130000000503
+              "min": 0.045537999999964995,
+              "p50": 0.1742100000000164,
+              "p95": 0.6062919999999963,
+              "p99": 0.7256989999999632,
+              "max": 0.7256989999999632
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -322,18 +322,18 @@
             }
           },
           "logs": {
-            "diskKB": 48.28
+            "diskKB": 45.35
           }
         },
         "distributedWorkers": {
           "workerProcessCount": 1,
           "totalBotsHosted": 1,
-          "sumWorkerRssPeakMB": 73.42,
-          "avgPerWorkerRssPeakMB": 73.42,
-          "sumWorkerHeapPostGcMB": 5.62,
-          "sumWorkerCpuMs": 364.96,
-          "maxWorkerEventLoopP95Ms": 14.16,
-          "sumWorkerTxKB": 243.08,
+          "sumWorkerRssPeakMB": 74.79,
+          "avgPerWorkerRssPeakMB": 74.79,
+          "sumWorkerHeapPostGcMB": 5.64,
+          "sumWorkerCpuMs": 368.24,
+          "maxWorkerEventLoopP95Ms": 11.62,
+          "sumWorkerTxKB": 240.11,
           "pathfindingRequested": 24,
           "pathfindingExecuted": 24,
           "voxelsVisitedTotal": 1325592,
@@ -343,14 +343,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 1,
-              "rssPeakMB": 73.42,
-              "rssPostGcMB": 67,
-              "heapPeakMB": 8.05,
-              "heapPostGcMB": 5.62,
-              "cpuTotalMs": 364.96,
-              "eventLoopP95Ms": 14.16,
-              "txKB": 243.08,
-              "rxKB": 3.86,
+              "rssPeakMB": 74.79,
+              "rssPostGcMB": 70.86,
+              "heapPeakMB": 8.04,
+              "heapPostGcMB": 5.64,
+              "cpuTotalMs": 368.24,
+              "eventLoopP95Ms": 11.62,
+              "txKB": 240.11,
+              "rxKB": 3.71,
               "pathfinding": {
                 "requested": 24,
                 "executed": 24,
@@ -375,9 +375,9 @@
         "workerTopology": [
           1
         ],
-        "durationMs": 457.5,
+        "durationMs": 460.3,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 4,
+        "sseClientRxKB": 3.65,
         "ollamaRemoteServer": {
           "totalCalls": 1,
           "peakConcurrent": 1,
@@ -389,26 +389,26 @@
           "expectedBots": 1,
           "registeredBots": 1,
           "memory": {
-            "rssPeakMB": 61.46,
-            "rssPostGcMB": 61.43,
-            "heapUsedPeakMB": 7.66,
-            "heapUsedPostGcMB": 6.14,
-            "heapTotalMB": 10.85,
+            "rssPeakMB": 63.08,
+            "rssPostGcMB": 63.08,
+            "heapUsedPeakMB": 7.67,
+            "heapUsedPostGcMB": 6.19,
+            "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 11.16,
-            "percentNormalizedP95": 84.98,
-            "totalCpuMs": 171.13
+            "percentNormalizedP50": 11.69,
+            "percentNormalizedP95": 79.34,
+            "totalCpuMs": 172.08
           },
           "eventLoopDelayMs": {
             "p50": 20.61,
-            "p95": 23.9,
-            "max": 23.9
+            "p95": 20.76,
+            "max": 20.76
           },
           "network": {
             "rxKB": 19.37,
-            "txKB": 19.32,
+            "txKB": 19.81,
             "httpRequestsTotal": 100
           },
           "queues": {
@@ -470,11 +470,11 @@
           "db": {
             "commits": 44,
             "latencyMs": {
-              "min": 0.029869999999988295,
-              "p50": 0.10371500000002243,
-              "p95": 0.18363900000002786,
-              "p99": 0.2403500000000065,
-              "max": 0.2403500000000065
+              "min": 0.0393619999999828,
+              "p50": 0.10808299999996507,
+              "p95": 0.19806699999998045,
+              "p99": 0.26670400000000427,
+              "max": 0.26670400000000427
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -489,11 +489,11 @@
         "distributedWorkers": {
           "workerProcessCount": 1,
           "totalBotsHosted": 1,
-          "sumWorkerRssPeakMB": 59.27,
-          "avgPerWorkerRssPeakMB": 59.27,
-          "sumWorkerHeapPostGcMB": 5.74,
-          "sumWorkerCpuMs": 157.77,
-          "maxWorkerEventLoopP95Ms": 10.72,
+          "sumWorkerRssPeakMB": 58.54,
+          "avgPerWorkerRssPeakMB": 58.54,
+          "sumWorkerHeapPostGcMB": 5.76,
+          "sumWorkerCpuMs": 154.14,
+          "maxWorkerEventLoopP95Ms": 10.68,
           "sumWorkerTxKB": 17.43,
           "pathfindingRequested": 24,
           "pathfindingExecuted": 1,
@@ -504,14 +504,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 1,
-              "rssPeakMB": 59.27,
-              "rssPostGcMB": 59.14,
+              "rssPeakMB": 58.54,
+              "rssPostGcMB": 58.54,
               "heapPeakMB": 7.56,
-              "heapPostGcMB": 5.74,
-              "cpuTotalMs": 157.77,
-              "eventLoopP95Ms": 10.72,
+              "heapPostGcMB": 5.76,
+              "cpuTotalMs": 154.14,
+              "eventLoopP95Ms": 10.68,
               "txKB": 17.43,
-              "rxKB": 16.13,
+              "rxKB": 16.62,
               "pathfinding": {
                 "requested": 24,
                 "executed": 1,
@@ -543,13 +543,13 @@
         "workerTopology": [
           2
         ],
-        "durationMs": 716.5,
+        "durationMs": 710.3,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 1414.19,
+        "sseClientRxKB": 1397.41,
         "ollamaRemoteServer": {
           "totalCalls": 20,
           "peakConcurrent": 4,
-          "rxKB": 2699,
+          "rxKB": 2802.31,
           "txKB": 16.14
         },
         "masterController": {
@@ -557,31 +557,31 @@
           "expectedBots": 2,
           "registeredBots": 2,
           "memory": {
-            "rssPeakMB": 66.68,
-            "rssPostGcMB": 66.07,
-            "heapUsedPeakMB": 9.38,
-            "heapUsedPostGcMB": 6.74,
+            "rssPeakMB": 64.96,
+            "rssPostGcMB": 64.9,
+            "heapUsedPeakMB": 7.72,
+            "heapUsedPostGcMB": 6.76,
             "heapTotalMB": 15.85,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 9.49,
-            "percentNormalizedP95": 80.78,
-            "totalCpuMs": 220.45
+            "percentNormalizedP50": 9.44,
+            "percentNormalizedP95": 79.46,
+            "totalCpuMs": 214.08
           },
           "eventLoopDelayMs": {
-            "p50": 20.59,
-            "p95": 20.97,
-            "max": 20.97
+            "p50": 20.89,
+            "p95": 21.71,
+            "max": 21.71
           },
           "network": {
-            "rxKB": 499.88,
-            "txKB": 4122.4,
-            "httpRequestsTotal": 94
+            "rxKB": 494.25,
+            "txKB": 4208.91,
+            "httpRequestsTotal": 93
           },
           "queues": {
             "peakTaskQueue": 4,
-            "peakEventQueue": 76,
+            "peakEventQueue": 74,
             "peakAiQueue": 4
           },
           "timers": {
@@ -594,7 +594,7 @@
           },
           "caches": {
             "entries": 130,
-            "bytesKB": 466.54
+            "bytesKB": 460.95
           },
           "ai": {
             "totalRequests": 20,
@@ -608,16 +608,16 @@
             "activeClients": 3,
             "rawEventsIngested": 86,
             "framesSerialized": 258,
-            "serializedKB": 1414.15
+            "serializedKB": 1397.38
           },
           "db": {
-            "commits": 38,
+            "commits": 37,
             "latencyMs": {
-              "min": 0.045283000000040374,
-              "p50": 0.1317980000000034,
-              "p95": 0.5754410000000121,
-              "p99": 0.5825690000000066,
-              "max": 0.5825690000000066
+              "min": 0.05419800000004216,
+              "p50": 0.17600799999991068,
+              "p95": 0.583073000000013,
+              "p99": 0.6954749999999876,
+              "max": 0.6954749999999876
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -626,18 +626,18 @@
             }
           },
           "logs": {
-            "diskKB": 94.81
+            "diskKB": 89.22
           }
         },
         "distributedWorkers": {
           "workerProcessCount": 1,
           "totalBotsHosted": 2,
-          "sumWorkerRssPeakMB": 78.76,
-          "avgPerWorkerRssPeakMB": 78.76,
-          "sumWorkerHeapPostGcMB": 5.63,
-          "sumWorkerCpuMs": 470.88,
-          "maxWorkerEventLoopP95Ms": 22.25,
-          "sumWorkerTxKB": 482.55,
+          "sumWorkerRssPeakMB": 84.84,
+          "avgPerWorkerRssPeakMB": 84.84,
+          "sumWorkerHeapPostGcMB": 5.65,
+          "sumWorkerCpuMs": 496.61,
+          "maxWorkerEventLoopP95Ms": 18.96,
+          "sumWorkerTxKB": 476.92,
           "pathfindingRequested": 48,
           "pathfindingExecuted": 48,
           "voxelsVisitedTotal": 2651184,
@@ -647,14 +647,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 2,
-              "rssPeakMB": 78.76,
-              "rssPostGcMB": 76.64,
-              "heapPeakMB": 8.55,
-              "heapPostGcMB": 5.63,
-              "cpuTotalMs": 470.88,
-              "eventLoopP95Ms": 22.25,
-              "txKB": 482.55,
-              "rxKB": 6.4,
+              "rssPeakMB": 84.84,
+              "rssPostGcMB": 83.82,
+              "heapPeakMB": 9.73,
+              "heapPostGcMB": 5.65,
+              "cpuTotalMs": 496.61,
+              "eventLoopP95Ms": 18.96,
+              "txKB": 476.92,
+              "rxKB": 6.37,
               "pathfinding": {
                 "requested": 48,
                 "executed": 48,
@@ -679,7 +679,7 @@
         "workerTopology": [
           2
         ],
-        "durationMs": 469.7,
+        "durationMs": 470.8,
         "quotaInvariantPassed": true,
         "sseClientRxKB": 5.63,
         "ollamaRemoteServer": {
@@ -693,26 +693,26 @@
           "expectedBots": 2,
           "registeredBots": 2,
           "memory": {
-            "rssPeakMB": 63.13,
-            "rssPostGcMB": 63.08,
-            "heapUsedPeakMB": 7.58,
-            "heapUsedPostGcMB": 6.15,
+            "rssPeakMB": 63.09,
+            "rssPostGcMB": 63.06,
+            "heapUsedPeakMB": 7.67,
+            "heapUsedPostGcMB": 6.19,
             "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 11.14,
-            "percentNormalizedP95": 74.1,
-            "totalCpuMs": 172.7
+            "percentNormalizedP50": 11.23,
+            "percentNormalizedP95": 83.87,
+            "totalCpuMs": 179.29
           },
           "eventLoopDelayMs": {
-            "p50": 20.76,
-            "p95": 20.81,
-            "max": 20.81
+            "p50": 20.69,
+            "p95": 21.46,
+            "max": 21.46
           },
           "network": {
             "rxKB": 28.21,
-            "txKB": 19.94,
+            "txKB": 20.37,
             "httpRequestsTotal": 93
           },
           "queues": {
@@ -774,11 +774,11 @@
           "db": {
             "commits": 40,
             "latencyMs": {
-              "min": 0.03327200000001085,
-              "p50": 0.10717900000000213,
-              "p95": 0.24419699999998556,
-              "p99": 0.30789400000000455,
-              "max": 0.30789400000000455
+              "min": 0.02953500000000986,
+              "p50": 0.10126400000001468,
+              "p95": 0.18512299999997595,
+              "p99": 0.3331049999999891,
+              "max": 0.3331049999999891
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -793,11 +793,11 @@
         "distributedWorkers": {
           "workerProcessCount": 1,
           "totalBotsHosted": 2,
-          "sumWorkerRssPeakMB": 62.71,
-          "avgPerWorkerRssPeakMB": 62.71,
-          "sumWorkerHeapPostGcMB": 5.74,
-          "sumWorkerCpuMs": 177.16,
-          "maxWorkerEventLoopP95Ms": 10.87,
+          "sumWorkerRssPeakMB": 62.34,
+          "avgPerWorkerRssPeakMB": 62.34,
+          "sumWorkerHeapPostGcMB": 5.76,
+          "sumWorkerCpuMs": 171.33,
+          "maxWorkerEventLoopP95Ms": 10.74,
           "sumWorkerTxKB": 26.28,
           "pathfindingRequested": 48,
           "pathfindingExecuted": 2,
@@ -808,14 +808,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 2,
-              "rssPeakMB": 62.71,
-              "rssPostGcMB": 62.64,
-              "heapPeakMB": 7.57,
-              "heapPostGcMB": 5.74,
-              "cpuTotalMs": 177.16,
-              "eventLoopP95Ms": 10.87,
+              "rssPeakMB": 62.34,
+              "rssPostGcMB": 62.34,
+              "heapPeakMB": 7.59,
+              "heapPostGcMB": 5.76,
+              "cpuTotalMs": 171.33,
+              "eventLoopP95Ms": 10.74,
               "txKB": 26.28,
-              "rxKB": 16.75,
+              "rxKB": 17.18,
               "pathfinding": {
                 "requested": 48,
                 "executed": 2,
@@ -849,13 +849,13 @@
           3,
           2
         ],
-        "durationMs": 852.5,
+        "durationMs": 914,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 3607.9,
+        "sseClientRxKB": 3624.67,
         "ollamaRemoteServer": {
           "totalCalls": 20,
           "peakConcurrent": 4,
-          "rxKB": 3093.82,
+          "rxKB": 3138.41,
           "txKB": 16.14
         },
         "masterController": {
@@ -863,31 +863,31 @@
           "expectedBots": 5,
           "registeredBots": 5,
           "memory": {
-            "rssPeakMB": 71.51,
-            "rssPostGcMB": 71.43,
-            "heapUsedPeakMB": 10.13,
-            "heapUsedPostGcMB": 7.9,
+            "rssPeakMB": 72.47,
+            "rssPostGcMB": 72.47,
+            "heapUsedPeakMB": 10.74,
+            "heapUsedPostGcMB": 7.96,
             "heapTotalMB": 16.85,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 14.26,
-            "percentNormalizedP95": 82.4,
-            "totalCpuMs": 290.19
+            "percentNormalizedP50": 12.87,
+            "percentNormalizedP95": 85.58,
+            "totalCpuMs": 287.21
           },
           "eventLoopDelayMs": {
-            "p50": 21.07,
-            "p95": 21.61,
-            "max": 21.61
+            "p50": 21.51,
+            "p95": 23.97,
+            "max": 23.97
           },
           "network": {
-            "rxKB": 1247.32,
-            "txKB": 6720.16,
+            "rxKB": 1252.91,
+            "txKB": 6781.52,
             "httpRequestsTotal": 167
           },
           "queues": {
             "peakTaskQueue": 4,
-            "peakEventQueue": 194,
+            "peakEventQueue": 201,
             "peakAiQueue": 4
           },
           "timers": {
@@ -900,7 +900,7 @@
           },
           "caches": {
             "entries": 322,
-            "bytesKB": 1190.99
+            "bytesKB": 1196.58
           },
           "ai": {
             "totalRequests": 20,
@@ -911,19 +911,19 @@
             "fallbacksUsed": 0
           },
           "dashboard": {
-            "activeClients": 3,
+            "activeClients": 2,
             "rawEventsIngested": 211,
             "framesSerialized": 633,
-            "serializedKB": 3607.86
+            "serializedKB": 3624.63
           },
           "db": {
             "commits": 58,
             "latencyMs": {
-              "min": 0.0505039999999326,
-              "p50": 0.35508200000003853,
-              "p95": 0.5563449999999932,
-              "p99": 0.7526050000000168,
-              "max": 0.7526050000000168
+              "min": 0.05371300000001611,
+              "p50": 0.3150590000000193,
+              "p95": 0.5183580000000347,
+              "p99": 1.387299999999982,
+              "max": 1.387299999999982
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -932,18 +932,18 @@
             }
           },
           "logs": {
-            "diskKB": 261.58
+            "diskKB": 267.17
           }
         },
         "distributedWorkers": {
           "workerProcessCount": 2,
           "totalBotsHosted": 5,
-          "sumWorkerRssPeakMB": 163.46,
-          "avgPerWorkerRssPeakMB": 81.73,
-          "sumWorkerHeapPostGcMB": 11.27,
-          "sumWorkerCpuMs": 993.42,
-          "maxWorkerEventLoopP95Ms": 32.78,
-          "sumWorkerTxKB": 1230,
+          "sumWorkerRssPeakMB": 174.82,
+          "avgPerWorkerRssPeakMB": 87.41,
+          "sumWorkerHeapPostGcMB": 11.32,
+          "sumWorkerCpuMs": 1114.41,
+          "maxWorkerEventLoopP95Ms": 32.9,
+          "sumWorkerTxKB": 1235.59,
           "pathfindingRequested": 120,
           "pathfindingExecuted": 120,
           "voxelsVisitedTotal": 6627960,
@@ -953,14 +953,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 3,
-              "rssPeakMB": 85.37,
-              "rssPostGcMB": 83.72,
-              "heapPeakMB": 8.84,
-              "heapPostGcMB": 5.64,
-              "cpuTotalMs": 515.72,
-              "eventLoopP95Ms": 32.78,
-              "txKB": 736.21,
-              "rxKB": 9.04,
+              "rssPeakMB": 91.7,
+              "rssPostGcMB": 90.36,
+              "heapPeakMB": 10.32,
+              "heapPostGcMB": 5.67,
+              "cpuTotalMs": 646.71,
+              "eventLoopP95Ms": 32.9,
+              "txKB": 745.08,
+              "rxKB": 9.47,
               "pathfinding": {
                 "requested": 72,
                 "executed": 72,
@@ -978,14 +978,14 @@
             {
               "workerId": "worker-host-2",
               "botCount": 2,
-              "rssPeakMB": 78.09,
-              "rssPostGcMB": 73.56,
-              "heapPeakMB": 10.11,
-              "heapPostGcMB": 5.63,
-              "cpuTotalMs": 477.7,
-              "eventLoopP95Ms": 24.77,
-              "txKB": 493.79,
-              "rxKB": 7.21,
+              "rssPeakMB": 83.12,
+              "rssPostGcMB": 80.01,
+              "heapPeakMB": 8.59,
+              "heapPostGcMB": 5.65,
+              "cpuTotalMs": 467.7,
+              "eventLoopP95Ms": 23.2,
+              "txKB": 490.51,
+              "rxKB": 6.78,
               "pathfinding": {
                 "requested": 48,
                 "executed": 48,
@@ -1011,7 +1011,7 @@
           3,
           2
         ],
-        "durationMs": 506.4,
+        "durationMs": 522.3,
         "quotaInvariantPassed": true,
         "sseClientRxKB": 5.31,
         "ollamaRemoteServer": {
@@ -1025,26 +1025,26 @@
           "expectedBots": 5,
           "registeredBots": 5,
           "memory": {
-            "rssPeakMB": 63.83,
-            "rssPostGcMB": 63.77,
-            "heapUsedPeakMB": 6.74,
-            "heapUsedPostGcMB": 6.2,
+            "rssPeakMB": 63.88,
+            "rssPostGcMB": 63.88,
+            "heapUsedPeakMB": 6.83,
+            "heapUsedPostGcMB": 6.25,
             "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 12.81,
-            "percentNormalizedP95": 86.22,
-            "totalCpuMs": 191.11
+            "percentNormalizedP50": 14.65,
+            "percentNormalizedP95": 83.62,
+            "totalCpuMs": 210.91
           },
           "eventLoopDelayMs": {
-            "p50": 21.89,
-            "p95": 22.3,
-            "max": 22.3
+            "p50": 20.92,
+            "p95": 21.87,
+            "max": 21.87
           },
           "network": {
             "rxKB": 63.19,
-            "txKB": 37.64,
+            "txKB": 38.46,
             "httpRequestsTotal": 159
           },
           "queues": {
@@ -1098,19 +1098,19 @@
             }
           },
           "dashboard": {
-            "activeClients": 3,
+            "activeClients": 0,
             "rawEventsIngested": 185,
-            "framesSerialized": 2,
-            "serializedKB": 3.52
+            "framesSerialized": 1,
+            "serializedKB": 1.76
           },
           "db": {
             "commits": 58,
             "latencyMs": {
-              "min": 0.04266300000000456,
-              "p50": 0.09620200000000523,
-              "p95": 0.19154500000001917,
-              "p99": 0.34954000000001884,
-              "max": 0.34954000000001884
+              "min": 0.029927000000014914,
+              "p50": 0.12347799999997733,
+              "p95": 0.30368500000000154,
+              "p99": 0.8603530000000035,
+              "max": 0.8603530000000035
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -1125,11 +1125,11 @@
         "distributedWorkers": {
           "workerProcessCount": 2,
           "totalBotsHosted": 5,
-          "sumWorkerRssPeakMB": 125.74,
-          "avgPerWorkerRssPeakMB": 62.87,
-          "sumWorkerHeapPostGcMB": 11.51,
-          "sumWorkerCpuMs": 332.58,
-          "maxWorkerEventLoopP95Ms": 12.17,
+          "sumWorkerRssPeakMB": 124.56,
+          "avgPerWorkerRssPeakMB": 62.28,
+          "sumWorkerHeapPostGcMB": 11.53,
+          "sumWorkerCpuMs": 364.07,
+          "maxWorkerEventLoopP95Ms": 14.88,
           "sumWorkerTxKB": 61.26,
           "pathfindingRequested": 120,
           "pathfindingExecuted": 5,
@@ -1140,14 +1140,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 3,
-              "rssPeakMB": 62.88,
-              "rssPostGcMB": 62.88,
-              "heapPeakMB": 7.53,
-              "heapPostGcMB": 5.75,
-              "cpuTotalMs": 171.73,
-              "eventLoopP95Ms": 12.17,
+              "rssPeakMB": 62.31,
+              "rssPostGcMB": 62.18,
+              "heapPeakMB": 7.6,
+              "heapPostGcMB": 5.77,
+              "cpuTotalMs": 187.74,
+              "eventLoopP95Ms": 10.96,
               "txKB": 37.94,
-              "rxKB": 19.01,
+              "rxKB": 19.44,
               "pathfinding": {
                 "requested": 72,
                 "executed": 3,
@@ -1165,14 +1165,14 @@
             {
               "workerId": "worker-host-2",
               "botCount": 2,
-              "rssPeakMB": 62.86,
-              "rssPostGcMB": 62.86,
-              "heapPeakMB": 7.56,
+              "rssPeakMB": 62.25,
+              "rssPostGcMB": 61.7,
+              "heapPeakMB": 7.62,
               "heapPostGcMB": 5.76,
-              "cpuTotalMs": 160.85,
-              "eventLoopP95Ms": 11.08,
+              "cpuTotalMs": 176.33,
+              "eventLoopP95Ms": 14.88,
               "txKB": 23.32,
-              "rxKB": 15.31,
+              "rxKB": 15.7,
               "pathfinding": {
                 "requested": 48,
                 "executed": 2,
@@ -1206,13 +1206,13 @@
           5,
           5
         ],
-        "durationMs": 1067.4,
+        "durationMs": 956.7,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 7194.62,
+        "sseClientRxKB": 7194.57,
         "ollamaRemoteServer": {
           "totalCalls": 20,
           "peakConcurrent": 4,
-          "rxKB": 3040.25,
+          "rxKB": 3128.9,
           "txKB": 16.14
         },
         "masterController": {
@@ -1222,24 +1222,24 @@
           "memory": {
             "rssPeakMB": 74.45,
             "rssPostGcMB": 74.45,
-            "heapUsedPeakMB": 12.04,
-            "heapUsedPostGcMB": 9.69,
-            "heapTotalMB": 26.35,
+            "heapUsedPeakMB": 11.82,
+            "heapUsedPostGcMB": 9.72,
+            "heapTotalMB": 26.6,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 13.67,
-            "percentNormalizedP95": 86.14,
-            "totalCpuMs": 356.42
+            "percentNormalizedP50": 12.16,
+            "percentNormalizedP95": 77.2,
+            "totalCpuMs": 354.86
           },
           "eventLoopDelayMs": {
-            "p50": 21.09,
-            "p95": 22.27,
-            "max": 22.27
+            "p50": 21.56,
+            "p95": 35.23,
+            "max": 35.23
           },
           "network": {
-            "rxKB": 2466.63,
-            "txKB": 10264,
+            "rxKB": 2466.62,
+            "txKB": 10352.59,
             "httpRequestsTotal": 166
           },
           "queues": {
@@ -1256,8 +1256,8 @@
             "domainBusListeners": 20
           },
           "caches": {
-            "entries": 642,
-            "bytesKB": 2375.79
+            "entries": 632,
+            "bytesKB": 2375.21
           },
           "ai": {
             "totalRequests": 20,
@@ -1271,16 +1271,16 @@
             "activeClients": 3,
             "rawEventsIngested": 416,
             "framesSerialized": 1248,
-            "serializedKB": 7194.58
+            "serializedKB": 7194.54
           },
           "db": {
             "commits": 57,
             "latencyMs": {
-              "min": 0.047820999999999,
-              "p50": 0.5897830000000113,
-              "p95": 1.0284900000000334,
-              "p99": 1.3341259999999693,
-              "max": 1.3341259999999693
+              "min": 0.05027699999993729,
+              "p50": 0.556438000000071,
+              "p95": 0.9040969999999788,
+              "p99": 12.552162000000067,
+              "max": 12.552162000000067
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -1289,18 +1289,18 @@
             }
           },
           "logs": {
-            "diskKB": 516.46
+            "diskKB": 516.47
           }
         },
         "distributedWorkers": {
           "workerProcessCount": 2,
           "totalBotsHosted": 10,
-          "sumWorkerRssPeakMB": 178,
-          "avgPerWorkerRssPeakMB": 89,
-          "sumWorkerHeapPostGcMB": 11.34,
-          "sumWorkerCpuMs": 1350.85,
-          "maxWorkerEventLoopP95Ms": 47.28,
-          "sumWorkerTxKB": 2449.31,
+          "sumWorkerRssPeakMB": 178.89,
+          "avgPerWorkerRssPeakMB": 89.44,
+          "sumWorkerHeapPostGcMB": 11.38,
+          "sumWorkerCpuMs": 1152.92,
+          "maxWorkerEventLoopP95Ms": 46.56,
+          "sumWorkerTxKB": 2449.29,
           "pathfindingRequested": 240,
           "pathfindingExecuted": 240,
           "voxelsVisitedTotal": 13255920,
@@ -1310,14 +1310,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 5,
-              "rssPeakMB": 88.44,
-              "rssPostGcMB": 84.92,
-              "heapPeakMB": 11.15,
-              "heapPostGcMB": 5.67,
-              "cpuTotalMs": 639.38,
-              "eventLoopP95Ms": 47.28,
-              "txKB": 1233.51,
-              "rxKB": 13.88,
+              "rssPeakMB": 87.98,
+              "rssPostGcMB": 85.59,
+              "heapPeakMB": 11.22,
+              "heapPostGcMB": 5.69,
+              "cpuTotalMs": 571.5,
+              "eventLoopP95Ms": 46.56,
+              "txKB": 1215.79,
+              "rxKB": 13.04,
               "pathfinding": {
                 "requested": 120,
                 "executed": 120,
@@ -1335,14 +1335,14 @@
             {
               "workerId": "worker-host-2",
               "botCount": 5,
-              "rssPeakMB": 89.56,
-              "rssPostGcMB": 87.1,
-              "heapPeakMB": 11.22,
-              "heapPostGcMB": 5.67,
-              "cpuTotalMs": 711.47,
-              "eventLoopP95Ms": 45.29,
-              "txKB": 1215.8,
-              "rxKB": 13.04,
+              "rssPeakMB": 90.91,
+              "rssPostGcMB": 89.64,
+              "heapPeakMB": 11.24,
+              "heapPostGcMB": 5.69,
+              "cpuTotalMs": 581.42,
+              "eventLoopP95Ms": 44.73,
+              "txKB": 1233.5,
+              "rxKB": 13.87,
               "pathfinding": {
                 "requested": 120,
                 "executed": 120,
@@ -1368,9 +1368,9 @@
           5,
           5
         ],
-        "durationMs": 536.1,
+        "durationMs": 558.3,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 5.83,
+        "sseClientRxKB": 6.18,
         "ollamaRemoteServer": {
           "totalCalls": 1,
           "peakConcurrent": 1,
@@ -1382,27 +1382,27 @@
           "expectedBots": 10,
           "registeredBots": 10,
           "memory": {
-            "rssPeakMB": 63.66,
-            "rssPostGcMB": 63.64,
-            "heapUsedPeakMB": 7.05,
-            "heapUsedPostGcMB": 6.22,
-            "heapTotalMB": 11.35,
+            "rssPeakMB": 64.05,
+            "rssPostGcMB": 64,
+            "heapUsedPeakMB": 7.13,
+            "heapUsedPostGcMB": 6.27,
+            "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 11.92,
-            "percentNormalizedP95": 79.85,
-            "totalCpuMs": 195.19
+            "percentNormalizedP50": 11.9,
+            "percentNormalizedP95": 82.81,
+            "totalCpuMs": 201.35
           },
           "eventLoopDelayMs": {
-            "p50": 21.76,
-            "p95": 22.4,
-            "max": 22.4
+            "p50": 20.45,
+            "p95": 21.58,
+            "max": 21.58
           },
           "network": {
-            "rxKB": 116.94,
-            "txKB": 47.89,
-            "httpRequestsTotal": 157
+            "rxKB": 119.29,
+            "txKB": 49.21,
+            "httpRequestsTotal": 158
           },
           "queues": {
             "peakTaskQueue": 4,
@@ -1456,18 +1456,18 @@
           },
           "dashboard": {
             "activeClients": 3,
-            "rawEventsIngested": 357,
+            "rawEventsIngested": 362,
             "framesSerialized": 2,
-            "serializedKB": 4.33
+            "serializedKB": 4.45
           },
           "db": {
             "commits": 57,
             "latencyMs": {
-              "min": 0.044586999999978616,
-              "p50": 0.1267609999999877,
-              "p95": 0.20281700000003866,
-              "p99": 0.49706199999999967,
-              "max": 0.49706199999999967
+              "min": 0.032619000000011056,
+              "p50": 0.13803000000001475,
+              "p95": 0.21020400000003292,
+              "p99": 0.396585999999985,
+              "max": 0.396585999999985
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -1482,12 +1482,12 @@
         "distributedWorkers": {
           "workerProcessCount": 2,
           "totalBotsHosted": 10,
-          "sumWorkerRssPeakMB": 128.76,
-          "avgPerWorkerRssPeakMB": 64.38,
-          "sumWorkerHeapPostGcMB": 11.52,
-          "sumWorkerCpuMs": 396.67,
-          "maxWorkerEventLoopP95Ms": 11.56,
-          "sumWorkerTxKB": 115,
+          "sumWorkerRssPeakMB": 128.94,
+          "avgPerWorkerRssPeakMB": 64.47,
+          "sumWorkerHeapPostGcMB": 11.57,
+          "sumWorkerCpuMs": 429.73,
+          "maxWorkerEventLoopP95Ms": 20.84,
+          "sumWorkerTxKB": 117.36,
           "pathfindingRequested": 240,
           "pathfindingExecuted": 10,
           "voxelsVisitedTotal": 1056480,
@@ -1497,14 +1497,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 5,
-              "rssPeakMB": 64.74,
-              "rssPostGcMB": 64.61,
-              "heapPeakMB": 7.59,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 194.67,
-              "eventLoopP95Ms": 11.56,
+              "rssPeakMB": 64.71,
+              "rssPostGcMB": 64.71,
+              "heapPeakMB": 7.57,
+              "heapPostGcMB": 5.79,
+              "cpuTotalMs": 203.39,
+              "eventLoopP95Ms": 12.89,
               "txKB": 60.64,
-              "rxKB": 23.45,
+              "rxKB": 23.88,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,
@@ -1522,14 +1522,14 @@
             {
               "workerId": "worker-host-2",
               "botCount": 5,
-              "rssPeakMB": 64.02,
-              "rssPostGcMB": 64.02,
-              "heapPeakMB": 7.77,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 202,
-              "eventLoopP95Ms": 10.86,
-              "txKB": 54.36,
-              "rxKB": 21.1,
+              "rssPeakMB": 64.23,
+              "rssPostGcMB": 64.23,
+              "heapPeakMB": 7.59,
+              "heapPostGcMB": 5.78,
+              "cpuTotalMs": 226.34,
+              "eventLoopP95Ms": 20.84,
+              "txKB": 56.72,
+              "rxKB": 21.99,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,
@@ -1567,13 +1567,13 @@
           5,
           5
         ],
-        "durationMs": 1853.1,
+        "durationMs": 1841.9,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 14059.92,
+        "sseClientRxKB": 14059.9,
         "ollamaRemoteServer": {
           "totalCalls": 20,
           "peakConcurrent": 3,
-          "rxKB": 3172.81,
+          "rxKB": 3471.58,
           "txKB": 16.14
         },
         "masterController": {
@@ -1581,32 +1581,32 @@
           "expectedBots": 20,
           "registeredBots": 20,
           "memory": {
-            "rssPeakMB": 84.8,
-            "rssPostGcMB": 84.8,
-            "heapUsedPeakMB": 14.58,
-            "heapUsedPostGcMB": 13.15,
-            "heapTotalMB": 46.1,
+            "rssPeakMB": 84.48,
+            "rssPostGcMB": 84.48,
+            "heapUsedPeakMB": 15.71,
+            "heapUsedPostGcMB": 13.18,
+            "heapTotalMB": 29.85,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 9.84,
-            "percentNormalizedP95": 83.43,
-            "totalCpuMs": 501.57
+            "percentNormalizedP50": 11.31,
+            "percentNormalizedP95": 84,
+            "totalCpuMs": 498.38
           },
           "eventLoopDelayMs": {
-            "p50": 23.61,
-            "p95": 38.17,
-            "max": 38.17
+            "p50": 25.44,
+            "p95": 34.5,
+            "max": 34.5
           },
           "network": {
             "rxKB": 4809.49,
-            "txKB": 17284.03,
+            "txKB": 17582.78,
             "httpRequestsTotal": 300
           },
           "queues": {
-            "peakTaskQueue": 3,
-            "peakEventQueue": 792,
-            "peakAiQueue": 3
+            "peakTaskQueue": 4,
+            "peakEventQueue": 801,
+            "peakAiQueue": 4
           },
           "timers": {
             "activeRuntimeTimers": 20,
@@ -1617,8 +1617,8 @@
             "domainBusListeners": 20
           },
           "caches": {
-            "entries": 1297,
-            "bytesKB": 4648.4
+            "entries": 1302,
+            "bytesKB": 4648.67
           },
           "ai": {
             "totalRequests": 20,
@@ -1632,16 +1632,16 @@
             "activeClients": 3,
             "rawEventsIngested": 796,
             "framesSerialized": 2388,
-            "serializedKB": 14059.88
+            "serializedKB": 14059.86
           },
           "db": {
             "commits": 85,
             "latencyMs": {
-              "min": 0.04895700000002989,
-              "p50": 0.6051459999999906,
-              "p95": 1.252666999999974,
-              "p99": 9.32376499999998,
-              "max": 9.32376499999998
+              "min": 0.04856199999994715,
+              "p50": 0.5761239999999361,
+              "p95": 0.8953690000000734,
+              "p99": 1.2260619999999562,
+              "max": 1.2260619999999562
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -1650,17 +1650,17 @@
             }
           },
           "logs": {
-            "diskKB": 927.03
+            "diskKB": 927.04
           }
         },
         "distributedWorkers": {
           "workerProcessCount": 4,
           "totalBotsHosted": 20,
-          "sumWorkerRssPeakMB": 380.54,
-          "avgPerWorkerRssPeakMB": 95.13,
-          "sumWorkerHeapPostGcMB": 22.7,
-          "sumWorkerCpuMs": 2859.97,
-          "maxWorkerEventLoopP95Ms": 86.7,
+          "sumWorkerRssPeakMB": 375.67,
+          "avgPerWorkerRssPeakMB": 93.92,
+          "sumWorkerHeapPostGcMB": 22.79,
+          "sumWorkerCpuMs": 2831.31,
+          "maxWorkerEventLoopP95Ms": 93.78,
           "sumWorkerTxKB": 4792.16,
           "pathfindingRequested": 480,
           "pathfindingExecuted": 480,
@@ -1671,14 +1671,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 5,
-              "rssPeakMB": 98.05,
-              "rssPostGcMB": 93.53,
-              "heapPeakMB": 11.38,
-              "heapPostGcMB": 5.67,
-              "cpuTotalMs": 691.86,
-              "eventLoopP95Ms": 77.99,
-              "txKB": 1215.66,
-              "rxKB": 12.98,
+              "rssPeakMB": 92.23,
+              "rssPostGcMB": 92.23,
+              "heapPeakMB": 11.09,
+              "heapPostGcMB": 5.69,
+              "cpuTotalMs": 699.52,
+              "eventLoopP95Ms": 86.9,
+              "txKB": 1171.57,
+              "rxKB": 11.02,
               "pathfinding": {
                 "requested": 120,
                 "executed": 120,
@@ -1696,12 +1696,12 @@
             {
               "workerId": "worker-host-2",
               "botCount": 5,
-              "rssPeakMB": 89.4,
-              "rssPostGcMB": 83.23,
-              "heapPeakMB": 11.02,
-              "heapPostGcMB": 5.67,
-              "cpuTotalMs": 650.18,
-              "eventLoopP95Ms": 78.18,
+              "rssPeakMB": 92.89,
+              "rssPostGcMB": 90.29,
+              "heapPeakMB": 11.64,
+              "heapPostGcMB": 5.7,
+              "cpuTotalMs": 687.07,
+              "eventLoopP95Ms": 89.92,
               "txKB": 1171.57,
               "rxKB": 11.02,
               "pathfinding": {
@@ -1721,12 +1721,12 @@
             {
               "workerId": "worker-host-3",
               "botCount": 5,
-              "rssPeakMB": 93.56,
-              "rssPostGcMB": 89.88,
-              "heapPeakMB": 11.34,
-              "heapPostGcMB": 5.68,
-              "cpuTotalMs": 707.44,
-              "eventLoopP95Ms": 68.22,
+              "rssPeakMB": 95.35,
+              "rssPostGcMB": 86.11,
+              "heapPeakMB": 11.35,
+              "heapPostGcMB": 5.7,
+              "cpuTotalMs": 688.28,
+              "eventLoopP95Ms": 93.78,
               "txKB": 1233.36,
               "rxKB": 13.81,
               "pathfinding": {
@@ -1746,14 +1746,14 @@
             {
               "workerId": "worker-host-4",
               "botCount": 5,
-              "rssPeakMB": 99.53,
-              "rssPostGcMB": 93.18,
-              "heapPeakMB": 11.08,
-              "heapPostGcMB": 5.68,
-              "cpuTotalMs": 810.49,
-              "eventLoopP95Ms": 86.7,
-              "txKB": 1171.57,
-              "rxKB": 11.02,
+              "rssPeakMB": 95.2,
+              "rssPostGcMB": 95.2,
+              "heapPeakMB": 11.4,
+              "heapPostGcMB": 5.7,
+              "cpuTotalMs": 756.44,
+              "eventLoopP95Ms": 81,
+              "txKB": 1215.66,
+              "rxKB": 12.98,
               "pathfinding": {
                 "requested": 120,
                 "executed": 120,
@@ -1781,9 +1781,9 @@
           5,
           5
         ],
-        "durationMs": 719.8,
+        "durationMs": 743.8,
         "quotaInvariantPassed": true,
-        "sseClientRxKB": 12.06,
+        "sseClientRxKB": 13.16,
         "ollamaRemoteServer": {
           "totalCalls": 1,
           "peakConcurrent": 1,
@@ -1795,26 +1795,26 @@
           "expectedBots": 20,
           "registeredBots": 20,
           "memory": {
-            "rssPeakMB": 64.05,
-            "rssPostGcMB": 64.05,
-            "heapUsedPeakMB": 8.19,
-            "heapUsedPostGcMB": 6.32,
-            "heapTotalMB": 11.35,
+            "rssPeakMB": 62.89,
+            "rssPostGcMB": 62.89,
+            "heapUsedPeakMB": 8.22,
+            "heapUsedPostGcMB": 6.36,
+            "heapTotalMB": 11.1,
             "externalMB": 2.06
           },
           "cpu": {
-            "percentNormalizedP50": 18.52,
-            "percentNormalizedP95": 79.28,
-            "totalCpuMs": 243.78
+            "percentNormalizedP50": 17.51,
+            "percentNormalizedP95": 52.1,
+            "totalCpuMs": 244.05
           },
           "eventLoopDelayMs": {
-            "p50": 21,
-            "p95": 25.28,
-            "max": 25.28
+            "p50": 20.33,
+            "p95": 35.32,
+            "max": 35.32
           },
           "network": {
-            "rxKB": 211,
-            "txKB": 85.16,
+            "rxKB": 211.01,
+            "txKB": 86.65,
             "httpRequestsTotal": 277
           },
           "queues": {
@@ -1870,17 +1870,17 @@
           "dashboard": {
             "activeClients": 3,
             "rawEventsIngested": 647,
-            "framesSerialized": 2,
-            "serializedKB": 5.76
+            "framesSerialized": 3,
+            "serializedKB": 6.65
           },
           "db": {
             "commits": 85,
             "latencyMs": {
-              "min": 0.03303900000003068,
-              "p50": 0.14022299999999177,
-              "p95": 0.2316280000000006,
-              "p99": 0.47632700000002615,
-              "max": 0.47632700000002615
+              "min": 0.03040600000002769,
+              "p50": 0.1355909999999767,
+              "p95": 0.2074000000000069,
+              "p99": 0.4694539999999847,
+              "max": 0.4694539999999847
             },
             "tasksSummary": {
               "totalTasks": 20,
@@ -1895,12 +1895,12 @@
         "distributedWorkers": {
           "workerProcessCount": 4,
           "totalBotsHosted": 20,
-          "sumWorkerRssPeakMB": 257.26,
-          "avgPerWorkerRssPeakMB": 64.31,
-          "sumWorkerHeapPostGcMB": 23.04,
-          "sumWorkerCpuMs": 808.21,
-          "maxWorkerEventLoopP95Ms": 54.82,
-          "sumWorkerTxKB": 209.07,
+          "sumWorkerRssPeakMB": 257.47,
+          "avgPerWorkerRssPeakMB": 64.37,
+          "sumWorkerHeapPostGcMB": 23.13,
+          "sumWorkerCpuMs": 828.49,
+          "maxWorkerEventLoopP95Ms": 16.15,
+          "sumWorkerTxKB": 209.08,
           "pathfindingRequested": 480,
           "pathfindingExecuted": 20,
           "voxelsVisitedTotal": 2112960,
@@ -1910,14 +1910,14 @@
             {
               "workerId": "worker-host-1",
               "botCount": 5,
-              "rssPeakMB": 64.38,
-              "rssPostGcMB": 64.38,
-              "heapPeakMB": 7.54,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 207.27,
-              "eventLoopP95Ms": 11.24,
-              "txKB": 47.12,
-              "rxKB": 18.57,
+              "rssPeakMB": 64.78,
+              "rssPostGcMB": 64.78,
+              "heapPeakMB": 7.6,
+              "heapPostGcMB": 5.78,
+              "cpuTotalMs": 214.39,
+              "eventLoopP95Ms": 13.9,
+              "txKB": 60.56,
+              "rxKB": 23.82,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,
@@ -1935,14 +1935,14 @@
             {
               "workerId": "worker-host-2",
               "botCount": 5,
-              "rssPeakMB": 63.8,
-              "rssPostGcMB": 63.8,
-              "heapPeakMB": 7.54,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 189.34,
-              "eventLoopP95Ms": 54.82,
-              "txKB": 44.77,
-              "rxKB": 18.06,
+              "rssPeakMB": 63.84,
+              "rssPostGcMB": 63.84,
+              "heapPeakMB": 7.59,
+              "heapPostGcMB": 5.79,
+              "cpuTotalMs": 201.73,
+              "eventLoopP95Ms": 13.72,
+              "txKB": 56.63,
+              "rxKB": 21.93,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,
@@ -1960,14 +1960,14 @@
             {
               "workerId": "worker-host-3",
               "botCount": 5,
-              "rssPeakMB": 64.19,
-              "rssPostGcMB": 64.07,
-              "heapPeakMB": 7.76,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 203.58,
-              "eventLoopP95Ms": 10.9,
-              "txKB": 56.63,
-              "rxKB": 21.54,
+              "rssPeakMB": 64.93,
+              "rssPostGcMB": 64.93,
+              "heapPeakMB": 7.57,
+              "heapPostGcMB": 5.78,
+              "cpuTotalMs": 210.81,
+              "eventLoopP95Ms": 13.52,
+              "txKB": 47.12,
+              "rxKB": 18.92,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,
@@ -1985,14 +1985,14 @@
             {
               "workerId": "worker-host-4",
               "botCount": 5,
-              "rssPeakMB": 64.89,
-              "rssPostGcMB": 64.89,
-              "heapPeakMB": 7.62,
-              "heapPostGcMB": 5.76,
-              "cpuTotalMs": 208.02,
-              "eventLoopP95Ms": 32.01,
-              "txKB": 60.55,
-              "rxKB": 23.39,
+              "rssPeakMB": 63.92,
+              "rssPostGcMB": 63.92,
+              "heapPeakMB": 7.6,
+              "heapPostGcMB": 5.78,
+              "cpuTotalMs": 201.56,
+              "eventLoopP95Ms": 16.15,
+              "txKB": 44.77,
+              "rxKB": 18.39,
               "pathfinding": {
                 "requested": 120,
                 "executed": 5,

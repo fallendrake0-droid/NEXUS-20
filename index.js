@@ -20,7 +20,12 @@ const { TaskManager } = require('./src/tasks/TaskManager');
 const { TaskScheduler } = require('./src/scheduler/TaskScheduler');
 const { splitQuota, partitionRegion } = require('./src/scheduler/quotaMath');
 const { Coordinator, authorizeRole } = require('./src/coordinator/Coordinator');
+const { WorldKnowledgeStore } = require('./src/knowledge/WorldKnowledgeStore');
+const { AuthService } = require('./src/security/AuthService');
+const { MasterHttpServer } = require('./src/interfaces/http/MasterHttpServer');
 const { createMaster } = require('./src/master/createMaster');
+const { WorkloadGovernor } = require('./src/monitoring/WorkloadGovernor');
+const { ResourceMonitor } = require('./src/monitoring/ResourceMonitor');
 const performance = require('./src/performance');
 
 async function runCliEntry(argv = process.argv.slice(2)) {
@@ -32,9 +37,10 @@ async function runCliEntry(argv = process.argv.slice(2)) {
   }
 
   const master = createMaster(config);
-  await master.start();
+  const isHealthProbeOnly = argv.includes('--health');
+  await master.start({ listenHttp: !isHealthProbeOnly });
 
-  if (argv.includes('--health')) {
+  if (isHealthProbeOnly) {
     const health = await master.health();
     process.stdout.write(`${JSON.stringify(health, null, 2)}\n`);
     await master.stop();
@@ -83,6 +89,11 @@ module.exports = {
   TaskScheduler,
   Coordinator,
   authorizeRole,
+  WorldKnowledgeStore,
+  AuthService,
+  MasterHttpServer,
+  WorkloadGovernor,
+  ResourceMonitor,
   splitQuota,
   partitionRegion,
   performance

@@ -20,7 +20,11 @@ Read the documents in this exact order before implementing modules:
 8. [TEST_PLAN.md](./docs/spec/TEST_PLAN.md) — unit, schema, integration, recovery, security and `--expose-gc` memory-leak test suites.
 9. [ACCEPTANCE_CRITERIA.md](./docs/spec/ACCEPTANCE_CRITERIA.md) — automated release gates (`G-01..G-18`), staged `0 -> 1 -> 2 -> 5 -> 10 -> 20` rollout and open decisions (`U-01..U-14`).
 
-## Current repository baseline
+## Current repository baseline (NEXUS-20 Phase 0 & Phase 1 Complete)
 
-- **Stage 0 implemented & verified:** low-memory runtime primitives (`src/performance/*`), `ResourceMonitor` and `WorkloadGovernor` (`src/monitoring/*`), bounded `EventBus` (`src/events/EventBus.js`), leak tests (`npm run test:leaks`), Termux readiness probe (`npm run check:termux`) and `0..20`-bot multi-process benchmark (`npm run bench`).
-- **Stage 1+ specified (not yet implemented):** `Coordinator`, `TaskManager`, `TaskScheduler`, `InventoryLedger`, `StateStore`, `WorkerHost`, `BotController`, `ReasoningEngine`, `DashboardServer` and `CLI`. Coding agents must reuse the Stage-0 primitives rather than duplicating them, and must respect all unresolved decisions (`U-01..U-14`) before claiming real-game compatibility.
+- **Stage 0 & Phase 1 Master Control Plane implemented & verified (`45/45` tests, `3/3` GC leak suites):**
+  - Low-memory runtime primitives (`src/performance/*`), `ResourceMonitor` and 5-profile `WorkloadGovernor` (`ULTRA_LOW`, `LOW`, `BALANCED`, `PERFORMANCE`, `MAXIMUM_THROUGHPUT`).
+  - Authoritative SQLite WAL `StateStore` (`18` tables), `InventoryLedger`, `BotRegistry`, single `TaskManager` (`finish_to_start` + `start_with` DAG, epoch fencing), `TaskScheduler` (`SYNCHRONIZED`, `DISTRIBUTED`, `HYBRID` modes + disjoint spatial sectors), and `Coordinator`.
+  - Pluggable AI Brain (`AiEfficiencyController`), bounded TTL `WorldKnowledgeStore` + chest mutex locks (`src/knowledge/WorldKnowledgeStore.js`), `AuthService` (`scrypt` concurrency-1 queue, `HttpOnly` sessions, CSRF, RBAC, rate limits), and zero-dependency `MasterHttpServer` + Vanilla JS NEXUS-20 Control Centre (`src/interfaces/http/MasterHttpServer.js`, `src/dashboard/public/*`).
+  - Architectural decisions & Phase 0 audit: [docs/DECISIONS.md](./docs/DECISIONS.md), [docs/NEXUS20_PHASE0_AUDIT.md](./docs/NEXUS20_PHASE0_AUDIT.md), [docs/CHANGELOG.md](./docs/CHANGELOG.md).
+- **Phase 2+ planned next (Live Minecraft Worker Tier):** `WorkerHost` client loop (`MasterClient`) and Mineflayer `BotRunner` + survival/navigation/mining/crafting/building/storage/exploration/combat skills (`mineflayer` & `mineflayer-pathfinder` isolated strictly to the Worker tier). Coding agents must reuse existing primitives without duplicating them and respect open decisions (`U-01..U-14`).

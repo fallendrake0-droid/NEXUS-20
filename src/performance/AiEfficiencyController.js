@@ -881,6 +881,20 @@ class AiEfficiencyController {
       typeof options.transportOverride === 'function' ? options.transportOverride : null;
     this._now = options.now || Date.now;
 
+    /** @type {Map<string, { name: string, invoke: Function, isAvailable: () => boolean }>} */
+    this._providers = new Map();
+    this.registerProvider('ollama', {
+      isAvailable: () => Boolean(this._endpoint || this._transportOverride),
+      invoke: ({ body, requestBytes, signal }) =>
+        this._transportOverride
+          ? this._transportOverride({ body, requestBytes, signal })
+          : this._httpPostOllama(requestBytes, signal)
+    });
+    this._activeProvider = String(options.provider || 'ollama').trim().toLowerCase();
+    if (!this._providers.has(this._activeProvider)) {
+      this._activeProvider = 'ollama';
+    }
+
     this._planCache = new BoundedCache({
       name: 'ai-plan-cache',
       maxEntries: options.cacheMaxEntries || 128,
@@ -927,6 +941,48 @@ class AiEfficiencyController {
 
   get cache() {
     return this._planCache;
+  }
+
+  get activeProvider() {
+    return this._activeProvider;
+  }
+
+  /**
+   * Register a pluggable AI inference provider (`ADR-006`).
+   * Every provider goes through identical compaction, concurrency caps, schema validation and fallback.
+   */
+  registerProvider(name, adapter) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) throw new TypeError('Provider name must be non-empty');
+    const invoke = typeof adapter === 'function' ? adapter : adapter?.invoke;
+    if (typeof invoke !== 'function') {
+      throw new TypeError(`Provider "${key}" must provide an invoke({ body, requestBytes, signal }) function`);
+    }
+    const isAvailable =
+      typeof adapter?.isAvailable === 'function' ? adapter.isAvailable : () => true;
+    this._providers.set(key, { name: key, invoke, isAvailable });
+    return this;
+  }
+
+  setProvider(name) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!this._providers.has(key)) {
+      throw new RangeError(`AI provider "${key}" is not registered`);
+    }
+    this._activeProvider = key;
+    return this._activeProvider;
+  }
+
+  listProviders() {
+    const out = [];
+    for (const [name, p] of this._providers.entries()) {
+      out.push({
+        name,
+        active: name === this._activeProvider,
+        available: Boolean(p.isAvailable())
+      });
+    }
+    return out;
   }
 
   /**
@@ -1008,8 +1064,9 @@ class AiEfficiencyController {
       }
     }
 
-    // 4. Remote endpoint availability check
-    if (!this._endpoint && !this._transportOverride) {
+    // 4. Remote provider availability check
+    const activeProviderEntry = this._providers.get(this._activeProvider);
+    if (!activeProviderEntry || !activeProviderEntry.isAvailable()) {
       this._stats.fallbacksUsed += 1;
       if (this._monitor) this._monitor.recordAiEvent('fallback');
       return {
@@ -1255,13 +1312,12 @@ class AiEfficiencyController {
         }, this._timeoutMs);
       });
 
-      const transportCall = this._transportOverride
-        ? this._transportOverride({
-            body: requestBodyObj,
-            requestBytes,
-            signal: timeoutController.signal
-          })
-        : this._httpPostOllama(requestBytes, timeoutController.signal);
+      const providerEntry = this._providers.get(this._activeProvider);
+      const transportCall = providerEntry.invoke({
+        body: requestBodyObj,
+        requestBytes,
+        signal: timeoutController.signal
+      });
 
       const rawResponse = await Promise.race([transportCall, timeoutPromise]);
       let parsedPlan = null;

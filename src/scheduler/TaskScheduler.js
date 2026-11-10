@@ -99,6 +99,24 @@ class TaskScheduler {
     this._governor = options.governor;
     this._config = options.config || {};
     this._logger = options.logger || null;
+    this._operatingMode = String(
+      options.operatingMode || this._config.operatingMode || 'HYBRID'
+    )
+      .trim()
+      .toUpperCase();
+  }
+
+  get operatingMode() {
+    return this._operatingMode;
+  }
+
+  setOperatingMode(mode) {
+    const normalized = String(mode || '').trim().toUpperCase();
+    if (!['SYNCHRONIZED', 'DISTRIBUTED', 'HYBRID'].includes(normalized)) {
+      throw new RangeError(`Unsupported operatingMode: ${mode}`);
+    }
+    this._operatingMode = normalized;
+    return this._operatingMode;
   }
 
   lookupRateEstimate(botId, actionKey) {
@@ -342,16 +360,40 @@ class TaskScheduler {
     );
 
     const singleBotP90Sec = scored[0].estimate.totalSecP90;
-    const cap = Math.min(maxAllowed, scored.length, 20);
+    const archMax = this._config.capacity?.maxArchitecturalBots ?? 20;
+    const mode = this._operatingMode;
+    const cap = Math.min(maxAllowed, scored.length, archMax);
     let quotas = [];
     let selectedSubsetP90Sec = singleBotP90Sec;
     let reason = 'single_bot_optimal';
+
+    const attachDisjointWorkAreas = (rawQuotas) => {
+      if (rawQuotas.length <= 1 || !['mine', 'collect', 'explore'].includes(objective.kind)) {
+        return rawQuotas;
+      }
+      const sectors = partitionRegion(
+        { dimension: 'minecraft:overworld', minX: -64, maxX: 64, minZ: -64, maxZ: 64 },
+        rawQuotas
+      );
+      const sectorByBot = new Map(sectors.map((s, idx) => [s.botId, { ...s, areaLabel: `Area-${idx + 1}` }]));
+      return rawQuotas.map((q) => {
+        const sec = sectorByBot.get(q.botId);
+        return sec
+          ? {
+              ...q,
+              partitionId: q.partitionId || sec.areaLabel,
+              regionBounds: q.regionBounds || sec.regionBounds
+            }
+          : q;
+      });
+    };
 
     if (
       objective.parallelism === 'single' ||
       objective.parallelism === 'serial' ||
       objective.parallelism === 'role_based' ||
-      (objective.remainingQuantity !== null && objective.remainingQuantity <= 1)
+      (objective.remainingQuantity !== null && objective.remainingQuantity <= 1) ||
+      (mode === 'DISTRIBUTED' && objective.parallelism !== 'spatial')
     ) {
       const top = scored[0].candidate;
       quotas = [
@@ -364,14 +406,23 @@ class TaskScheduler {
           role: objective.kind
         }
       ];
+      if (mode === 'DISTRIBUTED') {
+        reason = 'distributed_independent_assignment';
+      }
     } else if (objective.parallelism === 'spatial') {
-      const k = Math.min(cap, Math.max(1, objective.workerCountHint || 2));
+      const desiredK =
+        mode === 'SYNCHRONIZED' ? cap : Math.min(cap, Math.max(1, objective.workerCountHint || 2));
       quotas = partitionRegion(
         { dimension: 'minecraft:overworld', minX: -64, maxX: 64, minZ: -64, maxZ: 64 },
-        scored.slice(0, k).map((s) => s.candidate)
+        scored.slice(0, desiredK).map((s) => s.candidate)
       );
       selectedSubsetP90Sec = singleBotP90Sec / Math.max(1, quotas.length);
-      reason = quotas.length > 1 ? 'spatial_sector_partition' : 'single_bot_spatial';
+      reason =
+        mode === 'SYNCHRONIZED' && quotas.length > 1
+          ? `synchronized_spatial_${quotas.length}_bots`
+          : quotas.length > 1
+            ? 'spatial_sector_partition'
+            : 'single_bot_spatial';
     } else if (objective.remainingQuantity !== null && objective.remainingQuantity > 1) {
       const pool = scored.slice(0, cap).map((s) => ({
         botId: s.candidate.botId,
@@ -381,7 +432,19 @@ class TaskScheduler {
         setupSec: s.estimate.setupSec
       }));
 
-      if (objective.remainingQuantity < 16 || pool.length === 1) {
+      if (mode === 'SYNCHRONIZED' && pool.length > 1) {
+        const syncCount = Math.min(pool.length, objective.remainingQuantity);
+        quotas = attachDisjointWorkAreas(splitQuota(objective.remainingQuantity, pool.slice(0, syncCount)));
+        const estMap = new Map(pool.map((p) => [p.botId, p]));
+        let maxFinish = 0;
+        for (const q of quotas) {
+          const p = estMap.get(q.botId);
+          const finish = (p.travelSec + p.setupSec + q.quantity / p.rateP50) * 1.2;
+          if (finish > maxFinish) maxFinish = finish;
+        }
+        selectedSubsetP90Sec = maxFinish;
+        reason = `synchronized_swarm_partition_${quotas.length}_bots`;
+      } else if (objective.remainingQuantity < 16 || pool.length === 1) {
         quotas = splitQuota(objective.remainingQuantity, pool.slice(0, 1));
       } else {
         const estMap = new Map(pool.map((p) => [p.botId, p]));
@@ -413,7 +476,7 @@ class TaskScheduler {
             break;
           }
         }
-        quotas = bestQuotas;
+        quotas = attachDisjointWorkAreas(bestQuotas);
         selectedSubsetP90Sec = bestP90;
       }
     }
@@ -468,10 +531,16 @@ class TaskScheduler {
         String(a.created_at || '').localeCompare(String(b.created_at || ''))
     );
 
+    // In SYNCHRONIZED mode, concentrate swarm focus on the top-priority active task first (`ADR-003`)
+    const activeTaskRows =
+      this._operatingMode === 'SYNCHRONIZED' && !targetTaskId
+        ? taskRows.slice(0, 1)
+        : taskRows;
+
     let scheduledCount = 0;
     const nowIso = new Date().toISOString();
 
-    for (const tRow of taskRows) {
+    for (const tRow of activeTaskRows) {
       const readyList = this._tasks.readyObjectives(tRow.task_id);
       if (readyList.length === 0) continue;
 

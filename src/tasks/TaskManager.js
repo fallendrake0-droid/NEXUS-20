@@ -123,6 +123,51 @@ class TaskManager extends EventEmitter {
     return envelope;
   }
 
+  pollWorkerCommands(workerId, limit = 25) {
+    const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit || 25)));
+    const nowIso = this._nowIso();
+    const rows = this._store.all(
+      `SELECT command_id, command_sequence, command_type, payload_json, issued_at, expires_at
+       FROM command_outbox
+       WHERE worker_id = ? AND acked_at IS NULL AND expires_at > ?
+       ORDER BY command_sequence ASC
+       LIMIT ?`,
+      String(workerId),
+      nowIso,
+      safeLimit
+    );
+    return rows.map((r) => {
+      let envelope = null;
+      try {
+        envelope = JSON.parse(r.payload_json);
+      } catch {
+        envelope = null;
+      }
+      return (
+        envelope || {
+          commandId: r.command_id,
+          workerId: String(workerId),
+          commandSequence: r.command_sequence,
+          commandType: r.command_type,
+          issuedAt: r.issued_at,
+          expiresAt: r.expires_at,
+          payload: {}
+        }
+      );
+    });
+  }
+
+  ackWorkerCommand(workerId, commandId) {
+    const nowIso = this._nowIso();
+    const res = this._store.run(
+      'UPDATE command_outbox SET acked_at = COALESCE(acked_at, ?) WHERE command_id = ? AND worker_id = ?',
+      nowIso,
+      String(commandId),
+      String(workerId)
+    );
+    return Number(res.changes || 0) > 0;
+  }
+
   _formatObjectiveRow(row, depRows = []) {
     const remaining =
       row.target_quantity !== null
@@ -1478,9 +1523,10 @@ class TaskManager extends EventEmitter {
    * Safely preempt unstarted `offered` leases belonging to strictly lower-priority tasks
    * when an urgent (`survival` / `safety` / `high`) task needs bot slots.
    */
-  preemptOfferedAssignments({ neededSlots, incomingPriorityRank, priorityRankMap }) {
+  preemptOfferedAssignments({ neededSlots, incomingPriorityRank, priorityRankMap, minHoldMs = 0 }) {
     if (neededSlots <= 0) return [];
-    const nowIso = this._nowIso();
+    const nowMs = this._now();
+    const nowIso = new Date(nowMs).toISOString();
     const preempted = [];
 
     this._store.transaction(() => {
@@ -1496,6 +1542,11 @@ class TaskManager extends EventEmitter {
         if (preempted.length >= neededSlots) break;
         const rank = priorityRankMap[asg.task_priority] ?? 2;
         if (rank >= incomingPriorityRank) continue;
+        // Anti-oscillation hold hysteresis for non-emergency preemption (`ADR-003`)
+        if (minHoldMs > 0 && incomingPriorityRank < 4) {
+          const ageMs = nowMs - Date.parse(asg.issued_at);
+          if (ageMs >= 0 && ageMs < minHoldMs) continue;
+        }
 
         const uncredited =
           asg.quota_quantity !== null ? Math.max(0, asg.quota_quantity - asg.credited_quantity) : 0;
@@ -1548,24 +1599,35 @@ class TaskManager extends EventEmitter {
       `SELECT * FROM assignments WHERE task_id = ? ORDER BY issued_at ASC`,
       taskId
     );
-    const allAssignments = asgRows.map((a) => ({
-      assignmentId: a.assignment_id,
-      leaseId: a.lease_id,
-      allocationEpoch: a.allocation_epoch,
-      taskId: a.task_id,
-      objectiveId: a.objective_id,
-      workerId: a.worker_id,
-      botId: a.bot_id,
-      state: a.state,
-      failureCode: a.failure_code || null,
-      actionType: a.action_type,
-      resourceId: a.item_key,
-      quotaQuantity: a.quota_quantity,
-      creditedQuantity: a.credited_quantity,
-      leaseTtlMs: a.lease_ttl_ms,
-      issuedAt: a.issued_at,
-      expiresAt: a.expires_at
-    }));
+    const allAssignments = asgRows.map((a) => {
+      let scope = {};
+      try {
+        scope = JSON.parse(a.scope_json || '{}');
+      } catch {
+        scope = {};
+      }
+      return {
+        assignmentId: a.assignment_id,
+        leaseId: a.lease_id,
+        allocationEpoch: a.allocation_epoch,
+        taskId: a.task_id,
+        objectiveId: a.objective_id,
+        workerId: a.worker_id,
+        botId: a.bot_id,
+        state: a.state,
+        failureCode: a.failure_code || null,
+        actionType: a.action_type,
+        resourceId: a.item_key,
+        quotaQuantity: a.quota_quantity,
+        creditedQuantity: a.credited_quantity,
+        partitionId: scope.partitionId || null,
+        regionBounds: scope.regionBounds || null,
+        role: scope.role || null,
+        leaseTtlMs: a.lease_ttl_ms,
+        issuedAt: a.issued_at,
+        expiresAt: a.expires_at
+      };
+    });
     const activeStates = new Set(['offered', 'accepted', 'running', 'reporting', 'verifying']);
     const activeAssignments = allAssignments.filter((a) => activeStates.has(a.state));
 
@@ -1577,6 +1639,27 @@ class TaskManager extends EventEmitter {
       activeAssignments,
       assignments: allAssignments
     };
+  }
+
+  updateTaskPriority(taskId, priority) {
+    if (!['low', 'normal', 'high', 'safety', 'survival'].includes(priority)) {
+      throw new DomainError(
+        'SCHEMA_VALIDATION_FAILED',
+        `Invalid task priority: ${priority}`
+      );
+    }
+    const existing = this._store.get('SELECT * FROM tasks WHERE task_id = ?', String(taskId));
+    if (!existing) {
+      throw new DomainError('NOT_FOUND', `Task ${taskId} not found`);
+    }
+    const nowIso = this._nowIso();
+    this._store.run(
+      'UPDATE tasks SET priority = ?, updated_at = ? WHERE task_id = ?',
+      priority,
+      nowIso,
+      existing.task_id
+    );
+    return this.getTask(existing.task_id);
   }
 
   listTasks({ state = null, limit = 20, cursor = null } = {}) {

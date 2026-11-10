@@ -1,7 +1,7 @@
 # Mineflayer AI Swarm — Development Status & Specialist Task Packages
 
 **Last Updated:** 2026-11-10  
-**Current Stage:** Stage-1 Core Foundation Complete & Verified (`v0.2.0`)  
+**Current Stage:** NEXUS-20 Phase 0 Audit + Phase 1 Master Control Plane, Modes, Knowledge, Auth & Control Centre Complete (`45/45` tests passing)  
 **Integration Owner:** Lead Software Engineer & Repository Integration Owner
 
 ---
@@ -40,14 +40,17 @@ All core foundation modules are implemented in CommonJS (`'use strict'`), zero e
 | Worker & Bot Registry | `src/workers/BotRegistry.js`, `WorkerRegistry.js` | **Complete** | Single-use SHA-256 bootstrap tokens, `timingSafeEqual` auth, `<=20` cap, liveness, revoke |
 | Quota & TaskScheduler | `src/scheduler/quotaMath.js`, `TaskScheduler.js` | **Complete** | Water-filling `splitQuota`, `TaskScheduler` (`p50`/`p90`, 1-step craft lookahead, empirical rates, priority preemption) |
 | Task & Lease State Machine | `src/tasks/TaskManager.js` | **Complete** | `finish_to_start` + `start_with` DAG, outbox commands, seq dedup, epoch fencing, incremental baseline & cancel safety |
-| Central Coordinator | `src/coordinator/Coordinator.js` | **Complete** | NEXUS-20 full swarm world-state (`buildSwarmWorldContext`), RBAC, concurrent idempotency, durable governor deferral/recovery |
-| Runtime Monitoring & AI | `src/monitoring/*`, `src/performance/*`, `src/events/*` | **Complete** | `ResourceMonitor`, `WorkloadGovernor`, `AiEfficiencyController` (safe JSON/timeout/duplicate-objective guards), `SseCoalescer` |
+| Central Coordinator | `src/coordinator/Coordinator.js` | **Complete** | NEXUS-20 full swarm world-state (`buildSwarmWorldContext`), runtime `SYNCHRONIZED`/`DISTRIBUTED`/`HYBRID` modes, RBAC, idempotency, durable governor deferral/recovery |
+| Runtime Monitoring & AI | `src/monitoring/*`, `src/performance/*`, `src/events/*` | **Complete** | `ResourceMonitor`, 5-profile `WorkloadGovernor`, pluggable-provider `AiEfficiencyController`, `SseCoalescer` |
+| Shared World Knowledge | `src/knowledge/WorldKnowledgeStore.js` | **Complete** | 10 categories, TTL expiry, multi-bot confidence verification, bounded row cap, chest mutex locks |
+| Operator Auth & Security | `src/security/AuthService.js` | **Complete** | Concurrency-1 `scrypt` queue (`<=16 MiB` flood RSS), `HttpOnly` sessions, CSRF hash check, RBAC, rate limiter |
+| HTTP/SSE Gateway & Dashboard | `src/interfaces/http/MasterHttpServer.js`, `src/dashboard/public/*` | **Complete** | Zero-dep `/api/v1/*` + `/worker/v1/*` + SSE stream + Vanilla HTML/CSS/JS NEXUS-20 Control Centre |
 
 ### Verified Test & Benchmark Results (2026-11-10)
-- `npm test`: **41 / 41 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js`, `tests/adversarial/*.test.js` (`REG-01..08` + `ADV-01..04` 200-step randomized fuzz), and `tests/performance/*.test.js`.
+- `npm test`: **45 / 45 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js` (including `nexus20-core-and-http.test.js`), `tests/adversarial/*.test.js` (`REG-01..08` + `ADV-01..04` 200-step randomized fuzz), and `tests/performance/*.test.js`.
 - `npm run test:leaks`: **3 / 3 passing** under `--expose-gc` (`0` retained world buffers, SSE client buffers, or native timers).
 - `npm run check:termux`: **Passing** (`node:sqlite` v3.51.3 WAL + online backup verified, `/proc/meminfo` & `crypto.scrypt` verified).
-- `npm run bench`: **Passing** (`20_bots_distributed` Master Peak RSS `64.05 MiB`, Post-GC Heap `6.32 MiB`, Loop p95 `25.28 ms`, `0` tasks discarded).
+- `npm run bench`: **Passing** (`20_bots_distributed` Master Peak RSS `62.89 MiB`, Post-GC Heap `6.36 MiB`, Loop p95 `35.32 ms`, `0` tasks discarded).
 
 ---
 

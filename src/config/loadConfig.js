@@ -8,6 +8,8 @@ const { sanitizeValue } = require('../performance/BoundedLogger');
 const ALLOWED_TOP_KEYS = new Set([
   'role',
   'envProfile',
+  'operatingMode',
+  'performanceProfile',
   'http',
   'tls',
   'capacity',
@@ -16,6 +18,15 @@ const ALLOWED_TOP_KEYS = new Set([
   'logging',
   'chat',
   'security'
+]);
+
+const VALID_OPERATING_MODES = new Set(['SYNCHRONIZED', 'DISTRIBUTED', 'HYBRID']);
+const VALID_PERFORMANCE_PROFILES = new Set([
+  'ULTRA_LOW',
+  'LOW',
+  'BALANCED',
+  'PERFORMANCE',
+  'MAXIMUM_THROUGHPUT'
 ]);
 
 const FORBIDDEN_ANDROID_FUSE_PREFIXES = ['/sdcard', '/storage/emulated/', '/mnt/sdcard'];
@@ -67,9 +78,24 @@ function buildRawConfig(env = {}, fileConfig = {}) {
     envProfile: String(
       env.SWARM_ENV_PROFILE ?? fileConfig.envProfile ?? 'authorised_online'
     ).trim(),
+    operatingMode: String(
+      env.SWARM_OPERATING_MODE ?? fileConfig.operatingMode ?? 'HYBRID'
+    )
+      .trim()
+      .toUpperCase(),
+    performanceProfile: String(
+      env.SWARM_PERFORMANCE_PROFILE ?? fileConfig.performanceProfile ?? 'BALANCED'
+    )
+      .trim()
+      .toUpperCase(),
     http: {
       host,
-      port: parseIntOr(env.SWARM_PORT ?? fileConfig.http?.port, 8443)
+      port: parseIntOr(env.SWARM_PORT ?? env.PORT ?? fileConfig.http?.port, 8443),
+      enabled: parseBool(env.SWARM_HTTP_ENABLED ?? fileConfig.http?.enabled, false),
+      trustEdgeTlsProxy: parseBool(
+        env.SWARM_TRUST_EDGE_TLS_PROXY ?? fileConfig.http?.trustEdgeTlsProxy,
+        false
+      )
     },
     tls: {
       enabled: parseBool(env.SWARM_TLS_ENABLED ?? fileConfig.tls?.enabled, !isLoopback),
@@ -78,6 +104,10 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       caCertPath: env.SWARM_TLS_CA_PATH ?? fileConfig.tls?.caCertPath ?? null
     },
     capacity: {
+      maxArchitecturalBots: parseIntOr(
+        env.SWARM_MAX_ARCHITECTURAL_BOTS ?? fileConfig.capacity?.maxArchitecturalBots,
+        20
+      ),
       globalMaxBots: parseIntOr(
         env.SWARM_GLOBAL_MAX_BOTS ?? fileConfig.capacity?.globalMaxBots,
         20
@@ -97,10 +127,17 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       heartbeatIntervalMs: parseIntOr(
         env.SWARM_HEARTBEAT_INTERVAL_MS ?? fileConfig.capacity?.heartbeatIntervalMs,
         5_000
+      ),
+      minAssignmentHoldMs: parseIntOr(
+        env.SWARM_MIN_ASSIGNMENT_HOLD_MS ?? fileConfig.capacity?.minAssignmentHoldMs,
+        8_000
       )
     },
     ai: {
       enabled: parseBool(env.SWARM_AI_ENABLED ?? fileConfig.ai?.enabled, true),
+      provider: String(env.SWARM_AI_PROVIDER ?? fileConfig.ai?.provider ?? 'ollama')
+        .trim()
+        .toLowerCase(),
       ollamaBaseUrl: env.SWARM_OLLAMA_URL ?? fileConfig.ai?.ollamaBaseUrl ?? null,
       model: String(env.SWARM_OLLAMA_MODEL ?? fileConfig.ai?.model ?? 'unresolved').trim(),
       maxConcurrent: parseIntOr(env.SWARM_AI_MAX_CONCURRENT ?? fileConfig.ai?.maxConcurrent, 1),
@@ -153,6 +190,8 @@ function buildRawConfig(env = {}, fileConfig = {}) {
     },
     security: {
       cliOperatorToken: env.SWARM_CLI_TOKEN ?? fileConfig.security?.cliOperatorToken ?? null,
+      adminUsername: env.SWARM_ADMIN_USERNAME ?? fileConfig.security?.adminUsername ?? null,
+      adminPassword: env.SWARM_ADMIN_PASSWORD ?? fileConfig.security?.adminPassword ?? null,
       bootstrapTokenTtlMs: parseIntOr(
         env.SWARM_BOOTSTRAP_TTL_MS ?? fileConfig.security?.bootstrapTokenTtlMs,
         10 * 60 * 1000
@@ -188,22 +227,36 @@ function validateConfig(config) {
   if (!['private_offline_test', 'authorised_online'].includes(config.envProfile)) {
     errors.push('envProfile must be "private_offline_test" or "authorised_online"');
   }
+  if (!VALID_OPERATING_MODES.has(config.operatingMode)) {
+    errors.push('operatingMode must be SYNCHRONIZED, DISTRIBUTED or HYBRID');
+  }
+  if (!VALID_PERFORMANCE_PROFILES.has(config.performanceProfile)) {
+    errors.push(
+      'performanceProfile must be ULTRA_LOW, LOW, BALANCED, PERFORMANCE or MAXIMUM_THROUGHPUT'
+    );
+  }
 
-  // HTTP & TLS boundaries (MASTER_SPEC.md §7, SECURITY_PLAN.md §4, HIGH-06)
+  // HTTP & TLS boundaries (MASTER_SPEC.md §7, SECURITY_PLAN.md §4, ADR-007)
   const host = config.http?.host;
   const port = config.http?.port;
   if (!host || typeof host !== 'string') {
     errors.push('http.host must be a non-empty string');
   }
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    errors.push('http.port must be an integer in 1..65535');
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+    errors.push('http.port must be an integer in 0..65535');
+  }
+  if (typeof config.http?.enabled !== 'boolean') {
+    errors.push('http.enabled must be a valid boolean');
+  }
+  if (typeof config.http?.trustEdgeTlsProxy !== 'boolean') {
+    errors.push('http.trustEdgeTlsProxy must be a valid boolean');
   }
   if (typeof config.tls?.enabled !== 'boolean') {
     errors.push('tls.enabled must be a valid boolean');
   }
   const isLoopback = LOOPBACK_HOSTS.has(host);
-  if (!isLoopback && config.tls?.enabled !== true) {
-    errors.push('Non-loopback http.host requires tls.enabled === true');
+  if (!isLoopback && config.tls?.enabled !== true && config.http?.trustEdgeTlsProxy !== true) {
+    errors.push('Non-loopback http.host requires tls.enabled === true (or trustEdgeTlsProxy === true)');
   }
   if (config.tls?.enabled === true) {
     if (!config.tls.certPath || !config.tls.keyPath) {
@@ -211,13 +264,24 @@ function validateConfig(config) {
     }
   }
 
-  // Capacity & 20-bot hard ceiling (G-02)
+  // Capacity & extensible bot ceiling (G-02 + ADR-002: default 20, extensible via maxArchitecturalBots)
   const cap = config.capacity || {};
+  const archMax = Number.isSafeInteger(cap.maxArchitecturalBots) ? cap.maxArchitecturalBots : 20;
+  if (!Number.isSafeInteger(cap.maxArchitecturalBots) || cap.maxArchitecturalBots < 1 || cap.maxArchitecturalBots > 500) {
+    errors.push('capacity.maxArchitecturalBots must be an integer in 1..500');
+  }
   if (!Number.isSafeInteger(cap.globalMaxBots) || cap.globalMaxBots < 1) {
     errors.push('capacity.globalMaxBots must be an integer >= 1');
-  } else if (cap.globalMaxBots > 20) {
+  } else if (cap.globalMaxBots > archMax) {
     markCode('GLOBAL_BOT_CAP_EXCEEDED');
-    errors.push('capacity.globalMaxBots must not exceed 20 (MASTER_SPEC.md §2)');
+    errors.push(`capacity.globalMaxBots must not exceed ${archMax} (ADR-002)`);
+  }
+  if (
+    !Number.isSafeInteger(cap.minAssignmentHoldMs) ||
+    cap.minAssignmentHoldMs < 0 ||
+    cap.minAssignmentHoldMs > 120_000
+  ) {
+    errors.push('capacity.minAssignmentHoldMs must be in 0..120000');
   }
   if (
     !Number.isSafeInteger(cap.initialEnabledBots) ||
@@ -377,5 +441,7 @@ function redactConfig(config) {
 module.exports = {
   loadConfig,
   validateConfig,
-  redactConfig
+  redactConfig,
+  VALID_OPERATING_MODES,
+  VALID_PERFORMANCE_PROFILES
 };

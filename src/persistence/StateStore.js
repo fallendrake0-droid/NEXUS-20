@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS workers (
   token_verifier_hash TEXT NOT NULL,
   hostname TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('alive', 'degraded', 'unreachable', 'disabled')),
-  max_bot_slots INTEGER NOT NULL CHECK (max_bot_slots BETWEEN 0 AND 20),
+  max_bot_slots INTEGER NOT NULL CHECK (max_bot_slots >= 0),
   last_heartbeat_at TEXT,
   last_command_seq INTEGER NOT NULL DEFAULT 0,
   last_event_seq INTEGER NOT NULL DEFAULT 0,
@@ -238,6 +238,45 @@ CREATE TABLE IF NOT EXISTS audit_events (
   details_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS system_settings (
+  setting_key TEXT PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS world_knowledge (
+  knowledge_id TEXT PRIMARY KEY,
+  category TEXT NOT NULL CHECK (category IN (
+    'resource_location', 'structure', 'storage_location', 'route',
+    'explored_area', 'hazard', 'mining_location', 'base_location',
+    'strategy', 'worker_capability'
+  )),
+  dimension TEXT NOT NULL DEFAULT 'minecraft:overworld',
+  subject_key TEXT NOT NULL,
+  x INTEGER,
+  y INTEGER,
+  z INTEGER,
+  confidence REAL NOT NULL DEFAULT 0.8 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+  verification_state TEXT NOT NULL DEFAULT 'observed' CHECK (verification_state IN ('observed', 'verified', 'disputed', 'invalidated')),
+  reported_by_bot_id TEXT,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  observed_at TEXT NOT NULL,
+  verified_at TEXT,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_locks (
+  storage_key TEXT PRIMARY KEY,
+  dimension TEXT NOT NULL,
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  z INTEGER NOT NULL,
+  holder_bot_id TEXT NOT NULL,
+  assignment_id TEXT,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_state_created ON tasks(state, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_objectives_task_state ON objectives(task_id, state);
 CREATE INDEX IF NOT EXISTS idx_assignments_obj_state ON assignments(objective_id, state);
@@ -251,6 +290,9 @@ CREATE INDEX IF NOT EXISTS idx_ledger_assignment ON ledger_transactions(assignme
 CREATE INDEX IF NOT EXISTS idx_inbound_received ON worker_inbound_messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_transfers_state_expires ON transfers(state, expires_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_cat_exp ON world_knowledge(category, expires_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_dim_subj ON world_knowledge(dimension, subject_key);
+CREATE INDEX IF NOT EXISTS idx_storage_locks_exp ON storage_locks(expires_at);
 `;
 
 /**
@@ -487,6 +529,7 @@ class StateStore {
     ackedOutboxRetentionIso = new Date(Date.now() - 3600 * 1000).toISOString()
   } = {}) {
     const db = this._requireDb();
+    const nowIso = new Date().toISOString();
     const counts = this.transaction(() => {
       const r1 = this.run(
         'DELETE FROM worker_inbound_messages WHERE received_at < ?',
@@ -496,9 +539,23 @@ class StateStore {
         'DELETE FROM command_outbox WHERE acked_at IS NOT NULL AND acked_at < ?',
         ackedOutboxRetentionIso
       );
+      const r3 = this.run(
+        'DELETE FROM sessions WHERE revoked = 1 OR idle_expires_at <= ? OR absolute_expires_at <= ?',
+        nowIso,
+        nowIso
+      );
+      const r4 = this.run(
+        'DELETE FROM world_knowledge WHERE expires_at <= ? OR verification_state = ?',
+        nowIso,
+        'invalidated'
+      );
+      const r5 = this.run('DELETE FROM storage_locks WHERE expires_at <= ?', nowIso);
       return {
         prunedInboundMessages: Number(r1.changes || 0),
-        prunedOutboxCommands: Number(r2.changes || 0)
+        prunedOutboxCommands: Number(r2.changes || 0),
+        prunedSessions: Number(r3.changes || 0),
+        prunedWorldKnowledge: Number(r4.changes || 0),
+        prunedStorageLocks: Number(r5.changes || 0)
       };
     });
     if (this._sqlitePath !== ':memory:') {
@@ -509,6 +566,28 @@ class StateStore {
       }
     }
     return counts;
+  }
+
+  getSetting(settingKey, defaultValue = null) {
+    if (!this._db) return defaultValue;
+    const row = this.get(
+      'SELECT setting_value FROM system_settings WHERE setting_key = ?',
+      String(settingKey)
+    );
+    return row ? row.setting_value : defaultValue;
+  }
+
+  setSetting(settingKey, settingValue, updatedAt = new Date().toISOString()) {
+    this.run(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(setting_key) DO UPDATE SET
+         setting_value = excluded.setting_value,
+         updated_at = excluded.updated_at`,
+      String(settingKey),
+      String(settingValue),
+      updatedAt
+    );
   }
 
   recordAudit({ auditId, occurredAt, actorType, actorId, action, targetId = null, outcome, details = {} }) {

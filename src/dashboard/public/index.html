@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXUS-20 — Autonomous Swarm Control Centre</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Authentication / One-Time Bootstrap Gate -->
+  <section id="auth-screen" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand-badge">NEXUS-20</div>
+      <h1 id="auth-title">Operator Sign In</h1>
+      <p id="auth-subtitle" class="muted">Networked EXecution and Unified Swarm — Central AI Control Centre</p>
+      <form id="auth-form">
+        <label for="auth-username">Username</label>
+        <input id="auth-username" name="username" type="text" autocomplete="username" required minlength="3" maxlength="48" placeholder="admin" />
+        <label for="auth-password">Password (min 10 chars)</label>
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="256" placeholder="••••••••••" />
+        <div id="auth-error" class="alert error hidden"></div>
+        <button id="auth-submit" type="submit" class="btn primary full">Sign In</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Main Control Centre -->
+  <div id="app-shell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="brand-dot" id="sse-dot" title="SSE Stream Status"></span>
+        <div>
+          <strong>NEXUS-20</strong>
+          <span class="subtitle">Unified Swarm Brain</span>
+        </div>
+      </div>
+
+      <div class="topbar-controls">
+        <div class="control-pill">
+          <label for="mode-select">Mode</label>
+          <select id="mode-select">
+            <option value="HYBRID">HYBRID</option>
+            <option value="SYNCHRONIZED">SYNCHRONIZED</option>
+            <option value="DISTRIBUTED">DISTRIBUTED</option>
+          </select>
+        </div>
+
+        <div class="control-pill">
+          <label for="profile-select">Profile</label>
+          <select id="profile-select">
+            <option value="ULTRA_LOW">ULTRA_LOW</option>
+            <option value="LOW">LOW</option>
+            <option value="BALANCED">BALANCED</option>
+            <option value="PERFORMANCE">PERFORMANCE</option>
+            <option value="MAXIMUM_THROUGHPUT">MAXIMUM_THROUGHPUT</option>
+          </select>
+        </div>
+
+        <div class="control-pill">
+          <label for="bot-cap-input">Bot Cap</label>
+          <input id="bot-cap-input" type="number" min="1" max="20" value="2" />
+          <button id="bot-cap-btn" type="button" class="btn small">Apply</button>
+        </div>
+
+        <button id="emergency-stop-btn" type="button" class="btn danger small">Emergency Stop</button>
+        <span id="actor-badge" class="actor-badge"></span>
+        <button id="logout-btn" type="button" class="btn ghost small">Sign Out</button>
+      </div>
+    </header>
+
+    <div id="toast-banner" class="toast hidden"></div>
+
+    <nav class="tabbar" role="tablist">
+      <button class="tab active" data-tab="overview">1. Overview &amp; Modes</button>
+      <button class="tab" data-tab="tasks">2. Tasks &amp; Intent Brain</button>
+      <button class="tab" data-tab="bots">3. Bots &amp; Workers</button>
+      <button class="tab" data-tab="resources">4. Resources &amp; Storage</button>
+      <button class="tab" data-tab="knowledge">5. World Knowledge</button>
+      <button class="tab" data-tab="system">6. AI, Perf, Logs &amp; Security</button>
+    </nav>
+
+    <main class="main-grid">
+      <!-- TAB 1: OVERVIEW & OPERATING MODES -->
+      <section id="tab-overview" class="tab-panel">
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-label">Operating Mode</span>
+            <strong id="kpi-mode">—</strong>
+            <small id="kpi-governor" class="muted">Governor: —</small>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Bots (Online / Busy / Cap)</span>
+            <strong id="kpi-bots">0 / 0 / 0</strong>
+            <small id="kpi-workers" class="muted">Workers: 0</small>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Active / Blocked Tasks</span>
+            <strong id="kpi-tasks">0 / 0</strong>
+            <small id="kpi-objectives" class="muted">Completed objectives: 0</small>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Master Memory &amp; Loop</span>
+            <strong id="kpi-rss">— MiB</strong>
+            <small id="kpi-lag" class="muted">Loop p95: — ms</small>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <h2>Active Swarm Allocations (Synchronized Sectors &amp; Distributed Quotas)</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Bot</th>
+                    <th>Action / Item</th>
+                    <th>Progress</th>
+                    <th>Sector / Role</th>
+                    <th>Epoch</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody id="active-assignments-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>Recent Evidence-Driven Scheduler Decisions</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Reason</th>
+                    <th>Bots</th>
+                    <th>1-Bot p90</th>
+                    <th>Swarm p90</th>
+                    <th>Gain</th>
+                  </tr>
+                </thead>
+                <tbody id="decisions-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: TASKS & CENTRAL INTENT BRAIN -->
+      <section id="tab-tasks" class="tab-panel hidden">
+        <div class="panel">
+          <h2>Submit Global Swarm Objective</h2>
+          <form id="intent-form" class="inline-form">
+            <input id="intent-text" type="text" required maxlength="500" placeholder="e.g. Collect 200 cobblestone, Craft a wooden pickaxe, or Build a shelter while one bot guards" />
+            <select id="intent-priority">
+              <option value="normal">Priority: Normal</option>
+              <option value="high">Priority: High</option>
+              <option value="low">Priority: Low</option>
+              <option value="safety">Priority: Safety</option>
+              <option value="survival">Priority: Survival</option>
+            </select>
+            <button type="submit" class="btn primary">Dispatch to Brain</button>
+          </form>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <h2>Task Queue &amp; Lifecycle</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Summary</th>
+                    <th>Priority</th>
+                    <th>State</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tasks-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>Selected Task DAG &amp; Quota Inspector</h2>
+            <div id="task-detail-box" class="code-box muted">Select "Inspect" on any task to view DAG objectives, verified quantities, and bot leases.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: BOTS & WORKERS -->
+      <section id="tab-bots" class="tab-panel hidden">
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Worker Nodes</h2>
+              <button id="mint-token-btn" type="button" class="btn small primary">Mint Bootstrap Token</button>
+            </div>
+            <div id="bootstrap-token-output" class="alert info hidden"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Worker ID</th>
+                    <th>Host</th>
+                    <th>Status</th>
+                    <th>Max Slots</th>
+                    <th>Last Heartbeat</th>
+                  </tr>
+                </thead>
+                <tbody id="workers-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>Registered Swarm Bots</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Bot</th>
+                    <th>Worker</th>
+                    <th>Status</th>
+                    <th>Pos / Health / Food</th>
+                    <th>Controls</th>
+                  </tr>
+                </thead>
+                <tbody id="bots-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: RESOURCES, INVENTORY & STORAGE -->
+      <section id="tab-resources" class="tab-panel hidden">
+        <div class="two-col">
+          <div class="panel">
+            <h2>Swarm Resource Accounting (Available vs Required)</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Resource ID</th>
+                    <th>Swarm Held Stock</th>
+                    <th>Remaining Required</th>
+                  </tr>
+                </thead>
+                <tbody id="resources-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>Active Storage / Chest Mutex Locks</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Storage Coordinate</th>
+                    <th>Holder Bot</th>
+                    <th>Expires At</th>
+                  </tr>
+                </thead>
+                <tbody id="storage-locks-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: SHARED WORLD KNOWLEDGE -->
+      <section id="tab-knowledge" class="tab-panel hidden">
+        <div class="panel">
+          <h2>Record Shared World Discovery</h2>
+          <form id="knowledge-form" class="inline-form">
+            <select id="know-category">
+              <option value="resource_location">Resource Location</option>
+              <option value="storage_location">Storage Chest</option>
+              <option value="hazard">Hazard Zone</option>
+              <option value="base_location">Base Location</option>
+              <option value="structure">Structure</option>
+              <option value="mining_location">Mining Sector</option>
+              <option value="route">Safe Route</option>
+            </select>
+            <input id="know-subject" type="text" required placeholder="Subject (e.g. minecraft:iron_ore)" />
+            <input id="know-x" type="number" placeholder="X" class="coord-input" />
+            <input id="know-y" type="number" placeholder="Y" class="coord-input" />
+            <input id="know-z" type="number" placeholder="Z" class="coord-input" />
+            <button type="submit" class="btn primary small">Save Knowledge</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h2>Active Verified &amp; Observed World Knowledge (TTL Bounded)</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Subject</th>
+                  <th>Position</th>
+                  <th>Confidence</th>
+                  <th>Verification</th>
+                  <th>Expires</th>
+                </tr>
+              </thead>
+              <tbody id="knowledge-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: AI BRAIN, PERFORMANCE, LOGS, CONFIG & SECURITY -->
+      <section id="tab-system" class="tab-panel hidden">
+        <div class="two-col">
+          <div class="panel">
+            <h2>Central AI Brain &amp; Provider Telemetry</h2>
+            <pre id="ai-brain-box" class="code-box">—</pre>
+          </div>
+          <div class="panel">
+            <h2>Performance Governor &amp; SQLite Health</h2>
+            <pre id="perf-box" class="code-box">—</pre>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <h2>Security Audit Trail &amp; Operator Accounts</h2>
+            <form id="create-user-form" class="inline-form">
+              <input id="new-user-name" type="text" required minlength="3" placeholder="New username" />
+              <input id="new-user-pass" type="password" required minlength="10" placeholder="Password (10+ chars)" />
+              <select id="new-user-role">
+                <option value="operator">operator</option>
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+              </select>
+              <button type="submit" class="btn small">Add User</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Actor</th>
+                    <th>Action</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody id="audit-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Redacted Logs &amp; Active Config</h2>
+              <button id="refresh-logs-btn" type="button" class="btn small ghost">Refresh Logs</button>
+            </div>
+            <pre id="logs-box" class="code-box">—</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

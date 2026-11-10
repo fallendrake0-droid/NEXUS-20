@@ -143,8 +143,12 @@ class BotRegistry extends EventEmitter {
     if (!workerId || workerId.length > 64 || !hostname) {
       throw new DomainError('SCHEMA_VALIDATION_FAILED', 'workerId and hostname are required');
     }
-    if (!Number.isSafeInteger(maxBotSlots) || maxBotSlots < 0 || maxBotSlots > 20) {
-      throw new DomainError('GLOBAL_BOT_CAP_EXCEEDED', 'maxBotSlots must be between 0 and 20');
+    const maxArch = this._config.capacity?.maxArchitecturalBots ?? 20;
+    if (!Number.isSafeInteger(maxBotSlots) || maxBotSlots < 0 || maxBotSlots > maxArch) {
+      throw new DomainError(
+        'GLOBAL_BOT_CAP_EXCEEDED',
+        `maxBotSlots must be between 0 and ${maxArch}`
+      );
     }
     if (configuredBots.length > maxBotSlots) {
       throw new DomainError(

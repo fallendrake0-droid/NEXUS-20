@@ -109,7 +109,14 @@ class Coordinator {
     this._bus = options.eventBus;
     this._sse = options.sseCoalescer || null;
     this._scheduler = options.taskScheduler || null;
+    this._knowledge = options.worldKnowledgeStore || null;
     this._logger = options.logger || null;
+    this._operatingMode = String(this._config.operatingMode || 'HYBRID')
+      .trim()
+      .toUpperCase();
+    if (this._scheduler && typeof this._scheduler.setOperatingMode === 'function') {
+      this._scheduler.setOperatingMode(this._operatingMode);
+    }
     this._safeMode = false;
     this._safeModeReason = null;
     this._inFlightIdempotency = new Map();
@@ -117,6 +124,14 @@ class Coordinator {
 
   get safeMode() {
     return this._safeMode;
+  }
+
+  get operatingMode() {
+    return this._operatingMode;
+  }
+
+  get worldKnowledgeStore() {
+    return this._knowledge;
   }
 
   _enterSafeMode(err) {
@@ -417,17 +432,314 @@ class Coordinator {
     return this._tasks.listTasks({ state, limit, cursor });
   }
 
+  /**
+   * Switch swarm operating mode at runtime (`SYNCHRONIZED`, `DISTRIBUTED`, `HYBRID` - `ADR-003`).
+   */
+  async setOperatingMode({ actor, mode }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const normalized = String(mode || '').trim().toUpperCase();
+    if (!['SYNCHRONIZED', 'DISTRIBUTED', 'HYBRID'].includes(normalized)) {
+      throw new DomainError(
+        'SCHEMA_VALIDATION_FAILED',
+        `operatingMode must be SYNCHRONIZED, DISTRIBUTED or HYBRID (got "${mode}")`
+      );
+    }
+    const previousMode = this._operatingMode;
+    this._operatingMode = normalized;
+    if (this._scheduler && typeof this._scheduler.setOperatingMode === 'function') {
+      this._scheduler.setOperatingMode(normalized);
+    }
+    const nowIso = new Date().toISOString();
+    this._store.transaction(() => {
+      this._store.setSetting('operating_mode', normalized, nowIso);
+      this._store.recordAudit({
+        occurredAt: nowIso,
+        actorType: actor.actorType || 'human',
+        actorId: actor.principalId,
+        action: 'swarm.operating_mode_changed',
+        outcome: 'ok',
+        details: { previousMode, operatingMode: normalized }
+      });
+    });
+
+    await this.scheduleReadyObjectives(null);
+    const payload = { previousMode, operatingMode: normalized, updatedAt: nowIso };
+    this._publishPostCommit('swarm.mode_changed', 'operating_mode', payload);
+    return payload;
+  }
+
+  /**
+   * Switch performance profile at runtime (`ULTRA_LOW`..`MAXIMUM_THROUGHPUT` - `ADR-004`).
+   */
+  async setPerformanceProfile({ actor, profile }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const normalized = String(profile || '').trim().toUpperCase();
+    let directives;
+    try {
+      directives = this._governor.setProfile(normalized);
+    } catch (err) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', err.message);
+    }
+    const nowIso = new Date().toISOString();
+    this._store.transaction(() => {
+      this._store.setSetting('performance_profile', normalized, nowIso);
+      this._store.recordAudit({
+        occurredAt: nowIso,
+        actorType: actor.actorType || 'human',
+        actorId: actor.principalId,
+        action: 'swarm.performance_profile_changed',
+        outcome: 'ok',
+        details: { profile: normalized }
+      });
+    });
+    await this.scheduleReadyObjectives(null);
+    this._publishPostCommit('swarm.profile_changed', 'performance_profile', {
+      profile: normalized,
+      directives
+    });
+    return { profile: normalized, directives };
+  }
+
+  async setEnabledBotsCap({ actor, enabledBotsCap }) {
+    authorizeRole(actor, 'admin');
+    this._assertWritable();
+    const cap = Math.trunc(Number(enabledBotsCap));
+    this._registry.setEnabledBotsCap(cap);
+    this._governor.setConfiguredBotCap(cap);
+    const nowIso = new Date().toISOString();
+    this._store.transaction(() => {
+      this._store.setSetting('enabled_bots_cap', String(cap), nowIso);
+      this._store.recordAudit({
+        occurredAt: nowIso,
+        actorType: actor.actorType || 'human',
+        actorId: actor.principalId,
+        action: 'swarm.enabled_bots_cap_changed',
+        outcome: 'ok',
+        details: { enabledBotsCap: cap }
+      });
+    });
+    await this.scheduleReadyObjectives(null);
+    this._publishPostCommit('swarm.bot_cap_changed', 'enabled_bots_cap', { enabledBotsCap: cap });
+    return { enabledBotsCap: cap };
+  }
+
+  async updateTaskPriority({ actor, taskId, priority }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const updated = this._tasks.updateTaskPriority(taskId, priority);
+    await this.scheduleReadyObjectives(null);
+    const refreshed = this._tasks.getTask(taskId);
+    this._publishPostCommit('task.updated', taskId, refreshed);
+    return refreshed;
+  }
+
+  /**
+   * Safely revoke a bot's active assignment and reallocate, enforcing `minAssignmentHoldMs`
+   * anti-oscillation hysteresis unless `force === true` (`ADR-003`).
+   */
+  async reassignBot({ actor, botId, force = false }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+
+    const activeAsgs = this._store.all(
+      `SELECT * FROM assignments
+       WHERE bot_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+      String(botId)
+    );
+    if (activeAsgs.length === 0) {
+      return { botId: String(botId), revokedCount: 0, rescheduled: 0 };
+    }
+
+    const nowMs = Date.now();
+    const minHoldMs = this._config.capacity?.minAssignmentHoldMs ?? 8_000;
+    if (!force && minHoldMs > 0) {
+      for (const asg of activeAsgs) {
+        const ageMs = nowMs - Date.parse(asg.issued_at);
+        if (ageMs >= 0 && ageMs < minHoldMs) {
+          throw new DomainError(
+            'CONFLICT',
+            `Assignment ${asg.assignment_id} on ${botId} is within anti-oscillation hold window (${ageMs}ms < ${minHoldMs}ms); pass force=true to override`
+          );
+        }
+      }
+    }
+
+    const nowIso = new Date(nowMs).toISOString();
+    this._store.transaction(() => {
+      for (const asg of activeAsgs) {
+        const uncredited =
+          asg.quota_quantity !== null ? Math.max(0, asg.quota_quantity - asg.credited_quantity) : 0;
+        this._store.run(
+          `UPDATE assignments SET state = 'revoked', completed_at = ? WHERE assignment_id = ?`,
+          nowIso,
+          asg.assignment_id
+        );
+        this._store.run(
+          `UPDATE objectives
+           SET allocation_epoch = allocation_epoch + 1,
+               reserved_quantity = MAX(0, reserved_quantity - ?),
+               state = CASE WHEN state IN ('assigned', 'running') THEN 'ready' ELSE state END,
+               version = version + 1
+           WHERE objective_id = ? AND state NOT IN ('completed', 'cancelled')`,
+          uncredited,
+          asg.objective_id
+        );
+        this._tasks._enqueueWorkerCommand(asg.worker_id, 'cancel', {
+          assignmentId: asg.assignment_id,
+          leaseId: asg.lease_id,
+          botId: asg.bot_id,
+          reason: 'operator_reassigned'
+        });
+      }
+    });
+
+    const sched = await this.scheduleReadyObjectives(null);
+    this._publishPostCommit('bot.reassigned', String(botId), {
+      botId: String(botId),
+      revokedCount: activeAsgs.length,
+      rescheduled: sched.scheduled
+    });
+    return {
+      botId: String(botId),
+      revokedCount: activeAsgs.length,
+      rescheduled: sched.scheduled
+    };
+  }
+
+  async emergencyStopAll({ actor }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const bots = this._registry.listBots();
+    const results = [];
+    for (const b of bots) {
+      results.push(await this.safeStopBot({ actor, botId: b.botId }));
+    }
+    this._publishPostCommit('swarm.emergency_stop', 'all', { stoppedBots: results.length });
+    return { stoppedBots: results.length, results };
+  }
+
+  async recordWorldKnowledge({ actor, observation }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    if (!this._knowledge) {
+      throw new DomainError('NOT_IMPLEMENTED', 'WorldKnowledgeStore is not configured');
+    }
+    const entry = this._knowledge.recordObservation(observation);
+    this._publishPostCommit('knowledge.updated', entry.knowledgeId, entry);
+    return entry;
+  }
+
+  async queryWorldKnowledge({ actor, filters = {} }) {
+    authorizeRole(actor, 'viewer');
+    if (!this._knowledge) return [];
+    return this._knowledge.query(filters);
+  }
+
   async getSystemStatus({ actor }) {
     authorizeRole(actor, 'viewer');
     const sample = this._monitor.sampleNow();
+    const swarmContext = this.buildSwarmWorldContext();
+    const activeAssignments = this._store
+      .all(
+        `SELECT assignment_id, task_id, objective_id, worker_id, bot_id, allocation_epoch,
+                state, action_type, item_key, quota_quantity, credited_quantity, scope_json,
+                issued_at, expires_at
+         FROM assignments
+         WHERE state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
+         ORDER BY issued_at DESC
+         LIMIT 100`
+      )
+      .map((a) => {
+        let scope = {};
+        try {
+          scope = JSON.parse(a.scope_json || '{}');
+        } catch {
+          scope = {};
+        }
+        return {
+          assignmentId: a.assignment_id,
+          taskId: a.task_id,
+          objectiveId: a.objective_id,
+          workerId: a.worker_id,
+          botId: a.bot_id,
+          allocationEpoch: a.allocation_epoch,
+          state: a.state,
+          actionType: a.action_type,
+          resourceId: a.item_key,
+          quotaQuantity: a.quota_quantity,
+          creditedQuantity: a.credited_quantity,
+          partitionId: scope.partitionId || null,
+          regionBounds: scope.regionBounds || null,
+          role: scope.role || null,
+          issuedAt: a.issued_at,
+          expiresAt: a.expires_at
+        };
+      });
+
+    const recentDecisions = this._store
+      .all(
+        `SELECT decision_id, task_id, objective_id, allocation_epoch, selected_bot_ids_json,
+                quotas_json, single_bot_p90_sec, selected_subset_p90_sec, marginal_gain,
+                decision_reason, created_at
+         FROM scheduler_decisions
+         ORDER BY created_at DESC
+         LIMIT 20`
+      )
+      .map((d) => ({
+        decisionId: d.decision_id,
+        taskId: d.task_id,
+        objectiveId: d.objective_id,
+        allocationEpoch: d.allocation_epoch,
+        selectedBotIds: JSON.parse(d.selected_bot_ids_json || '[]'),
+        quotas: JSON.parse(d.quotas_json || '[]'),
+        singleBotP90Sec: d.single_bot_p90_sec,
+        selectedSubsetP90Sec: d.selected_subset_p90_sec,
+        marginalGain: d.marginal_gain,
+        reason: d.decision_reason,
+        createdAt: d.created_at
+      }));
+
+    const recentAudit = this._store
+      .all(
+        `SELECT audit_id, occurred_at, actor_type, actor_id, action, target_id, outcome
+         FROM audit_events
+         ORDER BY occurred_at DESC
+         LIMIT 25`
+      )
+      .map((e) => ({
+        auditId: e.audit_id,
+        occurredAt: e.occurred_at,
+        actorType: e.actor_type,
+        actorId: e.actor_id,
+        action: e.action,
+        targetId: e.target_id,
+        outcome: e.outcome
+      }));
+
     return {
       schemaVersion: 1,
+      operatingMode: this._operatingMode,
+      performanceProfile: this._governor.profile,
       safeMode: this._safeMode,
       safeModeReason: this._safeModeReason,
       governorState: this._governor.state,
       governorDirectives: this._governor.getDirectives(),
       pausedGovernorTasks: this._governor.pausedTaskCount,
       enabledBotsCap: this._registry.enabledBotsCap,
+      globalMaxBots: this._config.capacity?.globalMaxBots ?? 20,
+      aiBrain: {
+        activeProvider: this._ai.activeProvider || 'ollama',
+        providers: typeof this._ai.listProviders === 'function' ? this._ai.listProviders() : [],
+        stats: typeof this._ai.stats === 'function' ? this._ai.stats() : {}
+      },
+      swarmState: swarmContext.swarmState,
+      worldKnowledge: this._knowledge ? this._knowledge.getCompactSummary(6) : null,
+      storageLocks: this._knowledge ? this._knowledge.listStorageLocks() : [],
+      activeAssignments,
+      recentDecisions,
+      recentAudit,
       workers: this._registry.listWorkers(),
       bots: this._registry.listBots(),
       persistence: this._store.health(),
@@ -561,6 +873,8 @@ class Coordinator {
       maxBots: this._registry.enabledBotsCap,
       serverRemainingSlots: Math.max(0, this._registry.enabledBotsCap - busyBotCount),
       swarmState: {
+        operatingMode: this._operatingMode,
+        performanceProfile: this._governor.profile,
         onlineBotCount,
         offlineBotCount,
         busyBotCount,
@@ -568,7 +882,8 @@ class Coordinator {
         blockedTaskCount: Number(taskCounts?.blockedTasks || 0),
         completedObjectiveCount: Number(completedObjRow?.cnt || 0),
         availableResources,
-        requiredResources
+        requiredResources,
+        ...(this._knowledge ? { worldKnowledge: this._knowledge.getCompactSummary(4) } : {})
       },
       candidates: allCapBots
     };
@@ -586,6 +901,18 @@ class Coordinator {
     const pinnedItemKeys = activeResRows.map((r) => r.resource_id);
 
     const ack = this._registry.heartbeat(authWorker.workerId, heartbeatDto, { pinnedItemKeys });
+
+    // Optional piggybacked world observations from bots (`ADR-005`)
+    if (this._knowledge && Array.isArray(heartbeatDto.worldObservations)) {
+      for (const obs of heartbeatDto.worldObservations.slice(0, 20)) {
+        try {
+          this._knowledge.recordObservation(obs);
+        } catch {
+          // Ignore malformed individual observation without failing worker heartbeat
+        }
+      }
+    }
+
     if (ack.expiredLeaseIds.length > 0 && !this._safeMode) {
       this._tasks.expireLeases(ack.serverTime);
     }
@@ -641,6 +968,35 @@ class Coordinator {
    * - Rehydrates `WorkloadGovernor` paused tasks from SQLite so zero deferred tasks are lost!
    */
   async recover(nowIso = new Date().toISOString()) {
+    // Restore persisted runtime operatingMode, performanceProfile & enabledBotsCap (`ADR-003`, `ADR-004`)
+    const savedMode = this._store.getSetting('operating_mode', null);
+    if (savedMode && ['SYNCHRONIZED', 'DISTRIBUTED', 'HYBRID'].includes(savedMode)) {
+      this._operatingMode = savedMode;
+      if (this._scheduler && typeof this._scheduler.setOperatingMode === 'function') {
+        this._scheduler.setOperatingMode(savedMode);
+      }
+    }
+    const savedProfile = this._store.getSetting('performance_profile', null);
+    if (savedProfile) {
+      try {
+        this._governor.setProfile(savedProfile);
+      } catch {
+        // Ignore invalid legacy profile
+      }
+    }
+    const savedCap = this._store.getSetting('enabled_bots_cap', null);
+    if (savedCap !== null) {
+      const parsedCap = Math.trunc(Number(savedCap));
+      if (Number.isSafeInteger(parsedCap) && parsedCap >= 1) {
+        try {
+          this._registry.setEnabledBotsCap(parsedCap);
+          this._governor.setConfiguredBotCap(parsedCap);
+        } catch {
+          // Clamp if config ceiling lowered
+        }
+      }
+    }
+
     const expiredLeases = this._tasks.expireLeases(nowIso);
     const expiredTransfers = this._tasks._ledger.expireStaleTransfers(nowIso);
     const livenessChanges = this._registry.sweepLiveness(nowIso);
