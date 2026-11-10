@@ -356,7 +356,7 @@ class MasterHttpServer {
     }
 
     // 2. Public health & auth bootstrap routes
-    if (method === 'GET' && pathname === '/api/v1/health') {
+    if (method === 'GET' && (pathname === '/api/v1/health' || pathname === '/healthz')) {
       const h = await this._healthProbe();
       this._sendJson(res, h.status === 'unhealthy' ? 503 : 200, {
         ...h,
@@ -791,6 +791,21 @@ class MasterHttpServer {
         observation: body
       });
       this._sendJson(res, 201, entry);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/system/backup') {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupDir = path.resolve(this._config.storage?.backupDir || './data/backups');
+      const destPath = path.join(backupDir, `swarm-backup-${stamp}.db`);
+      const backupRes = await this._coordinator.createBackup({ actor, destPath });
+      this._sendJson(res, 201, backupRes);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/system/exit-safe-mode') {
+      const resSafe = await this._coordinator.exitSafeMode({ actor });
+      this._sendJson(res, 200, resSafe);
       return;
     }
 

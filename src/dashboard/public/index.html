@@ -160,6 +160,21 @@
             </select>
             <button type="submit" class="btn primary">Dispatch to Brain</button>
           </form>
+          <div class="preset-chips">
+            <span class="muted small-label">Quick Intents:</span>
+            <button type="button" class="btn ghost small preset-chip" data-intent="Collect 100 cobblestone">Collect 100 cobblestone</button>
+            <button type="button" class="btn ghost small preset-chip" data-intent="Explore spawn_basin">Explore spawn_basin</button>
+            <button type="button" class="btn ghost small preset-chip" data-intent="Build a shelter while one bot guards">Build shelter + guard</button>
+            <button type="button" class="btn ghost small preset-chip" data-intent="Craft a wooden_pickaxe">Craft wooden_pickaxe</button>
+          </div>
+          <div id="clarify-banner" class="alert info hidden">
+            <div id="clarify-prompt-text" class="clarify-title">Clarification needed:</div>
+            <form id="clarify-form" class="inline-form">
+              <input id="clarify-task-id" type="hidden" />
+              <input id="clarify-input" type="text" required maxlength="300" placeholder="Enter exact resource/quantity clarification (e.g. Collect 64 oak_log)" />
+              <button type="submit" class="btn primary small">Submit Clarification</button>
+            </form>
+          </div>
         </div>
 
         <div class="two-col">
@@ -205,6 +220,7 @@
                     <th>Status</th>
                     <th>Max Slots</th>
                     <th>Last Heartbeat</th>
+                    <th>Controls</th>
                   </tr>
                 </thead>
                 <tbody id="workers-tbody"></tbody>
@@ -319,7 +335,14 @@
             <pre id="ai-brain-box" class="code-box">—</pre>
           </div>
           <div class="panel">
-            <h2>Performance Governor &amp; SQLite Health</h2>
+            <div class="panel-header">
+              <h2>Performance Governor &amp; SQLite Health</h2>
+              <div class="action-group">
+                <button id="backup-db-btn" type="button" class="btn small">Verified DB Backup</button>
+                <button id="exit-safemode-btn" type="button" class="btn small primary hidden">Exit Safe Mode</button>
+              </div>
+            </div>
+            <div id="backup-output" class="token-banner hidden"></div>
             <pre id="perf-box" class="code-box">—</pre>
           </div>
         </div>

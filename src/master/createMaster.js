@@ -219,6 +219,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
     return {
       schemaVersion: 1,
       status: healthy ? (pressure === 'normal' ? 'ok' : 'degraded') : 'unhealthy',
+      healthy,
       started,
       httpListening: Boolean(httpServer && httpServer.listening),
       httpPort: httpServer ? httpServer.port : null,

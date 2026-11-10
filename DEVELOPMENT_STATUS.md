@@ -1,7 +1,7 @@
 # Mineflayer AI Swarm — Development Status & Specialist Task Packages
 
 **Last Updated:** 2026-11-10  
-**Current Stage:** NEXUS-20 Phase 0 Audit + Phase 1 Master Control Plane + v0.3.1 Deep Audit Bugfixes Complete (`50/50` tests passing, `3/3` leak suites passing)  
+**Current Stage:** NEXUS-20 v0.4.0 — Master Control Plane + Distributed WorkerHost Tier + Unified CLI + Control Centre Complete (`54/54` tests passing, `3/3` leak suites passing)  
 **Integration Owner:** Lead Software Engineer & Repository Integration Owner
 
 ---
@@ -45,12 +45,13 @@ All core foundation modules are implemented in CommonJS (`'use strict'`), zero e
 | Shared World Knowledge | `src/knowledge/WorldKnowledgeStore.js` | **Complete** | 10 categories, TTL expiry, multi-bot confidence verification, bounded row cap, chest mutex locks |
 | Operator Auth & Security | `src/security/AuthService.js` | **Complete** | Concurrency-1 `scrypt` queue (`<=16 MiB` flood RSS), `HttpOnly` sessions, CSRF hash check, RBAC, rate limiter |
 | HTTP/SSE Gateway & Dashboard | `src/interfaces/http/MasterHttpServer.js`, `src/dashboard/public/*` | **Complete** | Zero-dep `/api/v1/*` + `/worker/v1/*` + SSE stream + Vanilla HTML/CSS/JS NEXUS-20 Control Centre |
+| Distributed WorkerHost Runtime | `src/worker/{MasterClient,SkillExecutor,BotRunner,WorkerHost}.js` | **Complete** | Live TCP enrollment/reconcile, staggered spawn, monotonic lease self-fencing, non-`eval` skills, priority-0 survival reflex, `!swarm` chat relay |
 
-### Verified Test & Benchmark Results (2026-11-10)
-- `npm test`: **45 / 45 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js` (including `nexus20-core-and-http.test.js`), `tests/adversarial/*.test.js` (`REG-01..08` + `ADV-01..04` 200-step randomized fuzz), and `tests/performance/*.test.js`.
+### Verified Test & Benchmark Results (2026-11-10 — v0.4.0)
+- `npm test`: **54 / 54 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js` (including `nexus20-core-and-http.test.js` and `worker-and-cli-e2e.test.js`), `tests/adversarial/*.test.js` (`REG-01..08`, `BUG-F01..F17`, `ADV-01..04` 200-step randomized fuzz), and `tests/performance/*.test.js`.
 - `npm run test:leaks`: **3 / 3 passing** under `--expose-gc` (`0` retained world buffers, SSE client buffers, or native timers).
 - `npm run check:termux`: **Passing** (`node:sqlite` v3.51.3 WAL + online backup verified, `/proc/meminfo` & `crypto.scrypt` verified).
-- `npm run bench`: **Passing** (`20_bots_distributed` Master Peak RSS `62.89 MiB`, Post-GC Heap `6.36 MiB`, Loop p95 `35.32 ms`, `0` tasks discarded).
+- `npm run bench`: **Passing** (`20_bots_distributed` Master Peak RSS `62.71 MiB`, Post-GC Heap `6.36 MiB`, Loop p95 `27.85 ms`, `0` tasks discarded).
 
 ---
 

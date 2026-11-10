@@ -580,10 +580,17 @@ class Coordinator {
           `UPDATE objectives
            SET allocation_epoch = allocation_epoch + 1,
                reserved_quantity = MAX(0, reserved_quantity - ?),
-               state = CASE WHEN state IN ('assigned', 'running') THEN 'ready' ELSE state END,
+               state = CASE
+                 WHEN state IN ('assigned', 'running') AND (
+                   SELECT COUNT(*) FROM assignments
+                   WHERE objective_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')
+                 ) = 0 THEN 'ready'
+                 ELSE state
+               END,
                version = version + 1
            WHERE objective_id = ? AND state NOT IN ('completed', 'cancelled')`,
           uncredited,
+          asg.objective_id,
           asg.objective_id
         );
         this._tasks._enqueueWorkerCommand(asg.worker_id, 'cancel', {
@@ -618,6 +625,65 @@ class Coordinator {
     }
     this._publishPostCommit('swarm.emergency_stop', 'all', { stoppedBots: results.length });
     return { stoppedBots: results.length, results };
+  }
+
+  /**
+   * Perform an online verified SQLite backup (`admin` role).
+   */
+  async createBackup({ actor, destPath }) {
+    authorizeRole(actor, 'admin');
+    const fs = require('node:fs');
+    const res = await this._store.backup(destPath);
+    const bytes = fs.existsSync(res.destPath) ? fs.statSync(res.destPath).size : 0;
+    const nowIso = res.backedUpAt || new Date().toISOString();
+    this._store.recordAudit({
+      occurredAt: nowIso,
+      actorType: actor.actorType || 'human',
+      actorId: actor.principalId,
+      action: 'system.backup_created',
+      outcome: 'ok',
+      details: { path: res.destPath, bytes }
+    });
+    return {
+      ok: true,
+      backupPath: res.destPath,
+      bytes,
+      verified: res.verified,
+      createdAt: nowIso
+    };
+  }
+
+  /**
+   * Recover out of read-only persistence safe mode once SQLite WAL health is verified (`admin`).
+   */
+  async exitSafeMode({ actor }) {
+    authorizeRole(actor, 'admin');
+    const dbHealth = this._store.health();
+    if (dbHealth.status !== 'healthy') {
+      throw new DomainError(
+        'PERSISTENCE_UNAVAILABLE',
+        `Cannot exit safe mode while SQLite health is "${dbHealth.status}"`
+      );
+    }
+    const previousReason = this._safeModeReason;
+    this._safeMode = false;
+    this._safeModeReason = null;
+    const nowIso = new Date().toISOString();
+    this._store.recordAudit({
+      occurredAt: nowIso,
+      actorType: actor.actorType || 'human',
+      actorId: actor.principalId,
+      action: 'system.safe_mode_exited',
+      outcome: 'ok',
+      details: { previousReason }
+    });
+    await this.scheduleReadyObjectives(null);
+    this._publishPostCommit('system.safe_mode_exited', 'safe_mode', {
+      safeMode: false,
+      previousReason,
+      updatedAt: nowIso
+    });
+    return { safeMode: false, previousReason };
   }
 
   async recordWorldKnowledge({ actor, observation }) {
@@ -941,12 +1007,54 @@ class Coordinator {
 
     const results = [];
     const touchedTaskIds = new Set();
+    const pendingChatIntents = [];
     for (const env of events) {
       const ack = this._tasks.applyWorkerEvent(authWorker.workerId, env, authWorker);
       results.push(ack);
       if (env.payload?.taskId) touchedTaskIds.add(env.payload.taskId);
       if (Array.isArray(ack.affectedTaskIds)) {
         for (const tId of ack.affectedTaskIds) touchedTaskIds.add(tId);
+      }
+      if (!ack.duplicate && env.eventType === 'chat_intent' && env.payload) {
+        pendingChatIntents.push(env.payload);
+      }
+    }
+
+    // Execute authorised in-game `!swarm` chat intents when chat control is explicitly enabled (`SECURITY_PLAN.md` §7)
+    if (!this._safeMode && this._config.chat?.enabled === true && pendingChatIntents.length > 0) {
+      const allowedSet = new Set(this._config.chat.allowedPlayerUuids || []);
+      for (const intent of pendingChatIntents) {
+        if (!intent.senderUuid || !allowedSet.has(intent.senderUuid)) continue;
+        const chatActor = {
+          principalId: `mc:${intent.senderUuid}`,
+          role: 'chat_allowed',
+          actorType: 'ingame_player'
+        };
+        try {
+          if (intent.verb === 'task' && intent.argumentText) {
+            await this.submitIntent({
+              actor: chatActor,
+              source: 'chat',
+              text: intent.argumentText
+            });
+          } else if (intent.verb === 'pause' && intent.argumentText) {
+            await this.pauseTask({ actor: { ...chatActor, role: 'operator' }, taskId: intent.argumentText.trim() });
+          } else if (intent.verb === 'resume' && intent.argumentText) {
+            await this.resumeTask({ actor: { ...chatActor, role: 'operator' }, taskId: intent.argumentText.trim() });
+          } else if (intent.verb === 'cancel' && intent.argumentText) {
+            await this.cancelTask({
+              actor: { ...chatActor, role: 'operator' },
+              taskId: intent.argumentText.trim(),
+              reason: 'ingame_chat_cancel'
+            });
+          }
+        } catch (err) {
+          this._logger?.warn('In-game chat_intent command rejected', {
+            senderUuid: intent.senderUuid,
+            verb: intent.verb,
+            err
+          });
+        }
       }
     }
 

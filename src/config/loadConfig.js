@@ -1,5 +1,6 @@
 'use strict';
 
+const os = require('node:os');
 const path = require('node:path');
 const { DomainError } = require('../errors/DomainError');
 const { validateOllamaEndpointPolicy } = require('../performance/AiEfficiencyController');
@@ -17,7 +18,8 @@ const ALLOWED_TOP_KEYS = new Set([
   'storage',
   'logging',
   'chat',
-  'security'
+  'security',
+  'worker'
 ]);
 
 const VALID_OPERATING_MODES = new Set(['SYNCHRONIZED', 'DISTRIBUTED', 'HYBRID']);
@@ -196,6 +198,68 @@ function buildRawConfig(env = {}, fileConfig = {}) {
         env.SWARM_BOOTSTRAP_TTL_MS ?? fileConfig.security?.bootstrapTokenTtlMs,
         10 * 60 * 1000
       )
+    },
+    worker: {
+      masterUrl: String(
+        env.SWARM_MASTER_URL ?? fileConfig.worker?.masterUrl ?? `http://${host}:8443`
+      ).trim(),
+      workerId: String(env.SWARM_WORKER_ID ?? fileConfig.worker?.workerId ?? 'worker-1').trim(),
+      hostname: String(
+        env.SWARM_WORKER_HOSTNAME ?? fileConfig.worker?.hostname ?? os.hostname() ?? 'worker-host'
+      ).trim(),
+      bootstrapToken: env.SWARM_BOOTSTRAP_TOKEN ?? fileConfig.worker?.bootstrapToken ?? null,
+      workerToken: env.SWARM_WORKER_TOKEN ?? fileConfig.worker?.workerToken ?? null,
+      statePath: env.SWARM_WORKER_STATE_PATH ?? fileConfig.worker?.statePath ?? null,
+      maxBotSlots: parseIntOr(
+        env.SWARM_WORKER_MAX_SLOTS ?? fileConfig.worker?.maxBotSlots,
+        5
+      ),
+      spawnStaggerMs: parseIntOr(
+        env.SWARM_SPAWN_STAGGER_MS ?? fileConfig.worker?.spawnStaggerMs,
+        2_500
+      ),
+      commandPollIntervalMs: parseIntOr(
+        env.SWARM_WORKER_POLL_MS ?? fileConfig.worker?.commandPollIntervalMs,
+        1_000
+      ),
+      minecraftHost: String(
+        env.SWARM_MC_HOST ?? fileConfig.worker?.minecraftHost ?? '127.0.0.1'
+      ).trim(),
+      minecraftPort: parseIntOr(
+        env.SWARM_MC_PORT ?? fileConfig.worker?.minecraftPort,
+        25565
+      ),
+      minecraftVersion: env.SWARM_MC_VERSION ?? fileConfig.worker?.minecraftVersion ?? null,
+      serverId: String(
+        env.SWARM_MC_SERVER_ID ?? fileConfig.worker?.serverId ?? 'survival-main'
+      ).trim(),
+      authMode: String(
+        env.SWARM_MC_AUTH_MODE ??
+          fileConfig.worker?.authMode ??
+          (String(env.SWARM_ENV_PROFILE ?? fileConfig.envProfile ?? 'authorised_online').trim() ===
+          'private_offline_test'
+            ? 'private_offline_test'
+            : 'online_microsoft')
+      ).trim(),
+      simulationMode: parseBool(
+        env.SWARM_WORKER_SIMULATION ?? fileConfig.worker?.simulationMode,
+        false
+      ),
+      bots: Array.isArray(fileConfig.worker?.bots)
+        ? fileConfig.worker.bots.map((b) => ({ ...b }))
+        : env.SWARM_WORKER_BOTS
+          ? String(env.SWARM_WORKER_BOTS)
+              .split(',')
+              .map((entry) => entry.trim())
+              .filter(Boolean)
+              .map((entry) => {
+                const [idPart, namePart] = entry.split(':').map((s) => s.trim());
+                return {
+                  botId: idPart,
+                  username: namePart || idPart.replace(/[^a-zA-Z0-9_]/g, '_')
+                };
+              })
+          : []
     }
   };
 }
@@ -403,6 +467,47 @@ function validateConfig(config) {
     config.chat.commandPrefix.length > 16
   ) {
     errors.push('chat.commandPrefix must be 1..16 characters');
+  }
+
+  // Worker configuration validation (when present or role === 'worker')
+  if (config.worker) {
+    const w = config.worker;
+    if (typeof w.simulationMode !== 'boolean') {
+      errors.push('worker.simulationMode must be a valid boolean');
+    }
+    try {
+      const parsedMaster = new URL(String(w.masterUrl || ''));
+      if (parsedMaster.protocol !== 'http:' && parsedMaster.protocol !== 'https:') {
+        errors.push('worker.masterUrl must use http: or https:');
+      }
+    } catch {
+      errors.push('worker.masterUrl must be a valid URL');
+    }
+    if (!w.workerId || typeof w.workerId !== 'string' || w.workerId.length > 64) {
+      errors.push('worker.workerId must be 1..64 characters');
+    }
+    if (!Number.isSafeInteger(w.maxBotSlots) || w.maxBotSlots < 1 || w.maxBotSlots > archMax) {
+      errors.push(`worker.maxBotSlots must be an integer in 1..${archMax}`);
+    }
+    if (!Number.isSafeInteger(w.spawnStaggerMs) || w.spawnStaggerMs < 0 || w.spawnStaggerMs > 60_000) {
+      errors.push('worker.spawnStaggerMs must be in 0..60000');
+    }
+    if (
+      !Number.isSafeInteger(w.commandPollIntervalMs) ||
+      w.commandPollIntervalMs < 100 ||
+      w.commandPollIntervalMs > 30_000
+    ) {
+      errors.push('worker.commandPollIntervalMs must be in 100..30000');
+    }
+    if (!Number.isSafeInteger(w.minecraftPort) || w.minecraftPort < 1 || w.minecraftPort > 65535) {
+      errors.push('worker.minecraftPort must be in 1..65535');
+    }
+    if (!['online_microsoft', 'private_offline_test'].includes(w.authMode)) {
+      errors.push('worker.authMode must be online_microsoft or private_offline_test');
+    }
+    if (config.envProfile === 'authorised_online' && w.authMode === 'private_offline_test') {
+      errors.push('worker.authMode cannot be private_offline_test when envProfile is authorised_online');
+    }
   }
 
   if (errors.length > 0 && !errorCode) {

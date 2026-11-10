@@ -1,5 +1,23 @@
 # NEXUS-20 Changelog
 
+## [0.4.0] — 2026-11-10 (Unified CLI Entrypoint, Distributed WorkerHost Tier & Control Centre Enhancements)
+
+### Added
+- **Unified Master + Worker Entrypoint & Operator CLI (`index.js`, `package.json`, `loadConfig.js`):**
+  - Dual-role daemon launch (`node index.js` for Master Controller, `node index.js --role=worker` for Distributed `WorkerHost`) with lazy `createWorker` loading so `G-01` zero-Mineflayer isolation on the Galaxy A06 Master remains 100% enforced.
+  - Operator subcommands: `mint-token`, `status`, `submit "<intent>"`, `backup`, `--help`, `--check-config`, and local/remote `--health [--url=...]`.
+  - Full `worker` configuration validation in `src/config/loadConfig.js` and documented worker env template in `.env.example`.
+- **Distributed Worker Runtime Tier (`src/worker/*`):**
+  - `MasterClient.js`: Zero-dependency `node:http`/`node:https` client for `/worker/v1/{register,heartbeat,commands,commands/:id/ack,events,reconcile}` with monotonic `workerSequence`, `BoundedByteQueue` offline event buffering, and custom TLS CA support.
+  - `SkillExecutor.js`: Deterministic, strictly non-`eval` skill executor for `mine`, `collect`, `craft`, `build`, `explore`, `guard`, `transfer`, `repair`, `inspect`, and `safe_stop` with `performance.now()` monotonic local lease self-fencing (`LEASE_EXPIRED_LOCALLY`), mid-step `pause`/`resume`/`cancel`/`fence_epoch` preemption, checkpoints, and schema-valid `TaskCompletionReportV1` / `FailureReportV1` evidence.
+  - `BotRunner.js`: Per-bot lifecycle with `ScopedListeners` cleanup, priority-0 Survival Reflex auto-eat + `survival_override` emission, `ChatHistoryGuard` `!swarm` ingress filtering, `BlockSearchCache` governor propagation, `SimulatedBotDriver` (`SWARM_WORKER_SIMULATION=true`), and lazy `createMineflayerDriver`.
+  - `WorkerHost.js`: Single-use bootstrap enrollment with `0600` credential persistence, automatic reconnect `/worker/v1/reconcile`, staggered bot spawn ramp (`spawnStaggerMs`), piggybacked `WorldKnowledgeStore` observations, and consolidated `TimerRegistry` loops.
+- **Master Gateway, Chat Loop & Control Centre UI Improvements (`Coordinator.js`, `MasterHttpServer.js`, `src/dashboard/public/*`):**
+  - End-to-end execution of allowlisted in-game `!swarm` `chat_intent` events (`task`, `pause`, `resume`, `cancel`) in `Coordinator.handleWorkerEventBatch` (enforcing `HIGH-06` offline chat lock).
+  - Verified online SQLite WAL backup endpoint (`POST /api/v1/system/backup` + UI button in Tab 6) and persistence safe-mode recovery endpoint (`POST /api/v1/system/exit-safe-mode` + UI recovery button).
+  - Control Centre UX upgrades: Quick-Intent preset chips, inline live Task Priority selector, inline Clarification response banner, copy-ready Worker launch command snippet on token mint, Worker Revoke button, and zero inline `.style.*` CSP compliance.
+- **End-to-End Verification (`tests/foundation/worker-and-cli-e2e.test.js`):** Added `E2E-01..04` (`54/54` tests passing, `3/3` leak suites passing).
+
 ## [0.3.1] — 2026-11-10 (Repository-Wide Deep Bug Audit & 16 Root-Cause Fixes)
 
 ### Fixed

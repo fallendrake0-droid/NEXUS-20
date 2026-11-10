@@ -1,8 +1,8 @@
 {
   "name": "mineflayer-ai-swarm",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Distributed Mineflayer AI Swarm — lightweight Galaxy A06 master coordinator and bounded worker runtime",
+  "description": "NEXUS-20 Distributed Mineflayer AI Swarm — lightweight Galaxy A06 master coordinator, Central Brain, Control Centre UI & bounded WorkerHost runtime",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
@@ -10,7 +10,11 @@
   },
   "scripts": {
     "start": "node index.js",
+    "start:worker": "node index.js --role=worker",
     "check:config": "node index.js --check-config",
+    "cli:help": "node index.js --help",
+    "cli:mint-token": "node index.js mint-token",
+    "cli:backup": "node index.js backup",
     "test": "node --test tests/foundation/*.test.js tests/adversarial/*.test.js tests/performance/*.test.js",
     "test:foundation": "node --test tests/foundation/*.test.js",
     "test:adversarial": "node --test tests/adversarial/*.test.js",

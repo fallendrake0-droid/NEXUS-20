@@ -209,6 +209,13 @@
       }
     }
 
+    // Safe-mode recovery button visibility
+    const exitSafeBtn = el('exit-safemode-btn');
+    if (exitSafeBtn) {
+      if (st.safeMode) exitSafeBtn.classList.remove('hidden');
+      else exitSafeBtn.classList.add('hidden');
+    }
+
     // Workers
     const wBody = el('workers-tbody');
     clearChildren(wBody);
@@ -219,12 +226,36 @@
       tr.appendChild(tdText(w.status));
       tr.appendChild(tdText(w.maxBotSlots));
       tr.appendChild(tdText(w.lastHeartbeatAt || 'never'));
+
+      const wCtrlTd = document.createElement('td');
+      if (w.status !== 'disabled') {
+        const revBtn = document.createElement('button');
+        revBtn.className = 'btn danger small';
+        revBtn.textContent = 'Revoke';
+        revBtn.onclick = async () => {
+          try {
+            await api('/api/v1/workers/' + encodeURIComponent(w.workerId) + '/revoke', {
+              method: 'POST',
+              body: { reason: 'dashboard_revoked' }
+            });
+            showToast('Revoked worker ' + w.workerId);
+            refreshStatusAndTasks();
+          } catch (err) {
+            showToast(err.message, true);
+          }
+        };
+        wCtrlTd.appendChild(revBtn);
+      } else {
+        wCtrlTd.textContent = 'revoked';
+        wCtrlTd.className = 'muted';
+      }
+      tr.appendChild(wCtrlTd);
       wBody.appendChild(tr);
     }
     if ((st.workers || []).length === 0) {
       const tr = document.createElement('tr');
       const td = tdText('No WorkerHosts enrolled yet. Mint a Bootstrap Token above to enroll a worker.');
-      td.colSpan = 5;
+      td.colSpan = 6;
       td.className = 'muted';
       tr.appendChild(td);
       wBody.appendChild(tr);
@@ -243,6 +274,8 @@
       tr.appendChild(tdText(posStr + ' | H:' + (snap.healthBand || '?') + ' F:' + (snap.foodBand || '?')));
 
       const ctrlTd = document.createElement('td');
+      const grp = document.createElement('div');
+      grp.className = 'action-group';
       const stopBtn = document.createElement('button');
       stopBtn.className = 'btn danger small';
       stopBtn.textContent = 'Safe Stop';
@@ -258,7 +291,6 @@
 
       const reBtn = document.createElement('button');
       reBtn.className = 'btn small';
-      reBtn.style.marginLeft = '4px';
       reBtn.textContent = 'Reassign';
       reBtn.onclick = async () => {
         try {
@@ -269,8 +301,9 @@
           showToast(err.message, true);
         }
       };
-      ctrlTd.appendChild(stopBtn);
-      ctrlTd.appendChild(reBtn);
+      grp.appendChild(stopBtn);
+      grp.appendChild(reBtn);
+      ctrlTd.appendChild(grp);
       tr.appendChild(ctrlTd);
       bBody.appendChild(tr);
     }
@@ -371,10 +404,43 @@
     for (const t of items) {
       const tr = document.createElement('tr');
       tr.appendChild(tdText(t.intentSummary || t.taskId));
-      tr.appendChild(tdText(t.priority));
+
+      // Inline live priority selector for non-terminal tasks
+      const prioTd = document.createElement('td');
+      if (!['completed', 'cancelled', 'failed'].includes(t.state)) {
+        const prioSel = document.createElement('select');
+        for (const p of ['low', 'normal', 'high', 'safety', 'survival']) {
+          const opt = document.createElement('option');
+          opt.value = p;
+          opt.textContent = p;
+          if (p === t.priority) opt.selected = true;
+          prioSel.appendChild(opt);
+        }
+        prioSel.onchange = async () => {
+          try {
+            await api('/api/v1/tasks/' + encodeURIComponent(t.taskId) + '/priority', {
+              method: 'POST',
+              body: { priority: prioSel.value }
+            });
+            showToast('Updated priority to ' + prioSel.value);
+            refreshStatusAndTasks();
+          } catch (err) {
+            showToast(err.message, true);
+            refreshStatusAndTasks();
+          }
+        };
+        prioTd.appendChild(prioSel);
+      } else {
+        prioTd.textContent = t.priority;
+      }
+      tr.appendChild(prioTd);
+
       tr.appendChild(tdText(t.state));
 
       const actTd = document.createElement('td');
+      const grp = document.createElement('div');
+      grp.className = 'action-group';
+
       const inspectBtn = document.createElement('button');
       inspectBtn.className = 'btn small';
       inspectBtn.textContent = 'Inspect';
@@ -382,9 +448,21 @@
         const detail = await api('/api/v1/tasks/' + encodeURIComponent(t.taskId));
         el('task-detail-box').textContent = JSON.stringify(detail, null, 2);
       };
-      actTd.appendChild(inspectBtn);
+      grp.appendChild(inspectBtn);
 
-      if (t.state === 'ready' || t.state === 'running') {
+      if (t.state === 'clarification_required') {
+        const clarBtn = document.createElement('button');
+        clarBtn.className = 'btn small primary';
+        clarBtn.textContent = 'Clarify';
+        clarBtn.onclick = () => {
+          el('clarify-task-id').value = t.taskId;
+          el('clarify-prompt-text').textContent =
+            'Clarify task (' + (t.clarificationQuestion || 'Specify exact resource and quantity') + '):';
+          el('clarify-banner').classList.remove('hidden');
+          el('clarify-input').focus();
+        };
+        grp.appendChild(clarBtn);
+      } else if (t.state === 'ready' || t.state === 'running') {
         const pauseBtn = document.createElement('button');
         pauseBtn.className = 'btn small ghost';
         pauseBtn.textContent = 'Pause';
@@ -392,7 +470,7 @@
           await api('/api/v1/tasks/' + encodeURIComponent(t.taskId) + '/pause', { method: 'POST', body: {} });
           refreshStatusAndTasks();
         };
-        actTd.appendChild(pauseBtn);
+        grp.appendChild(pauseBtn);
       } else if (t.state === 'paused') {
         const resBtn = document.createElement('button');
         resBtn.className = 'btn small primary';
@@ -401,21 +479,21 @@
           await api('/api/v1/tasks/' + encodeURIComponent(t.taskId) + '/resume', { method: 'POST', body: {} });
           refreshStatusAndTasks();
         };
-        actTd.appendChild(resBtn);
+        grp.appendChild(resBtn);
       }
 
       if (!['completed', 'cancelled', 'failed'].includes(t.state)) {
         const cancelBtn = document.createElement('button');
         cancelBtn.className = 'btn small danger';
-        cancelBtn.style.marginLeft = '4px';
         cancelBtn.textContent = 'Cancel';
         cancelBtn.onclick = async () => {
           await api('/api/v1/tasks/' + encodeURIComponent(t.taskId) + '/cancel', { method: 'POST', body: {} });
           refreshStatusAndTasks();
         };
-        actTd.appendChild(cancelBtn);
+        grp.appendChild(cancelBtn);
       }
 
+      actTd.appendChild(grp);
       tr.appendChild(actTd);
       tbody.appendChild(tr);
     }
@@ -557,7 +635,40 @@
       const created = await api('/api/v1/tasks', { method: 'POST', body: { text, priority } });
       el('intent-text').value = '';
       el('task-detail-box').textContent = JSON.stringify(created, null, 2);
+      if (created.state === 'clarification_required') {
+        el('clarify-task-id').value = created.taskId;
+        el('clarify-prompt-text').textContent =
+          'Clarify task (' + (created.clarificationQuestion || 'Specify exact resource and quantity') + '):';
+        el('clarify-banner').classList.remove('hidden');
+      }
       showToast('Task dispatched: ' + created.state);
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  document.querySelectorAll('.preset-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      el('intent-text').value = chip.dataset.intent || '';
+      el('intent-text').focus();
+    });
+  });
+
+  el('clarify-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const taskId = el('clarify-task-id').value;
+    const text = el('clarify-input').value.trim();
+    if (!taskId || !text) return;
+    try {
+      const updated = await api('/api/v1/tasks/' + encodeURIComponent(taskId) + '/clarify', {
+        method: 'POST',
+        body: { text }
+      });
+      el('clarify-input').value = '';
+      el('clarify-banner').classList.add('hidden');
+      el('task-detail-box').textContent = JSON.stringify(updated, null, 2);
+      showToast('Clarification applied: ' + updated.state);
       refreshStatusAndTasks();
     } catch (err) {
       showToast(err.message, true);
@@ -568,8 +679,43 @@
     try {
       const out = await api('/api/v1/workers/bootstrap-token', { method: 'POST', body: {} });
       const box = el('bootstrap-token-output');
-      box.textContent = 'Single-use Worker Bootstrap Token (expires ' + out.expiresAt + '): ' + out.bootstrapToken;
+      clearChildren(box);
+      const title = document.createElement('div');
+      title.textContent = 'Single-use Worker Bootstrap Token (expires ' + out.expiresAt + '): ' + out.bootstrapToken;
+      const cmd = document.createElement('code');
+      cmd.className = 'cmd-snippet';
+      cmd.textContent =
+        'SWARM_ROLE=worker SWARM_MASTER_URL=' +
+        window.location.origin +
+        ' SWARM_BOOTSTRAP_TOKEN=' +
+        out.bootstrapToken +
+        ' SWARM_WORKER_ID=worker-1 node index.js';
+      box.appendChild(title);
+      box.appendChild(cmd);
       box.classList.remove('hidden');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  el('backup-db-btn').addEventListener('click', async () => {
+    try {
+      const out = await api('/api/v1/system/backup', { method: 'POST', body: {} });
+      const box = el('backup-output');
+      box.textContent = 'Verified WAL Backup saved (' + out.bytes + ' bytes): ' + out.backupPath;
+      box.classList.remove('hidden');
+      showToast('Verified SQLite backup completed');
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  el('exit-safemode-btn').addEventListener('click', async () => {
+    try {
+      await api('/api/v1/system/exit-safe-mode', { method: 'POST', body: {} });
+      showToast('Exited read-only safe mode');
+      refreshStatusAndTasks();
     } catch (err) {
       showToast(err.message, true);
     }

@@ -202,6 +202,52 @@ input, select {
   margin-top: 18px;
 }
 
+.action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.small-label {
+  font-size: 12px;
+}
+
+.clarify-title {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.token-banner {
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.cmd-snippet {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #0b1120;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #7dd3fc;
+}
+
 /* Tabs */
 .tabbar {
   display: flex;
