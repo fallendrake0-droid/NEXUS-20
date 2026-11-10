@@ -1,0 +1,349 @@
+'use strict';
+
+const path = require('node:path');
+const { DomainError } = require('../errors/DomainError');
+const { validateOllamaEndpointPolicy } = require('../performance/AiEfficiencyController');
+const { sanitizeValue } = require('../performance/BoundedLogger');
+
+const ALLOWED_TOP_KEYS = new Set([
+  'role',
+  'envProfile',
+  'http',
+  'tls',
+  'capacity',
+  'ai',
+  'storage',
+  'logging',
+  'chat',
+  'security'
+]);
+
+const FORBIDDEN_ANDROID_FUSE_PREFIXES = ['/sdcard', '/storage/emulated/', '/mnt/sdcard'];
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+function parseBool(val, fallback) {
+  if (typeof val === 'boolean') return val;
+  if (val === undefined || val === null || val === '') return fallback;
+  const norm = String(val).trim().toLowerCase();
+  if (norm === 'true' || norm === '1' || norm === 'yes') return true;
+  if (norm === 'false' || norm === '0' || norm === 'no') return false;
+  return fallback;
+}
+
+function parseIntOr(val, fallback) {
+  if (typeof val === 'number' && Number.isFinite(val)) return Math.trunc(val);
+  if (val === undefined || val === null || val === '') return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : NaN;
+}
+
+function deepFreeze(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  Object.freeze(obj);
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (val && typeof val === 'object' && !Object.isFrozen(val)) {
+      deepFreeze(val);
+    }
+  }
+  return obj;
+}
+
+function buildRawConfig(env = {}, fileConfig = {}) {
+  if (!fileConfig || typeof fileConfig !== 'object' || Array.isArray(fileConfig)) {
+    throw new DomainError('SCHEMA_VALIDATION_FAILED', 'fileConfig must be a plain object');
+  }
+  for (const k of Object.keys(fileConfig)) {
+    if (!ALLOWED_TOP_KEYS.has(k)) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', `Unknown configuration section: ${k}`);
+    }
+  }
+
+  const host = String(env.SWARM_BIND_HOST ?? fileConfig.http?.host ?? '127.0.0.1').trim();
+  const isLoopback = LOOPBACK_HOSTS.has(host);
+
+  return {
+    role: String(env.SWARM_ROLE ?? fileConfig.role ?? 'master').trim(),
+    envProfile: String(
+      env.SWARM_ENV_PROFILE ?? fileConfig.envProfile ?? 'authorised_online'
+    ).trim(),
+    http: {
+      host,
+      port: parseIntOr(env.SWARM_PORT ?? fileConfig.http?.port, 8443)
+    },
+    tls: {
+      enabled: parseBool(env.SWARM_TLS_ENABLED ?? fileConfig.tls?.enabled, !isLoopback),
+      certPath: env.SWARM_TLS_CERT_PATH ?? fileConfig.tls?.certPath ?? null,
+      keyPath: env.SWARM_TLS_KEY_PATH ?? fileConfig.tls?.keyPath ?? null,
+      caCertPath: env.SWARM_TLS_CA_PATH ?? fileConfig.tls?.caCertPath ?? null
+    },
+    capacity: {
+      globalMaxBots: parseIntOr(
+        env.SWARM_GLOBAL_MAX_BOTS ?? fileConfig.capacity?.globalMaxBots,
+        20
+      ),
+      initialEnabledBots: parseIntOr(
+        env.SWARM_ENABLED_BOTS ?? fileConfig.capacity?.initialEnabledBots,
+        2
+      ),
+      phoneLocalBotSlots: parseIntOr(
+        env.SWARM_PHONE_LOCAL_BOT_SLOTS ?? fileConfig.capacity?.phoneLocalBotSlots,
+        0
+      ),
+      defaultLeaseDurationMs: parseIntOr(
+        env.SWARM_LEASE_DURATION_MS ?? fileConfig.capacity?.defaultLeaseDurationMs,
+        30_000
+      ),
+      heartbeatIntervalMs: parseIntOr(
+        env.SWARM_HEARTBEAT_INTERVAL_MS ?? fileConfig.capacity?.heartbeatIntervalMs,
+        5_000
+      )
+    },
+    ai: {
+      enabled: parseBool(env.SWARM_AI_ENABLED ?? fileConfig.ai?.enabled, true),
+      ollamaBaseUrl: env.SWARM_OLLAMA_URL ?? fileConfig.ai?.ollamaBaseUrl ?? null,
+      model: String(env.SWARM_OLLAMA_MODEL ?? fileConfig.ai?.model ?? 'unresolved').trim(),
+      maxConcurrent: parseIntOr(env.SWARM_AI_MAX_CONCURRENT ?? fileConfig.ai?.maxConcurrent, 1),
+      maxQueue: parseIntOr(env.SWARM_AI_MAX_QUEUE ?? fileConfig.ai?.maxQueue, 3),
+      connectTimeoutMs: parseIntOr(
+        env.SWARM_AI_CONNECT_TIMEOUT_MS ?? fileConfig.ai?.connectTimeoutMs,
+        2_500
+      ),
+      timeoutMs: parseIntOr(env.SWARM_AI_TIMEOUT_MS ?? fileConfig.ai?.timeoutMs, 8_000),
+      coldLoadTimeoutMs: parseIntOr(
+        env.SWARM_AI_COLD_TIMEOUT_MS ?? fileConfig.ai?.coldLoadTimeoutMs,
+        20_000
+      )
+    },
+    storage: {
+      sqlitePath: String(
+        env.SWARM_DB_PATH ?? fileConfig.storage?.sqlitePath ?? './data/swarm.db'
+      ).trim(),
+      backupDir: String(
+        env.SWARM_BACKUP_DIR ?? fileConfig.storage?.backupDir ?? './data/backups'
+      ).trim()
+    },
+    logging: {
+      level: String(env.SWARM_LOG_LEVEL ?? fileConfig.logging?.level ?? 'info').trim(),
+      filePath: env.SWARM_LOG_PATH ?? fileConfig.logging?.filePath ?? null,
+      maxFileBytes: parseIntOr(
+        env.SWARM_LOG_MAX_BYTES ?? fileConfig.logging?.maxFileBytes,
+        5 * 1024 * 1024
+      ),
+      maxFiles: parseIntOr(env.SWARM_LOG_MAX_FILES ?? fileConfig.logging?.maxFiles, 3),
+      ringSize: parseIntOr(env.SWARM_LOG_RING_SIZE ?? fileConfig.logging?.ringSize, 200)
+    },
+    chat: {
+      enabled: parseBool(env.SWARM_CHAT_ENABLED ?? fileConfig.chat?.enabled, false),
+      allowInsecureOfflineChat: parseBool(
+        env.SWARM_ALLOW_INSECURE_OFFLINE_CHAT ?? fileConfig.chat?.allowInsecureOfflineChat,
+        false
+      ),
+      commandPrefix: String(
+        env.SWARM_CHAT_PREFIX ?? fileConfig.chat?.commandPrefix ?? '!swarm'
+      ).trim(),
+      allowedPlayerUuids: Array.isArray(fileConfig.chat?.allowedPlayerUuids)
+        ? [...fileConfig.chat.allowedPlayerUuids]
+        : env.SWARM_CHAT_ALLOWED_UUIDS
+          ? String(env.SWARM_CHAT_ALLOWED_UUIDS)
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : []
+    },
+    security: {
+      cliOperatorToken: env.SWARM_CLI_TOKEN ?? fileConfig.security?.cliOperatorToken ?? null,
+      bootstrapTokenTtlMs: parseIntOr(
+        env.SWARM_BOOTSTRAP_TTL_MS ?? fileConfig.security?.bootstrapTokenTtlMs,
+        10 * 60 * 1000
+      )
+    }
+  };
+}
+
+/**
+ * Validate normalized configuration without mutating state (MODULE_INTERFACES.md §3.2).
+ * @param {object} config
+ * @returns {{ valid: boolean, errors: string[], errorCode: string | null }}
+ */
+function validateConfig(config) {
+  const errors = [];
+  let errorCode = null;
+
+  const markCode = (code) => {
+    if (!errorCode) errorCode = code;
+  };
+
+  if (!config || typeof config !== 'object') {
+    return {
+      valid: false,
+      errors: ['Configuration must be an object'],
+      errorCode: 'SCHEMA_VALIDATION_FAILED'
+    };
+  }
+
+  if (!['master', 'worker'].includes(config.role)) {
+    errors.push('role must be "master" or "worker"');
+  }
+  if (!['private_offline_test', 'authorised_online'].includes(config.envProfile)) {
+    errors.push('envProfile must be "private_offline_test" or "authorised_online"');
+  }
+
+  // HTTP & TLS boundaries (MASTER_SPEC.md §7, SECURITY_PLAN.md §4, HIGH-06)
+  const host = config.http?.host;
+  const port = config.http?.port;
+  if (!host || typeof host !== 'string') {
+    errors.push('http.host must be a non-empty string');
+  }
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    errors.push('http.port must be an integer in 1..65535');
+  }
+  const isLoopback = LOOPBACK_HOSTS.has(host);
+  if (!isLoopback && config.tls?.enabled !== true) {
+    errors.push('Non-loopback http.host requires tls.enabled === true');
+  }
+  if (config.tls?.enabled === true) {
+    if (!config.tls.certPath || !config.tls.keyPath) {
+      errors.push('tls.certPath and tls.keyPath are required when tls.enabled === true');
+    }
+  }
+
+  // Capacity & 20-bot hard ceiling (G-02)
+  const cap = config.capacity || {};
+  if (!Number.isSafeInteger(cap.globalMaxBots) || cap.globalMaxBots < 1) {
+    errors.push('capacity.globalMaxBots must be an integer >= 1');
+  } else if (cap.globalMaxBots > 20) {
+    markCode('GLOBAL_BOT_CAP_EXCEEDED');
+    errors.push('capacity.globalMaxBots must not exceed 20 (MASTER_SPEC.md §2)');
+  }
+  if (
+    !Number.isSafeInteger(cap.initialEnabledBots) ||
+    cap.initialEnabledBots < 1 ||
+    (Number.isSafeInteger(cap.globalMaxBots) && cap.initialEnabledBots > cap.globalMaxBots)
+  ) {
+    errors.push('capacity.initialEnabledBots must be in 1..globalMaxBots');
+  }
+  if (!Number.isSafeInteger(cap.phoneLocalBotSlots) || cap.phoneLocalBotSlots < 0) {
+    errors.push('capacity.phoneLocalBotSlots must be >= 0');
+  } else if (config.role === 'master' && cap.phoneLocalBotSlots > 0) {
+    errors.push('capacity.phoneLocalBotSlots must be 0 on the Master Controller');
+  }
+  if (
+    !Number.isSafeInteger(cap.heartbeatIntervalMs) ||
+    cap.heartbeatIntervalMs < 500 ||
+    cap.heartbeatIntervalMs > 30_000
+  ) {
+    errors.push('capacity.heartbeatIntervalMs must be in 500..30000');
+  }
+  if (
+    !Number.isSafeInteger(cap.defaultLeaseDurationMs) ||
+    cap.defaultLeaseDurationMs < 3000 ||
+    cap.defaultLeaseDurationMs > 120_000
+  ) {
+    errors.push('capacity.defaultLeaseDurationMs must be in 3000..120000');
+  } else if (
+    Number.isSafeInteger(cap.heartbeatIntervalMs) &&
+    cap.defaultLeaseDurationMs < 3 * cap.heartbeatIntervalMs
+  ) {
+    errors.push('capacity.defaultLeaseDurationMs must be >= 3 * capacity.heartbeatIntervalMs');
+  }
+
+  // AI policy validation (no phone-local LLM, no paid cloud endpoints - G-09)
+  const ai = config.ai || {};
+  if (ai.ollamaBaseUrl !== null && ai.ollamaBaseUrl !== '') {
+    try {
+      validateOllamaEndpointPolicy(ai.ollamaBaseUrl, {
+        enforceRemoteOnController: config.role === 'master'
+      });
+    } catch (err) {
+      markCode(err.code || 'AI_POLICY_VIOLATION');
+      errors.push(err.message);
+    }
+  }
+  if (!Number.isSafeInteger(ai.maxConcurrent) || ai.maxConcurrent < 1 || ai.maxConcurrent > 2) {
+    errors.push('ai.maxConcurrent must be 1 or 2');
+  }
+  if (!Number.isSafeInteger(ai.maxQueue) || ai.maxQueue < 0 || ai.maxQueue > 10) {
+    errors.push('ai.maxQueue must be in 0..10');
+  }
+  if (!Number.isSafeInteger(ai.timeoutMs) || ai.timeoutMs < 200 || ai.timeoutMs > 60_000) {
+    errors.push('ai.timeoutMs must be in 200..60000');
+  }
+
+  // SQLite storage path validation (never on Android FUSE /sdcard - PERFORMANCE_PLAN.md §1)
+  const dbPath = String(config.storage?.sqlitePath || '');
+  if (!dbPath) {
+    errors.push('storage.sqlitePath must be non-empty');
+  } else if (dbPath !== ':memory:') {
+    const normalizedDb = path.posix.normalize(dbPath.replace(/\\/g, '/'));
+    for (const badPrefix of FORBIDDEN_ANDROID_FUSE_PREFIXES) {
+      if (normalizedDb === badPrefix || normalizedDb.startsWith(badPrefix)) {
+        errors.push(
+          `storage.sqlitePath (${dbPath}) must reside on native POSIX storage ($HOME), never Android FUSE ${badPrefix}`
+        );
+      }
+    }
+  }
+
+  // Logging validation
+  if (!['debug', 'info', 'warn', 'error'].includes(config.logging?.level)) {
+    errors.push('logging.level must be debug, info, warn or error');
+  }
+
+  // Offline-mode chat spoofing lock (HIGH-06 reconciliation)
+  if (
+    config.envProfile === 'private_offline_test' &&
+    config.chat?.enabled === true &&
+    !(config.chat?.allowInsecureOfflineChat === true && isLoopback)
+  ) {
+    markCode('CHAT_DISABLED_IN_OFFLINE_MODE');
+    errors.push(
+      'chat.enabled cannot be true in private_offline_test mode unless bound to loopback with allowInsecureOfflineChat=true (HIGH-06)'
+    );
+  }
+  if (
+    typeof config.chat?.commandPrefix !== 'string' ||
+    config.chat.commandPrefix.length < 1 ||
+    config.chat.commandPrefix.length > 16
+  ) {
+    errors.push('chat.commandPrefix must be 1..16 characters');
+  }
+
+  if (errors.length > 0 && !errorCode) {
+    errorCode = 'SCHEMA_VALIDATION_FAILED';
+  }
+  return {
+    valid: errors.length === 0,
+    errors,
+    errorCode
+  };
+}
+
+/**
+ * Parse, validate and deeply freeze application configuration at startup.
+ */
+function loadConfig(env = process.env, fileConfig = {}) {
+  const raw = buildRawConfig(env, fileConfig);
+  const check = validateConfig(raw);
+  if (!check.valid) {
+    throw new DomainError(
+      check.errorCode || 'SCHEMA_VALIDATION_FAILED',
+      `Invalid configuration: ${check.errors.join('; ')}`,
+      { details: { errors: check.errors } }
+    );
+  }
+  return deepFreeze(raw);
+}
+
+/**
+ * Redact sensitive fields for safe logging / diagnostics output.
+ */
+function redactConfig(config) {
+  return sanitizeValue(config);
+}
+
+module.exports = {
+  loadConfig,
+  validateConfig,
+  redactConfig
+};

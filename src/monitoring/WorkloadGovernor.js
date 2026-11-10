@@ -52,10 +52,19 @@ class WorkloadGovernor extends EventEmitter {
 
     const th = options.thresholds || {};
     this._thresholds = {
-      constrainedRssBytes: th.constrainedRssBytes ?? 220 * 1024 * 1024,
-      criticalRssBytes: th.criticalRssBytes ?? 300 * 1024 * 1024,
-      recoverFromCriticalRssBytes: th.recoverFromCriticalRssBytes ?? 255 * 1024 * 1024,
-      recoverFromConstrainedRssBytes: th.recoverFromConstrainedRssBytes ?? 190 * 1024 * 1024,
+      // Calibrated safely below --max-old-space-size=256 (CRIT-02 fix)
+      constrainedRssBytes: th.constrainedRssBytes ?? 175 * 1024 * 1024,
+      criticalRssBytes: th.criticalRssBytes ?? 215 * 1024 * 1024,
+      recoverFromCriticalRssBytes: th.recoverFromCriticalRssBytes ?? 185 * 1024 * 1024,
+      recoverFromConstrainedRssBytes: th.recoverFromConstrainedRssBytes ?? 150 * 1024 * 1024,
+
+      constrainedHeapRatio: th.constrainedHeapRatio ?? 0.70,
+      criticalHeapRatio: th.criticalHeapRatio ?? 0.85,
+      recoverHeapRatio: th.recoverHeapRatio ?? 0.60,
+
+      constrainedOsAvailableBytes: th.constrainedOsAvailableBytes ?? 550 * 1024 * 1024,
+      criticalOsAvailableBytes: th.criticalOsAvailableBytes ?? 350 * 1024 * 1024,
+      recoverOsAvailableBytes: th.recoverOsAvailableBytes ?? 600 * 1024 * 1024,
 
       constrainedCpuPercent: th.constrainedCpuPercent ?? 75,
       criticalCpuPercent: th.criticalCpuPercent ?? 92,
@@ -114,6 +123,16 @@ class WorkloadGovernor extends EventEmitter {
     let desiredRank = STATE_RANK.normal;
 
     const rss = sample?.memory?.rssBytes ?? 0;
+    const heapUsed = sample?.memory?.heapUsedBytes ?? 0;
+    const v8Limit = sample?.memory?.v8HeapLimitBytes ?? 0;
+    const heapRatio = v8Limit > 0 ? heapUsed / v8Limit : 0;
+    // Trust OS MemAvailable ONLY when sourced from /proc/meminfo (never node:os MemFree - CRIT-03)
+    const osAvail =
+      sample?.memory?.systemMemorySource === '/proc/meminfo' &&
+      typeof sample?.memory?.systemAvailableBytes === 'number'
+        ? sample.memory.systemAvailableBytes
+        : null;
+
     const cpu =
       typeof sample?.cpu?.percentNormalized === 'number' ? sample.cpu.percentNormalized : null;
     const lag = sample?.eventLoopDelayMs?.p95 ?? 0;
@@ -126,6 +145,14 @@ class WorkloadGovernor extends EventEmitter {
     if (rss >= th.criticalRssBytes) {
       desiredRank = STATE_RANK.critical;
       reasons.push(`rssBytes(${rss}) >= critical(${th.criticalRssBytes})`);
+    }
+    if (heapRatio >= th.criticalHeapRatio) {
+      desiredRank = STATE_RANK.critical;
+      reasons.push(`heapRatio(${heapRatio.toFixed(2)}) >= critical(${th.criticalHeapRatio})`);
+    }
+    if (osAvail !== null && osAvail <= th.criticalOsAvailableBytes) {
+      desiredRank = STATE_RANK.critical;
+      reasons.push(`osMemAvailable(${osAvail}) <= critical(${th.criticalOsAvailableBytes})`);
     }
     if (cpu !== null && cpu >= th.criticalCpuPercent) {
       desiredRank = STATE_RANK.critical;
@@ -145,6 +172,14 @@ class WorkloadGovernor extends EventEmitter {
       if (rss >= th.constrainedRssBytes) {
         desiredRank = Math.max(desiredRank, STATE_RANK.constrained);
         reasons.push(`rssBytes(${rss}) >= constrained(${th.constrainedRssBytes})`);
+      }
+      if (heapRatio >= th.constrainedHeapRatio) {
+        desiredRank = Math.max(desiredRank, STATE_RANK.constrained);
+        reasons.push(`heapRatio(${heapRatio.toFixed(2)}) >= constrained(${th.constrainedHeapRatio})`);
+      }
+      if (osAvail !== null && osAvail <= th.constrainedOsAvailableBytes) {
+        desiredRank = Math.max(desiredRank, STATE_RANK.constrained);
+        reasons.push(`osMemAvailable(${osAvail}) <= constrained(${th.constrainedOsAvailableBytes})`);
       }
       if (cpu !== null && cpu >= th.constrainedCpuPercent) {
         desiredRank = Math.max(desiredRank, STATE_RANK.constrained);
@@ -176,6 +211,8 @@ class WorkloadGovernor extends EventEmitter {
     if (currentRank > STATE_RANK.normal) {
       const canRecoverOneStep = this._isBelowRecoveryBand(currentRank, {
         rss,
+        heapRatio,
+        osAvail,
         cpu,
         lag,
         taskQueueLen
@@ -211,10 +248,14 @@ class WorkloadGovernor extends EventEmitter {
     const cpuOk = metrics.cpu === null || metrics.cpu <= th.recoverCpuPercent;
     const lagOk = metrics.lag <= th.recoverLagMs;
     const queueOk = metrics.taskQueueLen <= th.recoverTaskQueue;
+    const heapOk = metrics.heapRatio <= th.recoverHeapRatio;
+    const osOk = metrics.osAvail === null || metrics.osAvail >= th.recoverOsAvailableBytes;
 
     if (currentRank === STATE_RANK.critical) {
       return (
         metrics.rss <= th.recoverFromCriticalRssBytes &&
+        metrics.heapRatio < th.criticalHeapRatio &&
+        (metrics.osAvail === null || metrics.osAvail > th.criticalOsAvailableBytes) &&
         (metrics.cpu === null || metrics.cpu < th.constrainedCpuPercent) &&
         metrics.lag < th.constrainedLagMs &&
         metrics.taskQueueLen < th.constrainedTaskQueue
@@ -222,7 +263,31 @@ class WorkloadGovernor extends EventEmitter {
     }
 
     // Constrained -> Normal
-    return metrics.rss <= th.recoverFromConstrainedRssBytes && cpuOk && lagOk && queueOk;
+    return metrics.rss <= th.recoverFromConstrainedRssBytes && heapOk && osOk && cpuOk && lagOk && queueOk;
+  }
+
+  /**
+   * Rehydrate durable SQLite-persisted paused tasks into the governor queue on Master recovery (CRIT-03).
+   * @param {Array<{ taskId: string, priority?: string, pausedAt?: string, reason?: string }>} rows
+   */
+  rehydratePausedTasks(rows = []) {
+    for (const row of rows) {
+      if (!row || !row.taskId || this._pausedLowPriorityTasks.size >= this._maxDeferredTasks) continue;
+      const id = String(row.taskId);
+      if (!this._pausedLowPriorityTasks.has(id)) {
+        this._pausedLowPriorityTasks.set(id, {
+          taskId: id,
+          priority: row.priority || 'normal',
+          pausedAt: row.pausedAt || new Date(this._now()).toISOString(),
+          reason: row.reason || 'WORKLOAD_CONSTRAINED',
+          payload: null
+        });
+      }
+    }
+  }
+
+  removePausedTask(taskId) {
+    return this._pausedLowPriorityTasks.delete(String(taskId));
   }
 
   /**

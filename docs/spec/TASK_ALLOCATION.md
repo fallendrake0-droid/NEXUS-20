@@ -174,20 +174,21 @@ Output: AllocationDecision
 
 ---
 
-## 6. Aggregate Quota Splitting (`splitQuota`)
+## 6. Aggregate Quota Splitting (`splitQuota` — Water-Filling Makespan Equalization)
 
-For any quantity objective (`targetQuantity = Q`), only `remaining = max(0, Q - verified - reserved)` may be allocated:
+For any quantity objective (`targetQuantity = Q`), only `remaining = max(0, Q - verified - reserved)` may be allocated. To avoid travel-horizon skew (`HIGH-03`), quotas are computed by closed-form **makespan-equalizing water-filling**:
 
-1. For each selected bot `b_k in S`, compute sustainable effective weight over planned horizon:
-   `w_k = max(0.05, r_p50(b_k, j) / (1 + T_travel_p50(b_k, j) / 60))`
-2. If `remaining < |S|`, keep only the top `remaining` bots by `w_k` (so every assigned bot gets `>= 1` unit).
-3. Compute exact real shares: `exact_k = remaining * (w_k / sum_m w_m)`.
-4. Assign integer base: `q_k = max(1, floor(exact_k))` (if `sum(q_k) > remaining` due to the `max(1, ...)` floor when weights are extreme, initialize `q_k = 1` for all `k` and distribute `remaining - |S|` proportionally).
-5. Distribute `rem = remaining - sum(q_k)` one unit at a time to bots sorted descending by `(exact_k - floor(exact_k))`, breaking ties deterministically by ascending `botId`.
-6. **Hard Post-Condition Assertion (enforced in code & SQLite `CHECK`):**
+1. For each selected bot `b_k in S`, let startup delay `F_k = T_travel_p50(b_k, j) + T_setup(b_k, j)` and steady-state throughput `r_k = max(0.05, r_p50(b_k, j))`. Sort `S` ascending by `F_k` (tie-break by `botId`).
+2. Find the largest active prefix `p` (`1 <= p <= |S|`, capped at `min(|S|, remaining)`) where common finish time `T* = (remaining + sum_{k=1..p} (r_k * F_k)) / (sum_{k=1..p} r_k)` satisfies `T* > F_p` (dropping any trailing bot `k > p` whose arrival time `F_k >= T*` exceeds swarm completion).
+3. Compute continuous shares `exact_k = r_k * (T* - F_k)` for `k = 1..p`, scaled if necessary so `sum(exact_k) === remaining`.
+4. Assign integer base `q_k = max(1, floor(exact_k))` (clamped if `sum > remaining`) and distribute `remaining - sum(q_k)` one unit at a time to bots sorted descending by `(exact_k - floor(exact_k))`, breaking ties by ascending `botId`.
+5. **Hard Post-Condition Assertion (enforced in code & SQLite `CHECK`):**
    - Every `q_k` is a safe integer `>= 1`.
-   - `sum_{k=1..|S|} q_k === remaining`.
+   - `sum_{k=1..p} q_k === remaining`.
    - `verified + existingReserved + sum(q_k) <= Q`.
+
+### 6.1 Concurrent Role Co-Execution (`start_with` DAG Edges)
+`objective_dependencies.edge_type` supports both `'finish_to_start'` (default: `u` must be `completed` before `v` becomes `ready`) and `'start_with'` (e.g., `"Build a shelter while one bot guards"`: `guard` becomes `ready` simultaneously with `build` when `>= 2` bots are available, and completes when `build` completes).
 
 ---
 

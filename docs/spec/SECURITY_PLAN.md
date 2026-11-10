@@ -43,14 +43,14 @@
 
 | Endpoint / Action | `viewer` | `chat_allowed` | `operator` / `cli` | `admin` | `worker` |
 |---|:---:|:---:|:---:|:---:|:---:|
-| `GET /api/v1/health`, `/status`, `/workers`, `/bots`, `/tasks`, `/stream` | Allow | Deny | Allow | Allow | Deny |
-| `POST /api/v1/tasks` (low/medium risk allowlisted intents) | Deny | Allow (via chat adapter) | Allow | Allow | Deny |
-| `POST /api/v1/tasks/:id/{clarify,pause,resume,cancel}` | Deny | Own/safe subset | Allow | Allow | Deny |
+| `GET /api/v1/session`, `/snapshot`, `/diagnostics`, `/workers`, `/tasks`, `/events` | Allow | Deny | Allow | Allow | Deny |
+| `POST /api/v1/tasks` (low/medium risk allowlisted intents) | Deny | Allow (online-mode only) | Allow | Allow | Deny |
+| `POST /api/v1/tasks/:taskId/{clarify,pause,resume,cancel}` | Deny | Own/safe subset | Allow | Allow | Deny |
 | `POST /api/v1/bots/:botId/safe-stop` | Deny | Deny | Allow | Allow | Deny |
-| `POST /api/v1/workers/bootstrap-tokens` | Deny | Deny | Deny | Allow | Deny |
+| `POST /api/v1/workers/bootstrap` | Deny | Deny | Deny | Allow | Deny |
 | `POST /api/v1/workers/:workerId/revoke` | Deny | Deny | Deny | Allow | Deny |
 | `POST /api/v1/admin/backup` | Deny | Deny | Deny | Allow | Deny |
-| `POST /worker/v1/{heartbeat,ack,events,snapshots}`, `GET /worker/v1/commands` | Deny | Deny | Deny | Deny | Own `workerId` only |
+| `POST /worker/v1/{heartbeat,commands/ack,events,snapshots,chat-intents,unregister}`, `GET /worker/v1/commands` | Deny | Deny | Deny | Deny | Own `workerId` only |
 
 **Worker ownership check:** On every `/worker/v1/*` request, `WorkerGateway` verifies `authWorker.workerId === payload.workerId` and every `botId` in the batch belongs to `authWorker.allowedBotIds`. Any cross-worker or cross-bot claim fails closed with `403 FORBIDDEN` and emits `security.worker_impersonation_blocked`.
 

@@ -165,6 +165,9 @@ Configuration is loaded from environment variables and optional JSON config file
 | `http.host` (`SWARM_BIND_HOST`) | `string` | `'127.0.0.1'` | Non-loopback requires TLS (`tls.enabled = true`) |
 | `http.port` (`SWARM_PORT`) | `integer` | `8443` | `1024..65535` |
 | `tls.enabled` (`SWARM_TLS_ENABLED`) | `boolean` | `true` | `false` allowed ONLY when `http.host === '127.0.0.1'` in dev/test |
+| `tls.certPath` (`SWARM_TLS_CERT_PATH`) | `string \| null` | `null` | Required when `tls.enabled === true` |
+| `tls.keyPath` (`SWARM_TLS_KEY_PATH`) | `string \| null` | `null` | Required when `tls.enabled === true` |
+| `tls.caCertPath` (`SWARM_TLS_CA_PATH`) | `string \| null` | `null` | Private LAN CA root pinned by `WorkerHost`, `CLI` & `OllamaClient` (`HIGH-06`) |
 | `capacity.globalMaxBots` | `integer` | `20` | **Hard validation error if `> 20` or `< 1`** |
 | `capacity.initialEnabledBots` | `integer` | `2` | `1..globalMaxBots` |
 | `capacity.phoneLocalBotSlots` | `integer` | `0` | Must be `0` in production on Galaxy A06 |
@@ -204,14 +207,21 @@ The tuple `(Node version, Mineflayer version, minecraft-protocol, minecraft-data
 
 ---
 
-## 10. Summary of Unresolved Decisions (`U-01` – `U-14`)
+## 10. Authoritative Unresolved Decisions (`U-01` – `U-14`)
 
-Full resolution criteria are maintained in `ACCEPTANCE_CRITERIA.md` §9. Coding agents **must not** silently invent production values for open items:
+Full resolution criteria are maintained in `ACCEPTANCE_CRITERIA.md` §3 (single canonical ID table — reconciled per `HIGH-01`). Coding agents **must not** silently invent production values for open items:
 
-- **`U-01` / `U-02`:** Exact Minecraft Java Edition server version & pinned `mineflayer` / plugin package versions.
-- **`U-03`:** Final on-device Termux SQLite driver sign-off (`node:sqlite` validated in Linux CI with WAL + `backup`; physical Galaxy A06 Termux Node `24.17.0` run required to close).
-- **`U-04` / `U-05` / `U-14`:** Physical worker host inventory, operator-approved server connection cap, and multi-session server policy.
-- **`U-06`:** Verified legitimate online Microsoft/Minecraft auth flow for pinned `mineflayer` version.
-- **`U-07`:** Self-hosted remote Ollama model name, digest and host hardware passing schema/latency benchmarks.
-- **`U-08` / `U-09` / `U-10` / `U-11` / `U-13`:** High-risk task approval policy, server chat UUID allowlist, admin bootstrap/MFA flow, worker mTLS vs bearer+TLS decision, and worker local checkpoint format.
-- **`U-12`:** On-device Galaxy A06 numeric memory/latency SLO thresholds (candidate `220 MiB` warning / `300 MiB` critical RSS implemented as configurable defaults; physical phone measurement required to close).
+- **`U-01`:** Target Minecraft Java version(s) & protocol support matrix (default pinned profile: `1.20.4`).
+- **`U-02`:** Minecraft authentication mode (`private_offline_test` vs `online_microsoft`).
+- **`U-03`:** Physical Galaxy A06 Termux check (`node:sqlite` WAL + `backup` and idle `MemAvailable` after Android 16 boot via `npm run check:termux`).
+- **`U-04`:** Remote Ollama host hardware, LAN/VPN URL, and model tag (`qwen2.5:7b-instruct` vs `llama3.1:8b`).
+- **`U-05`:** Private PKI / mTLS vs WireGuard / Tailscale overlay (`tls.caCertPath`, `tls.certPath`, `tls.keyPath`).
+- **`U-06`:** Hardware specs & `maxBotSlots` per remote `WorkerHost` (`2..4` hosts for 20 bots; default `5` bots/host).
+- **`U-07`:** Target Minecraft server concurrency, anti-cheat rate limits, and connection-throttle spacing (`>= 2,500 ms`).
+- **`U-08`:** Default `allowExistingStock` policy when operator says `"collect X"` (`false` by default).
+- **`U-09`:** Item equivalence policy (`oak_planks` vs `#minecraft:planks`, `cobblestone` vs `cobbled_deepslate`).
+- **`U-10`:** Build blueprint format (parameterized deterministic templates in v1).
+- **`U-11`:** In-game chat command authorisation mode (disabled by default; hard-disabled in `private_offline_test`).
+- **`U-12`:** Device-calibrated `ResourceMonitor` / `WorkloadGovernor` thresholds on physical Galaxy A06 (`175 MiB` constrained / `215 MiB` critical RSS defaults under `--max-old-space-size=256`).
+- **`U-13`:** Completed-task & audit retention window (`7 days` or `1,000` terminal tasks; `24h` dedup pruning).
+- **`U-14`:** Protected-area / world-modification guard coordinates (`protectedRegions` list per server profile).

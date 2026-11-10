@@ -56,7 +56,7 @@
     "activeConstraints"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "requestId": { "type": "string", "format": "uuid" },
     "userIntent": { "type": "string", "minLength": 1, "maxLength": 500 },
     "serverProfile": {
@@ -86,7 +86,7 @@
         "required": ["botId", "dimension", "status", "toolTiers", "freeSlotBand", "healthBand"],
         "properties": {
           "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
-          "dimension": { "enum": ["overworld", "the_nether", "the_end", "unknown"] },
+          "dimension": { "enum": ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end", "unknown"] },
           "status": { "enum": ["ready", "busy", "degraded"] },
           "toolTiers": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 32 } },
           "freeSlotBand": { "enum": ["empty", "partial", "low", "full"] },
@@ -108,7 +108,7 @@
         "required": ["label", "dimension", "known"],
         "properties": {
           "label": { "type": "string", "minLength": 1, "maxLength": 48 },
-          "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+          "dimension": { "enum": ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"] },
           "known": { "type": "boolean" }
         }
       }
@@ -142,29 +142,16 @@
     "intentSummary",
     "clarificationRequired",
     "clarificationQuestion",
-    "riskLevel",
-    "constraints",
     "objectives",
-    "assumptions"
+    "riskLevel",
+    "notes"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "requestId": { "type": "string", "format": "uuid" },
-    "intentSummary": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "intentSummary": { "type": "string", "minLength": 1, "maxLength": 500 },
     "clarificationRequired": { "type": "boolean" },
-    "clarificationQuestion": { "type": ["string", "null"], "maxLength": 240 },
-    "riskLevel": { "enum": ["low", "medium", "high"] },
-    "constraints": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["allowExistingStock", "maxBotsHint", "deadlineSeconds", "protectedRadiusBlocks"],
-      "properties": {
-        "allowExistingStock": { "type": "boolean" },
-        "maxBotsHint": { "type": ["integer", "null"], "minimum": 1, "maximum": 20 },
-        "deadlineSeconds": { "type": ["integer", "null"], "minimum": 10, "maximum": 86400 },
-        "protectedRadiusBlocks": { "type": ["integer", "null"], "minimum": 0, "maximum": 512 }
-      }
-    },
+    "clarificationQuestion": { "type": ["string", "null"], "maxLength": 500 },
     "objectives": {
       "type": "array",
       "minItems": 0,
@@ -173,39 +160,63 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "objectiveId",
+          "localId",
           "kind",
-          "resourceId",
-          "targetQuantity",
-          "regionLabel",
-          "description",
+          "target",
           "dependencies",
           "parallelism",
           "workerCountHint",
-          "verificationPolicy",
-          "rationale"
+          "constraints",
+          "verification"
         ],
         "properties": {
-          "objectiveId": { "type": "string", "pattern": "^obj_[a-z0-9_]{1,28}$" },
+          "localId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,48}$" },
           "kind": {
             "enum": ["mine", "collect", "craft", "build", "explore", "guard", "transfer", "repair", "inspect"]
           },
-          "resourceId": {
-            "type": ["string", "null"],
-            "pattern": "^[a-z0-9_]+:[a-z0-9_./-]+$"
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resourceId", "quantity", "regionLabel", "description"],
+            "properties": {
+              "resourceId": { "type": ["string", "null"], "maxLength": 128 },
+              "quantity": { "type": ["integer", "null"], "minimum": 1, "maximum": 1000000 },
+              "regionLabel": { "type": ["string", "null"], "maxLength": 120 },
+              "description": { "type": "string", "maxLength": 500 }
+            }
           },
-          "targetQuantity": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
-          "regionLabel": { "type": ["string", "null"], "maxLength": 48 },
-          "description": { "type": "string", "minLength": 1, "maxLength": 200 },
           "dependencies": {
             "type": "array",
-            "maxItems": 15,
-            "uniqueItems": true,
-            "items": { "type": "string", "pattern": "^obj_[a-z0-9_]{1,28}$" }
+            "maxItems": 16,
+            "items": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,48}$" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["localId", "edgeType"],
+                  "properties": {
+                    "localId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,48}$" },
+                    "edgeType": { "enum": ["finish_to_start", "start_with"] }
+                  }
+                }
+              ]
+            }
           },
-          "parallelism": { "enum": ["single", "partitionable", "spatial", "role_based"] },
+          "parallelism": { "enum": ["single", "partitionable", "spatial", "role_based", "serial"] },
           "workerCountHint": { "type": "integer", "minimum": 1, "maximum": 20 },
-          "verificationPolicy": {
+          "constraints": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["maxRisk", "avoidHazards", "allowExistingStock", "maxTravelBlocks"],
+            "properties": {
+              "maxRisk": { "enum": ["low", "medium", "high"] },
+              "avoidHazards": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 32 } },
+              "allowExistingStock": { "type": "boolean" },
+              "maxTravelBlocks": { "type": ["integer", "null"], "minimum": 0, "maximum": 100000 }
+            }
+          },
+          "verification": {
             "enum": [
               "newly_collected",
               "held_stock",
@@ -213,27 +224,28 @@
               "crafted_output",
               "block_state",
               "region_visited",
-              "role_duration"
+              "role_duration",
+              "operator_review"
             ]
-          },
-          "rationale": { "type": "string", "minLength": 1, "maxLength": 160 }
+          }
         }
       }
     },
-    "assumptions": {
+    "riskLevel": { "enum": ["low", "medium", "high"] },
+    "notes": {
       "type": "array",
-      "maxItems": 8,
-      "items": { "type": "string", "maxLength": 160 }
+      "maxItems": 10,
+      "items": { "type": "string", "maxLength": 300 }
     }
   }
 }
 ~~~
 
-**Semantic Validation Rules (`SchemaValidator.validatePlanSemantics`):**
-1. If `clarificationRequired === true`, `clarificationQuestion` must be non-null and `objectives.length === 0`.
-2. If `clarificationRequired === false`, `objectives.length >= 1` and all `objectiveId` values are unique.
-3. Every ID in `dependencies` must reference an `objectiveId` in the same `objectives` array, and topological sort must succeed with `0` cycles.
-4. For `kind` in `{"mine", "collect", "craft", "transfer"}`, `resourceId !== null` and `targetQuantity >= 1`.
+**Semantic Validation Rules (`SchemaValidator.validatePlanSemantics` & `validateTaskPlanV1`):**
+1. If `clarificationRequired === true`, `clarificationQuestion` must be non-empty and `objectives.length === 0`.
+2. If `clarificationRequired === false`, `objectives.length` must be `1..16` and all `localId` values are unique.
+3. Every `localId` referenced in `dependencies` must exist in the same `objectives` array, and topological sort must succeed with `0` cycles.
+4. For `kind` in `{"mine", "collect", "craft", "transfer"}`, `target.resourceId !== null` and `target.quantity >= 1`.
 
 ---
 
@@ -263,12 +275,13 @@
     "regionBounds",
     "verificationPolicy",
     "safetyPolicy",
+    "leaseTtlMs",
     "issuedAt",
     "expiresAt",
     "checkpointIntervalMs"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "assignmentId": { "type": "string", "format": "uuid" },
     "leaseId": { "type": "string", "format": "uuid" },
     "allocationEpoch": { "type": "integer", "minimum": 1 },
@@ -287,7 +300,7 @@
       "additionalProperties": false,
       "required": ["dimension", "minX", "maxX", "minY", "maxY", "minZ", "maxZ"],
       "properties": {
-        "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+        "dimension": { "enum": ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"] },
         "minX": { "type": "integer" },
         "maxX": { "type": "integer" },
         "minY": { "type": "integer", "minimum": -64, "maximum": 320 },
@@ -319,6 +332,7 @@
         "allowPvp": { "const": false }
       }
     },
+    "leaseTtlMs": { "type": "integer", "minimum": 5000, "maximum": 120000 },
     "issuedAt": { "type": "string", "format": "date-time" },
     "expiresAt": { "type": "string", "format": "date-time" },
     "checkpointIntervalMs": { "type": "integer", "minimum": 2000, "maximum": 30000 }
@@ -348,7 +362,7 @@
     "botSummaries"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "requestId": { "type": "string", "format": "uuid" },
     "taskId": { "type": "string", "format": "uuid" },
     "previousPlanVersion": { "type": "integer", "minimum": 1 },
@@ -417,7 +431,7 @@
     "reportedAt"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "reportId": { "type": "string", "format": "uuid" },
     "assignmentId": { "type": "string", "format": "uuid" },
     "leaseId": { "type": "string", "format": "uuid" },
@@ -483,7 +497,7 @@
               "additionalProperties": false,
               "required": ["dimension", "x", "y", "z"],
               "properties": {
-                "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+                "dimension": { "enum": ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"] },
                 "x": { "type": "integer" },
                 "y": { "type": "integer" },
                 "z": { "type": "integer" }
@@ -535,7 +549,7 @@
     "reportedAt"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": 1 },
     "reportId": { "type": "string", "format": "uuid" },
     "assignmentId": { "type": "string", "format": "uuid" },
     "leaseId": { "type": "string", "format": "uuid" },

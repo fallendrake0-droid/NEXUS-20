@@ -86,11 +86,11 @@ Every in-memory structure on Master and WorkerHost MUST use the bounded primitiv
 
 | Metric | `normal -> constrained` | `constrained -> critical` | Hysteresis Exit Rule |
 |---|---|---|---|
-| Master RSS | `>= 180 MiB` | `>= 230 MiB` | Must stay `< 90%` of threshold for `3` consecutive windows (`>= 15 s` cooldown) |
-| Heap ratio (`heapUsed / heapLimit`) | `>= 0.70` | `>= 0.85` | Stepwise only: `critical -> constrained -> normal` (never jumps straight to `normal`) |
-| OS `MemAvailable` (when readable) | `<= 550 MiB` | `<= 350 MiB` | Ignored cleanly if `'unavailable'` |
-| Event-loop `p99` lag | `>= 120 ms` | `>= 300 ms` | Prevents thrashing/oscillation |
-| Outbound queue fill ratio | `>= 0.70` | `>= 0.90` | Drains cleanly before restoring concurrency |
+| Master RSS (`--max-old-space-size=256`) | `>= 175 MiB` | `>= 215 MiB` | Stay `<= 185 MiB` (`critical -> constrained`) / `<= 150 MiB` (`constrained -> normal`) for `recoveryCooldownMs` |
+| Heap ratio (`heapUsed / v8HeapLimit`) | `>= 0.70` | `>= 0.85` | Stepwise only: `critical -> constrained -> normal` (`<= 0.60` for `normal`) |
+| OS `MemAvailable` (`/proc/meminfo` only) | `<= 550 MiB` | `<= 350 MiB` | Ignored cleanly if `'unavailable'` or `node:os_memfree` (`CRIT-03`) |
+| Event-loop `p95` lag | `>= 60 ms` | `>= 180 ms` | Stay `<= 35 ms` for `normal` |
+| Task queue depth | `>= 25` | `>= 60` | Drains cleanly before restoring concurrency |
 
 ### 5.2 Deterministic Shedding & Recovery Sequence (`0` Tasks Silently Discarded)
 

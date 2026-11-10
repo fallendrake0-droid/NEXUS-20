@@ -1,15 +1,19 @@
 {
   "name": "mineflayer-ai-swarm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Distributed Mineflayer AI Swarm — lightweight Galaxy A06 master coordinator and bounded worker runtime",
+  "main": "index.js",
   "type": "commonjs",
   "engines": {
     "node": ">=22.5.0"
   },
   "scripts": {
-    "test": "node --test tests/performance/*.test.js",
-    "test:unit": "node --test tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
+    "start": "node index.js",
+    "check:config": "node index.js --check-config",
+    "test": "node --test tests/foundation/*.test.js tests/performance/*.test.js",
+    "test:foundation": "node --test tests/foundation/*.test.js",
+    "test:unit": "node --test tests/foundation/*.test.js tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
     "test:leaks": "node --expose-gc --test tests/performance/memory-leaks.test.js",
     "bench": "node --expose-gc benchmarks/run-benchmarks.js",
     "check:termux": "node benchmarks/termux-compatibility-check.js"

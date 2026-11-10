@@ -186,7 +186,7 @@ sequenceDiagram
 
 ## 4. Normative SQLite Persistence Schema (`StateStore`)
 
-`StateStore` encapsulates all SQL behind parameterized `StatementSync` / prepared statements with `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = WAL` (verified on target POSIX filesystem), and `PRAGMA busy_timeout = 3000`. Other modules **never** access the SQLite handle directly.
+`StateStore` encapsulates all SQL behind parameterized `StatementSync` / prepared statements with `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`, `PRAGMA busy_timeout = 3000`, `PRAGMA wal_autocheckpoint = 500`, `PRAGMA journal_size_limit = 8388608`, `PRAGMA temp_store = MEMORY`, and `PRAGMA cache_size = -4096`. Other modules **never** access the SQLite handle directly.
 
 ~~~sql
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS principals (
 CREATE TABLE IF NOT EXISTS sessions (
   session_id_hash TEXT PRIMARY KEY,
   principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE CASCADE,
-  csrf_secret TEXT NOT NULL,
+  csrf_token_hash TEXT NOT NULL,
   created_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   idle_expires_at TEXT NOT NULL,
@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   risk_level TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low', 'medium', 'high')),
   plan_version INTEGER NOT NULL DEFAULT 0,
   clarification_question TEXT,
+  pause_reason TEXT,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -293,6 +294,7 @@ CREATE TABLE IF NOT EXISTS objectives (
 CREATE TABLE IF NOT EXISTS objective_dependencies (
   objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
   depends_on_objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
+  edge_type TEXT NOT NULL DEFAULT 'finish_to_start' CHECK (edge_type IN ('finish_to_start', 'start_with')),
   PRIMARY KEY (objective_id, depends_on_objective_id),
   CHECK (objective_id <> depends_on_objective_id)
 );
@@ -316,6 +318,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   baseline_snapshot_json TEXT,
   scope_json TEXT NOT NULL,
   constraints_json TEXT NOT NULL,
+  lease_ttl_ms INTEGER NOT NULL DEFAULT 30000 CHECK (lease_ttl_ms BETWEEN 5000 AND 120000),
   issued_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   completed_at TEXT,
@@ -401,6 +404,11 @@ CREATE INDEX IF NOT EXISTS idx_assignments_bot_active ON assignments(bot_id, sta
 CREATE INDEX IF NOT EXISTS idx_assignments_expires ON assignments(state, expires_at);
 CREATE INDEX IF NOT EXISTS idx_commands_worker_seq ON command_outbox(worker_id, acked_at, command_sequence);
 CREATE INDEX IF NOT EXISTS idx_rate_lookup ON action_rate_samples(server_id, dimension, action_key, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_task ON ledger_transactions(task_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_objective ON ledger_transactions(objective_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_assignment ON ledger_transactions(assignment_id);
+CREATE INDEX IF NOT EXISTS idx_inbound_received ON worker_inbound_messages(received_at);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
 ~~~
 
 Notice the database-level `CHECK (target_quantity IS NULL OR verified_quantity + reserved_quantity <= target_quantity)` and `CHECK (quota_quantity IS NULL OR credited_quantity <= quota_quantity)` constraints: even a bug in application logic is rejected atomically by SQLite before corrupting aggregate progress!

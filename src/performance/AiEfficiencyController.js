@@ -90,8 +90,8 @@ const TASK_PLAN_V1_SCHEMA = Object.freeze({
     clarificationQuestion: { type: ['string', 'null'], maxLength: 500 },
     objectives: {
       type: 'array',
-      minItems: 1,
-      maxItems: 20
+      minItems: 0,
+      maxItems: 16
     },
     riskLevel: { enum: ['low', 'medium', 'high'] },
     notes: { type: 'array', maxItems: 10 }
@@ -198,12 +198,18 @@ function validateTaskPlanV1(plan, context = {}) {
     }
   }
 
-  if (
-    !Array.isArray(plan.objectives) ||
-    plan.objectives.length < 1 ||
-    plan.objectives.length > 20
-  ) {
-    errors.push('objectives must be an array of 1..20 items');
+  if (!Array.isArray(plan.objectives)) {
+    errors.push('objectives must be an array');
+    return { valid: false, errors };
+  }
+  if (plan.clarificationRequired === true) {
+    if (plan.objectives.length !== 0) {
+      errors.push('objectives must be empty ([]) when clarificationRequired is true');
+    }
+    return { valid: errors.length === 0, errors };
+  }
+  if (plan.objectives.length < 1 || plan.objectives.length > 16) {
+    errors.push('objectives must be an array of 1..16 items when clarificationRequired is false');
     return { valid: false, errors };
   }
 
@@ -305,18 +311,33 @@ function validateTaskPlanV1(plan, context = {}) {
       }
     }
 
-    // Dependencies format check
-    if (!Array.isArray(obj.dependencies) || obj.dependencies.length > 20) {
-      errors.push(`objectives[${i}].dependencies must be array <= 20`);
+    // Dependencies format check (supports string shorthand or { localId, edgeType } per HIGH-03c)
+    if (!Array.isArray(obj.dependencies) || obj.dependencies.length > 16) {
+      errors.push(`objectives[${i}].dependencies must be array <= 16`);
     } else {
       const seenDeps = new Set();
       for (const dep of obj.dependencies) {
-        if (typeof dep !== 'string' || !LOCAL_ID_REGEX.test(dep)) {
+        let depId = null;
+        if (typeof dep === 'string') {
+          depId = dep;
+        } else if (dep && typeof dep === 'object' && !Array.isArray(dep)) {
+          depId = dep.localId;
+          const allowedDepKeys = new Set(['localId', 'edgeType']);
+          for (const dk of Object.keys(dep)) {
+            if (!allowedDepKeys.has(dk)) {
+              errors.push(`objectives[${i}] dependency unknown key: ${dk}`);
+            }
+          }
+          if (dep.edgeType !== 'finish_to_start' && dep.edgeType !== 'start_with') {
+            errors.push(`objectives[${i}] invalid dependency edgeType: ${dep.edgeType}`);
+          }
+        }
+        if (typeof depId !== 'string' || !LOCAL_ID_REGEX.test(depId)) {
           errors.push(`objectives[${i}] invalid dependency ID`);
-        } else if (seenDeps.has(dep)) {
-          errors.push(`objectives[${i}] duplicate dependency: ${dep}`);
+        } else if (seenDeps.has(depId)) {
+          errors.push(`objectives[${i}] duplicate dependency: ${depId}`);
         } else {
-          seenDeps.add(dep);
+          seenDeps.add(depId);
         }
       }
     }
@@ -354,7 +375,8 @@ function validateTaskPlanV1(plan, context = {}) {
       adj.set(id, []);
     }
     for (const obj of plan.objectives) {
-      for (const dep of obj.dependencies) {
+      for (const rawDep of obj.dependencies) {
+        const dep = typeof rawDep === 'string' ? rawDep : rawDep.localId;
         if (dep === obj.localId) {
           errors.push(`Self-dependency in objective ${obj.localId}`);
         } else if (!localIds.has(dep)) {
@@ -448,7 +470,7 @@ function buildDeterministicPlan(requestId, rawUserText) {
               regionLabel: 'base',
               description: `Guard construction perimeter during ${structure} build`
             },
-            dependencies: [],
+            dependencies: [{ localId: 'obj_build_1', edgeType: 'start_with' }],
             parallelism: 'role_based',
             workerCountHint: 1,
             constraints: defaultConstraints,
@@ -569,7 +591,7 @@ function buildDeterministicPlan(requestId, rawUserText) {
           },
           dependencies: [],
           parallelism: 'partitionable',
-          workerCountHint: 1,
+          workerCountHint: qty < 16 ? 1 : Math.min(20, Math.ceil(qty / 40)),
           constraints: defaultConstraints,
           verification: 'newly_collected'
         });
@@ -602,23 +624,7 @@ function buildDeterministicPlan(requestId, rawUserText) {
       clarificationRequired: true,
       clarificationQuestion:
         'Remote AI planner is unavailable or throttled and this complex request cannot be safely decomposed deterministically. Please specify exact item quantities or step-by-step objectives.',
-      objectives: [
-        {
-          localId: 'obj_clarify_1',
-          kind: 'inspect',
-          target: {
-            resourceId: null,
-            quantity: null,
-            regionLabel: null,
-            description: 'Awaiting operator clarification'
-          },
-          dependencies: [],
-          parallelism: 'single',
-          workerCountHint: 1,
-          constraints: defaultConstraints,
-          verification: 'operator_review'
-        }
-      ],
+      objectives: [],
       riskLevel: 'low',
       notes: ['deterministic_clarification_fallback']
     }
