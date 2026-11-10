@@ -442,4 +442,115 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('E2E-05: Sticky bot usernames (Nexus_01, Nexus_02) persist across restarts & re-enrollments, Aternos URL sanitizes cleanly, and RFC1918 192.168.1.168 LAN bind works', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-worker-e2e5-'));
+
+    // 1. Verify 192.168.1.168 private LAN HTTP opt-in & Aternos URL sanitization
+    const lanCfg = loadConfig({
+      env: {
+        SWARM_BIND_HOST: '192.168.1.168',
+        SWARM_ALLOW_PRIVATE_LAN_HTTP: 'true',
+        SWARM_AI_ENABLED: 'false',
+        SWARM_MC_HOST: 'http://thebasement-wUr4.aternos.me/',
+        SWARM_DB_PATH: path.join(tmpDir, 'lan.db'),
+        SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+      }
+    });
+    assert.equal(lanCfg.http.host, '192.168.1.168');
+    assert.equal(lanCfg.tls.enabled, false);
+    assert.equal(lanCfg.worker.minecraftHost, 'thebasement-wUr4.aternos.me');
+    assert.equal(lanCfg.worker.minecraftPort, 25565);
+
+    // Public 0.0.0.0 bind with SWARM_ALLOW_PRIVATE_LAN_HTTP=true MUST still fail without TLS/proxy!
+    assert.throws(() =>
+      loadConfig({
+        env: {
+          SWARM_BIND_HOST: '0.0.0.0',
+          SWARM_ALLOW_PRIVATE_LAN_HTTP: 'true',
+          SWARM_TLS_ENABLED: 'false',
+          SWARM_AI_ENABLED: 'false'
+        }
+      })
+    );
+
+    // 2. Verify sticky bot usernames stay locked across re-enrollment on a brand-new machine
+    const masterCfg = loadConfig({
+      env: {
+        SWARM_ENV_PROFILE: 'private_offline_test',
+        SWARM_BIND_HOST: '127.0.0.1',
+        SWARM_PORT: '0',
+        SWARM_HTTP_ENABLED: 'true',
+        SWARM_AI_ENABLED: 'false',
+        SWARM_ENABLED_BOTS: '4',
+        SWARM_DB_PATH: path.join(tmpDir, 'master.db'),
+        SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+      }
+    });
+    const master = createMaster(masterCfg);
+    let w1 = null;
+    let w2 = null;
+    try {
+      const startInfo = await master.start({ listenHttp: true });
+      const masterUrl = `http://127.0.0.1:${startInfo.port}`;
+      const tok1 = master.botRegistry.createBootstrapToken({ createdBy: 'test' });
+
+      // First WorkerHost run: generates deterministic bot-01 -> Nexus_01, bot-02 -> Nexus_02
+      w1 = createWorker(
+        loadConfig({
+          env: {
+            SWARM_ROLE: 'worker',
+            SWARM_ENV_PROFILE: 'private_offline_test',
+            SWARM_MASTER_URL: masterUrl,
+            SWARM_WORKER_ID: 'worker-sticky',
+            SWARM_BOOTSTRAP_TOKEN: tok1.bootstrapToken,
+            SWARM_WORKER_STATE_PATH: path.join(tmpDir, 'pc1-state.json'),
+            SWARM_BOT_NAME_PREFIX: 'Nexus',
+            SWARM_WORKER_BOT_COUNT: '2',
+            SWARM_SPAWN_STAGGER_MS: '0',
+            SWARM_WORKER_SIMULATION: 'true',
+            SWARM_AI_ENABLED: 'false',
+            SWARM_DB_PATH: path.join(tmpDir, 'unused.db'),
+            SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+          }
+        })
+      );
+      await w1.start();
+      assert.equal(w1.bots.get('bot-01').username, 'Nexus_01');
+      assert.equal(w1.bots.get('bot-02').username, 'Nexus_02');
+      await w1.stop();
+      w1 = null;
+
+      // Second WorkerHost run on a DIFFERENT PC (no state file, accidental different prefix "AccidentalName"):
+      // Master locks & returns canonical usernames Nexus_01 & Nexus_02 so bots keep 100% of their Aternos items!
+      const tok2 = master.botRegistry.createBootstrapToken({ createdBy: 'test' });
+      w2 = createWorker(
+        loadConfig({
+          env: {
+            SWARM_ROLE: 'worker',
+            SWARM_ENV_PROFILE: 'private_offline_test',
+            SWARM_MASTER_URL: masterUrl,
+            SWARM_WORKER_ID: 'worker-sticky',
+            SWARM_BOOTSTRAP_TOKEN: tok2.bootstrapToken,
+            SWARM_WORKER_STATE_PATH: path.join(tmpDir, 'pc2-state.json'),
+            SWARM_BOT_NAME_PREFIX: 'OtherName',
+            SWARM_WORKER_BOT_COUNT: '2',
+            SWARM_SPAWN_STAGGER_MS: '0',
+            SWARM_WORKER_SIMULATION: 'true',
+            SWARM_AI_ENABLED: 'false',
+            SWARM_DB_PATH: path.join(tmpDir, 'unused.db'),
+            SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+          }
+        })
+      );
+      await w2.start();
+      assert.equal(w2.bots.get('bot-01').username, 'Nexus_01');
+      assert.equal(w2.bots.get('bot-02').username, 'Nexus_02');
+    } finally {
+      if (w1) await w1.stop();
+      if (w2) await w2.stop();
+      await master.stop();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

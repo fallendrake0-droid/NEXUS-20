@@ -689,7 +689,7 @@
         window.location.origin +
         ' SWARM_BOOTSTRAP_TOKEN=' +
         out.bootstrapToken +
-        ' SWARM_WORKER_ID=worker-1 node index.js';
+        ' SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 node index.js';
       box.appendChild(title);
       box.appendChild(cmd);
       box.classList.remove('hidden');

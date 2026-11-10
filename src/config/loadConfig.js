@@ -33,6 +33,70 @@ const VALID_PERFORMANCE_PROFILES = new Set([
 
 const FORBIDDEN_ANDROID_FUSE_PREFIXES = ['/sdcard', '/storage/emulated/', '/mnt/sdcard'];
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const MC_USERNAME_RE = /^[A-Za-z0-9_]{3,16}$/;
+
+function isPrivateLanIp(host) {
+  if (typeof host !== 'string') return false;
+  const parts = host.trim().split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : -1));
+  if (nums.some((n) => n < 0 || n > 255)) return false;
+  const [a, b] = nums;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // Tailscale / WireGuard CGNAT
+  return false;
+}
+
+function parseMinecraftEndpoint(rawHostInput, explicitPortInput, fallbackPort = 25565) {
+  let cleaned = String(rawHostInput || '127.0.0.1')
+    .trim()
+    .replace(/^(?:https?|minecraft):\/\//i, '')
+    .replace(/\/+$/, '');
+  let inlinePort = null;
+  const colonIdx = cleaned.lastIndexOf(':');
+  if (colonIdx > 0 && !cleaned.includes(']')) {
+    const maybePort = Number(cleaned.slice(colonIdx + 1));
+    if (Number.isSafeInteger(maybePort) && maybePort >= 1 && maybePort <= 65535) {
+      inlinePort = maybePort;
+      cleaned = cleaned.slice(0, colonIdx);
+    }
+  }
+  const hasExplicitPort =
+    explicitPortInput !== undefined && explicitPortInput !== null && String(explicitPortInput).trim() !== '';
+  const port = hasExplicitPort
+    ? parseIntOr(explicitPortInput, fallbackPort)
+    : inlinePort ?? fallbackPort;
+  return { host: cleaned, port };
+}
+
+function sanitizeBotPrefix(rawPrefix) {
+  const cleaned = String(rawPrefix || 'Nexus')
+    .replace(/[^A-Za-z0-9_]/g, '')
+    .slice(0, 12);
+  return cleaned.length >= 2 ? cleaned : 'Nexus';
+}
+
+/**
+ * Generate a deterministic, fixed-username bot roster (`bot-01 -> Nexus_01`, etc.)
+ * so bots ALWAYS reconnect with the exact same Minecraft username and never lose server inventory.
+ */
+function buildDeterministicBotRoster({ prefix = 'Nexus', count = 2, startIndex = 1 } = {}) {
+  const safePrefix = sanitizeBotPrefix(prefix);
+  const safeCount = Math.max(1, Math.min(20, Math.trunc(Number(count) || 2)));
+  const safeStart = Math.max(1, Math.min(20, Math.trunc(Number(startIndex) || 1)));
+  const roster = [];
+  for (let i = 0; i < safeCount; i += 1) {
+    const slotNum = safeStart + i;
+    const pad = String(slotNum).padStart(2, '0');
+    roster.push({
+      botId: `bot-${pad}`,
+      username: `${safePrefix}_${pad}`.slice(0, 16)
+    });
+  }
+  return roster;
+}
 
 function parseBool(val, fallback) {
   if (typeof val === 'boolean') return val;
@@ -74,6 +138,28 @@ function buildRawConfig(env = {}, fileConfig = {}) {
 
   const host = String(env.SWARM_BIND_HOST ?? fileConfig.http?.host ?? '127.0.0.1').trim();
   const isLoopback = LOOPBACK_HOSTS.has(host);
+  const allowPrivateLanHttp = parseBool(
+    env.SWARM_ALLOW_PRIVATE_LAN_HTTP ?? fileConfig.http?.allowPrivateLanHttp,
+    false
+  );
+  const defaultTlsEnabled =
+    !isLoopback && !(allowPrivateLanHttp === true && isPrivateLanIp(host));
+  const mcEndpoint = parseMinecraftEndpoint(
+    env.SWARM_MC_HOST ?? fileConfig.worker?.minecraftHost ?? '127.0.0.1',
+    env.SWARM_MC_PORT ?? fileConfig.worker?.minecraftPort,
+    25565
+  );
+  const botNamePrefix = sanitizeBotPrefix(
+    env.SWARM_BOT_NAME_PREFIX ?? fileConfig.worker?.botNamePrefix ?? 'Nexus'
+  );
+  const botCount = parseIntOr(
+    env.SWARM_WORKER_BOT_COUNT ?? fileConfig.worker?.botCount,
+    2
+  );
+  const botStartIndex = parseIntOr(
+    env.SWARM_WORKER_BOT_START_INDEX ?? fileConfig.worker?.botStartIndex,
+    1
+  );
 
   return {
     role: String(env.SWARM_ROLE ?? fileConfig.role ?? 'master').trim(),
@@ -97,10 +183,11 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       trustEdgeTlsProxy: parseBool(
         env.SWARM_TRUST_EDGE_TLS_PROXY ?? fileConfig.http?.trustEdgeTlsProxy,
         false
-      )
+      ),
+      allowPrivateLanHttp
     },
     tls: {
-      enabled: parseBool(env.SWARM_TLS_ENABLED ?? fileConfig.tls?.enabled, !isLoopback),
+      enabled: parseBool(env.SWARM_TLS_ENABLED ?? fileConfig.tls?.enabled, defaultTlsEnabled),
       certPath: env.SWARM_TLS_CERT_PATH ?? fileConfig.tls?.certPath ?? null,
       keyPath: env.SWARM_TLS_KEY_PATH ?? fileConfig.tls?.keyPath ?? null,
       caCertPath: env.SWARM_TLS_CA_PATH ?? fileConfig.tls?.caCertPath ?? null
@@ -222,13 +309,8 @@ function buildRawConfig(env = {}, fileConfig = {}) {
         env.SWARM_WORKER_POLL_MS ?? fileConfig.worker?.commandPollIntervalMs,
         1_000
       ),
-      minecraftHost: String(
-        env.SWARM_MC_HOST ?? fileConfig.worker?.minecraftHost ?? '127.0.0.1'
-      ).trim(),
-      minecraftPort: parseIntOr(
-        env.SWARM_MC_PORT ?? fileConfig.worker?.minecraftPort,
-        25565
-      ),
+      minecraftHost: mcEndpoint.host,
+      minecraftPort: mcEndpoint.port,
       minecraftVersion: env.SWARM_MC_VERSION ?? fileConfig.worker?.minecraftVersion ?? null,
       serverId: String(
         env.SWARM_MC_SERVER_ID ?? fileConfig.worker?.serverId ?? 'survival-main'
@@ -245,6 +327,13 @@ function buildRawConfig(env = {}, fileConfig = {}) {
         env.SWARM_WORKER_SIMULATION ?? fileConfig.worker?.simulationMode,
         false
       ),
+      botNamePrefix,
+      botCount,
+      botStartIndex,
+      forceRenameBots: parseBool(
+        env.SWARM_FORCE_RENAME_BOTS ?? fileConfig.worker?.forceRenameBots,
+        false
+      ),
       bots: Array.isArray(fileConfig.worker?.bots)
         ? fileConfig.worker.bots.map((b) => ({ ...b }))
         : env.SWARM_WORKER_BOTS
@@ -252,11 +341,20 @@ function buildRawConfig(env = {}, fileConfig = {}) {
               .split(',')
               .map((entry) => entry.trim())
               .filter(Boolean)
-              .map((entry) => {
-                const [idPart, namePart] = entry.split(':').map((s) => s.trim());
+              .map((entry, idx) => {
+                if (entry.includes(':')) {
+                  const [idPart, namePart] = entry.split(':').map((s) => s.trim());
+                  return {
+                    botId: idPart,
+                    username: (namePart || idPart.replace(/[^a-zA-Z0-9_]/g, '_')).slice(0, 16)
+                  };
+                }
+                const cleanName = entry.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 16);
                 return {
-                  botId: idPart,
-                  username: namePart || idPart.replace(/[^a-zA-Z0-9_]/g, '_')
+                  botId: entry.startsWith('bot-')
+                    ? entry
+                    : `bot-${String(botStartIndex + idx).padStart(2, '0')}`,
+                  username: cleanName.length >= 3 ? cleanName : `${botNamePrefix}_${String(idx + 1).padStart(2, '0')}`
                 };
               })
           : []
@@ -315,12 +413,27 @@ function validateConfig(config) {
   if (typeof config.http?.trustEdgeTlsProxy !== 'boolean') {
     errors.push('http.trustEdgeTlsProxy must be a valid boolean');
   }
+  if (
+    config.http?.allowPrivateLanHttp !== undefined &&
+    typeof config.http.allowPrivateLanHttp !== 'boolean'
+  ) {
+    errors.push('http.allowPrivateLanHttp must be a valid boolean');
+  }
   if (typeof config.tls?.enabled !== 'boolean') {
     errors.push('tls.enabled must be a valid boolean');
   }
   const isLoopback = LOOPBACK_HOSTS.has(host);
-  if (!isLoopback && config.tls?.enabled !== true && config.http?.trustEdgeTlsProxy !== true) {
-    errors.push('Non-loopback http.host requires tls.enabled === true (or trustEdgeTlsProxy === true)');
+  const isPermittedPrivateLan =
+    config.http?.allowPrivateLanHttp === true && isPrivateLanIp(host);
+  if (
+    !isLoopback &&
+    !isPermittedPrivateLan &&
+    config.tls?.enabled !== true &&
+    config.http?.trustEdgeTlsProxy !== true
+  ) {
+    errors.push(
+      'Non-loopback http.host requires tls.enabled === true (or allowPrivateLanHttp === true on RFC1918 LAN IPs, or trustEdgeTlsProxy === true)'
+    );
   }
   if (config.tls?.enabled === true) {
     if (!config.tls.certPath || !config.tls.keyPath) {
@@ -508,6 +621,24 @@ function validateConfig(config) {
     if (config.envProfile === 'authorised_online' && w.authMode === 'private_offline_test') {
       errors.push('worker.authMode cannot be private_offline_test when envProfile is authorised_online');
     }
+    if (typeof w.forceRenameBots !== 'boolean') {
+      errors.push('worker.forceRenameBots must be a valid boolean');
+    }
+    if (!Number.isSafeInteger(w.botCount) || w.botCount < 1 || w.botCount > archMax) {
+      errors.push(`worker.botCount must be an integer in 1..${archMax}`);
+    }
+    if (!Number.isSafeInteger(w.botStartIndex) || w.botStartIndex < 1 || w.botStartIndex > archMax) {
+      errors.push(`worker.botStartIndex must be an integer in 1..${archMax}`);
+    }
+    if (Array.isArray(w.bots)) {
+      for (const b of w.bots) {
+        if (!b.username || !MC_USERNAME_RE.test(String(b.username))) {
+          errors.push(
+            `worker bot username "${b.username}" must be 3..16 characters [A-Za-z0-9_]`
+          );
+        }
+      }
+    }
   }
 
   if (errors.length > 0 && !errorCode) {
@@ -559,6 +690,9 @@ module.exports = {
   loadConfig,
   validateConfig,
   redactConfig,
+  isPrivateLanIp,
+  parseMinecraftEndpoint,
+  buildDeterministicBotRoster,
   VALID_OPERATING_MODES,
   VALID_PERFORMANCE_PROFILES
 };

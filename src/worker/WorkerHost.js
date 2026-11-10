@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createLogger } = require('../logging/createLogger');
+const { buildDeterministicBotRoster } = require('../config/loadConfig');
 const { TimerRegistry } = require('../performance/TimerRegistry');
 const { MasterClient } = require('./MasterClient');
 const { BotRunner } = require('./BotRunner');
@@ -68,6 +69,7 @@ class WorkerHost {
     });
 
     const saved = loadSavedWorkerCredentials(wCfg.statePath);
+    this._savedState = saved;
     const initialToken = wCfg.workerToken || saved?.workerToken || null;
 
     this.client =
@@ -103,12 +105,33 @@ class WorkerHost {
     if (this._started) return { workerId: this.client.workerId, bots: this.bots.size };
 
     const wCfg = this.config.worker;
-    const botDefs =
+    const baseDefs =
       Array.isArray(wCfg.bots) && wCfg.bots.length > 0
         ? wCfg.bots
-        : [{ botId: `${wCfg.workerId}-bot-1`, username: `${wCfg.workerId}_1`.replace(/[^a-zA-Z0-9_]/g, '_') }];
+        : buildDeterministicBotRoster({
+            prefix: wCfg.botNamePrefix || 'Nexus',
+            count: wCfg.botCount || 2,
+            startIndex: wCfg.botStartIndex || 1
+          });
 
-    // 1. Enroll or reconcile with Master
+    // Preserve sticky usernames from saved worker state file so bots NEVER lose their Minecraft inventory!
+    const savedById = new Map(
+      Array.isArray(this._savedState?.bots)
+        ? this._savedState.bots.map((b) => [String(b.botId), b])
+        : []
+    );
+    let botDefs = baseDefs.map((b) => {
+      const prior = !wCfg.forceRenameBots ? savedById.get(String(b.botId)) : null;
+      return {
+        botId: b.botId,
+        username: prior?.username || b.username,
+        serverId: b.serverId || prior?.serverId || wCfg.serverId || 'survival-main',
+        authMode: b.authMode || prior?.authMode || wCfg.authMode || 'online_microsoft'
+      };
+    });
+
+    // 1. Enroll or reconcile with Master (adopting Master's authoritative canonical usernames if already registered)
+    let activeWorkerToken = wCfg.workerToken || this._savedState?.workerToken || null;
     if (!this.client.hasCredentials) {
       if (!wCfg.bootstrapToken) {
         throw new DomainError(
@@ -123,24 +146,38 @@ class WorkerHost {
           workerId: wCfg.workerId,
           hostname: wCfg.hostname,
           maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
-          configuredBots: botDefs.map((b) => ({
-            botId: b.botId,
-            username: b.username,
-            serverId: b.serverId || wCfg.serverId || 'survival-main',
-            authMode: b.authMode || wCfg.authMode || 'online_microsoft'
-          }))
+          allowUsernameChange: Boolean(wCfg.forceRenameBots),
+          configuredBots: botDefs
         }
       });
+      activeWorkerToken = reg.workerToken;
       this._heartbeatIntervalMs = reg.heartbeatIntervalMs || this._heartbeatIntervalMs;
-      if (wCfg.statePath) {
-        saveWorkerCredentials(wCfg.statePath, {
-          workerId: reg.workerId,
-          workerToken: reg.workerToken,
-          enrolledAt: new Date().toISOString()
+      if (Array.isArray(reg.canonicalBots) && reg.canonicalBots.length > 0) {
+        const canonById = new Map(reg.canonicalBots.map((c) => [String(c.botId), c]));
+        botDefs = botDefs.map((b) => {
+          const canon = canonById.get(String(b.botId));
+          return canon ? { ...b, username: canon.username } : b;
         });
       }
     } else {
-      await this.client.reconcile([]);
+      const rec = await this.client.reconcile([]);
+      if (Array.isArray(rec.canonicalBots) && rec.canonicalBots.length > 0) {
+        const canonById = new Map(rec.canonicalBots.map((c) => [String(c.botId), c]));
+        botDefs = botDefs.map((b) => {
+          const canon = canonById.get(String(b.botId));
+          return canon ? { ...b, username: canon.username } : b;
+        });
+      }
+    }
+
+    if (wCfg.statePath && activeWorkerToken) {
+      saveWorkerCredentials(wCfg.statePath, {
+        workerId: wCfg.workerId,
+        workerToken: activeWorkerToken,
+        bots: botDefs,
+        enrolledAt: this._savedState?.enrolledAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
     }
 
     // 2. Spawn BotRunners with staggered delay to avoid Minecraft login-throttle kicks

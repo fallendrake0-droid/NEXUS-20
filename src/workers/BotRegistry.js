@@ -313,6 +313,8 @@ class BotRegistry extends EventEmitter {
       }
 
       const acceptedBotIds = [];
+      const canonicalBots = [];
+      const allowUsernameChange = Boolean(workerInfo.allowUsernameChange);
       for (const b of configuredBots) {
         const botId = String(b.botId).trim();
         const existingBot = this._store.get('SELECT * FROM bots WHERE bot_id = ?', botId);
@@ -323,12 +325,15 @@ class BotRegistry extends EventEmitter {
           );
         }
         const authMode = b.authMode || 'online_microsoft';
+        // Sticky Minecraft username lock: preserve existing username so server-side player .dat inventory is never lost!
+        const effectiveUsername =
+          existingBot && !allowUsernameChange ? String(existingBot.username) : String(b.username);
         if (existingBot) {
           this._store.run(
             `UPDATE bots
              SET username = ?, server_id = ?, auth_mode = ?, enabled = 1, updated_at = ?
              WHERE bot_id = ?`,
-            String(b.username),
+            effectiveUsername,
             String(b.serverId),
             authMode,
             nowIso,
@@ -341,13 +346,19 @@ class BotRegistry extends EventEmitter {
             ) VALUES (?, ?, ?, ?, ?, 1, 'disconnected', NULL, ?)`,
             botId,
             workerId,
-            String(b.username),
+            effectiveUsername,
             String(b.serverId),
             authMode,
             nowIso
           );
         }
         acceptedBotIds.push(botId);
+        canonicalBots.push({
+          botId,
+          username: effectiveUsername,
+          serverId: String(b.serverId),
+          authMode
+        });
       }
 
       this._store.recordAudit({
@@ -370,9 +381,30 @@ class BotRegistry extends EventEmitter {
         heartbeatIntervalMs: this._config.capacity?.heartbeatIntervalMs ?? 5_000,
         leaseDurationMs: this._config.capacity?.defaultLeaseDurationMs ?? 30_000,
         maxEventBatchSize: 100,
-        acceptedBotIds
+        acceptedBotIds,
+        canonicalBots
       };
     });
+  }
+
+  /**
+   * Return the authoritative persisted bot roster (`botId`, `username`, `serverId`, `authMode`) for a worker.
+   */
+  getWorkerBots(workerId) {
+    return this._store
+      .all(
+        `SELECT bot_id, username, server_id, auth_mode
+         FROM bots
+         WHERE worker_id = ? AND enabled = 1
+         ORDER BY bot_id ASC`,
+        String(workerId)
+      )
+      .map((r) => ({
+        botId: r.bot_id,
+        username: r.username,
+        serverId: r.server_id,
+        authMode: r.auth_mode
+      }));
   }
 
   /**

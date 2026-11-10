@@ -1,5 +1,6 @@
 'use strict';
 
+const dns = require('node:dns');
 const { EventEmitter } = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { ScopedListeners } = require('../performance/ScopedListeners');
@@ -288,6 +289,33 @@ class SimulatedBotDriver extends EventEmitter {
 }
 
 /**
+ * Resolve Minecraft SRV records (`_minecraft._tcp.<host>`) automatically for hosts like
+ * Aternos (`*.aternos.me`) that allocate dynamic backend ports behind port 25565.
+ */
+async function resolveMinecraftSrvEndpoint(host, port) {
+  const cleanHost = String(host || '127.0.0.1').trim();
+  const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(cleanHost) || cleanHost.includes(':');
+  if (isIp || cleanHost === 'localhost' || port !== 25565) {
+    return { host: cleanHost, port };
+  }
+  try {
+    const records = await Promise.race([
+      dns.promises.resolveSrv(`_minecraft._tcp.${cleanHost}`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('srv_timeout')), 2_500))
+    ]);
+    if (Array.isArray(records) && records.length > 0 && records[0].name && records[0].port) {
+      return {
+        host: String(records[0].name).replace(/\.$/, ''),
+        port: Number(records[0].port)
+      };
+    }
+  } catch {
+    // Fall back to direct host:port when no SRV record exists
+  }
+  return { host: cleanHost, port };
+}
+
+/**
  * Lazy real-Mineflayer BotDriver factory (loaded ONLY on WorkerHost when `simulationMode === false`).
  * Never required on the Master Controller (`G-01`).
  */
@@ -316,9 +344,13 @@ function createMineflayerDriver(options = {}) {
     async connect() {
       listeners.dispose();
       listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
+      const endpoint = await resolveMinecraftSrvEndpoint(
+        options.minecraftHost,
+        options.minecraftPort ?? 25565
+      );
       bot = mineflayer.createBot({
-        host: options.minecraftHost,
-        port: options.minecraftPort,
+        host: endpoint.host,
+        port: endpoint.port,
         username: options.username,
         version: options.minecraftVersion || false,
         auth: options.authMode === 'online_microsoft' ? 'microsoft' : 'offline'
@@ -775,5 +807,6 @@ class BotRunner extends EventEmitter {
 module.exports = {
   BotRunner,
   SimulatedBotDriver,
-  createMineflayerDriver
+  createMineflayerDriver,
+  resolveMinecraftSrvEndpoint
 };

@@ -524,7 +524,8 @@ class MasterHttpServer {
     if (method === 'POST' && pathname === '/worker/v1/reconcile') {
       const body = await this._readJsonBody(req, 65_536);
       const reconciled = this._tasks.reconcileWorker(authWorker.workerId, body);
-      this._sendJson(res, 200, reconciled);
+      const canonicalBots = this._registry.getWorkerBots(authWorker.workerId);
+      this._sendJson(res, 200, { ...reconciled, canonicalBots });
       return;
     }
 
