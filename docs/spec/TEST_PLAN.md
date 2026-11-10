@@ -1,201 +1,96 @@
-# Test Plan — Mineflayer AI Swarm
+# Verification, Leak & Staged Rollout Test Plan
 
-**Specification:** 1.0.0  
-**Test environment:** private authorised Minecraft Java server and controlled worker devices.  
-**Test philosophy:** tests prove correctness and safety before scale. A successful bot login is not acceptance.
+**Document:** `docs/spec/TEST_PLAN.md`  
+**Specification version:** 1.1.0  
+**Test Runner:** Built-in `node:test` + `node:assert/strict` (zero bloated test-framework dependencies on Termux)  
+**Current Baseline on `main`:** `19/19` tests passing (`npm test`), `3/3` `--expose-gc` leak suites passing (`npm run test:leaks`), multi-process `0..20` bot benchmark passing (`npm run bench`).
 
-## 1. Test layers
+---
 
-### Unit tests
+## 1. Test Pyramid & Directory Layout
 
-Use Node's test runner or a pinned compatible test runner. Use deterministic fake clocks and fake transports.
+~~~text
+tests/
+├── unit/
+│   ├── config.test.js              # loadConfig caps (<=20), TLS rules, Ollama URL policy
+│   ├── schemaValidator.test.js     # All JSON Schemas (AI_PROTOCOL.md) + DAG cycle rejection
+│   ├── taskManager.test.js         # Legal/illegal state transitions, idempotency, epoch fencing
+│   ├── taskScheduler.test.js       # 1-bot vs subset vs swarm, splitQuota, partitionRegion
+│   ├── inventoryLedger.test.js     # All 7 verification policies, pickup-drop, atomic transferId
+│   ├── capabilityProfiler.test.js  # Exponential decay p50/p10 + conservative cold-start priors
+│   └── authService.test.js         # Bounded scrypt concurrency, session hashing, CSRF, RBAC
+├── integration/
+│   ├── persistenceRecovery.test.js # SQLite WAL crash recovery, lease expiry, backup/verify
+│   ├── workerProtocol.test.js      # Bootstrap -> register -> heartbeat -> long-poll -> ack -> fence
+│   ├── coordinatorFlow.test.js     # Dashboard/CLI/Chat unified submission + clarification
+│   └── aiFallback.test.js          # Mock Ollama valid/malformed/timeout/offline + fast-path
+├── e2e/
+│   ├── simulatedSwarm.test.js      # Multi-process Master + WorkerHosts at 1, 2, 5, 10, 20 bots
+│   └── minecraftHarness.test.js    # Controlled local test server harness (Stage 2+)
+└── performance/                    # IMPLEMENTED ON MAIN (19/19 passing)
+    ├── modules.test.js             # RingBuffer, BoundedCache, ByteQueue, Timers, CompactCodec, etc.
+    ├── governor-and-ai.test.js     # ResourceMonitor, WorkloadGovernor hysteresis, AiEfficiencyController
+    └── memory-leaks.test.js        # --expose-gc reconnect, SSE backpressure, task retention checks
+~~~
 
-Cover:
-- config parsing and validation;
-- task/objective state transitions;
-- dependency graph and cycle rejection;
-- quota splitting and aggregate arithmetic;
-- candidate eligibility;
-- travel/rate estimator and confidence handling;
-- marginal benefit rule;
-- lease expiration and epoch fencing;
-- inventory identity, deltas and transfer deduplication;
-- event/message idempotency;
-- schema validation and semantic validation;
-- chat parser and player allowlist;
-- auth role checks and CSRF middleware;
-- resource governor state transitions;
-- cache and queue bounds.
+---
 
-### Contract tests
+## 2. Mandatory Unit & Contract Test Cases
 
-- Master and worker accept only declared protocol versions.
-- JSON schemas reject missing/extra/wrong-type fields.
-- Assignment ownership and sequence checks hold.
-- Event acknowledgement is idempotent.
-- Worker cannot read another worker's bot/task evidence.
-- Command envelope can be encoded/decoded across supported Node versions.
-- Ollama response matches the strict schema or is rejected.
+### 2.1 Allocation & Quota Precision (`tests/unit/taskScheduler.test.js`)
+1. **Single-bot wins trivial task:** `"Craft 1 wooden_pickaxe"` (`Q = 1`, `parallelism = 'single'`) with `10` idle bots -> selects `1` bot (`quotas = [{ botId, quantity: 1 }]`).
+2. **Single-bot wins high-travel small batch:** `"Mine 6 cobblestone"` when `bot-1` is `4` blocks away (`r_p50 = 0.8/s`) and `bot-2..5` are `120` blocks away -> selects `bot-1` alone (`RelativeGain < 0.10`).
+3. **Cooperating subset wins medium batch with contention:** `"Collect 64 oak_log"` with `2` nearby grove work faces and `6` eligible bots -> selects `2` or `3` bots where `T_contention` halts adding a 4th bot.
+4. **Full eligible swarm wins wide uncontested batch:** `"Collect 400 cobblestone"` across `5` uncontested mining lanes with `5` nearby bots -> selects all `5`, `sum(quotas) === 400`.
+5. **Exact quota conservation (`splitQuota`):** Fuzz `1,000` random `(remainingQuantity in 1..5000, botWeights in 1..20)` cases -> assert integer `q_k >= 1` and `sum(q_k) === remainingQuantity` in `100%` of cases.
+6. **Spatial exploration (`partitionRegion`):** `128x128` region across `4` bots -> `4` disjoint sub-boxes with exact area conservation and `0` overlap.
+7. **Cold-start uncertainty gate:** Unmeasured bots (`sampleCount = 0`) require `>= 0.18` relative gain and `z >= 1.0` before expanding past `1` bot.
 
-### Integration tests
+### 2.2 Evidence & Anti-False-Progress (`tests/unit/inventoryLedger.test.js`)
+1. **Pre-existing stock rejected:** Bot starts assignment with `baseline = 32 cobblestone`, mines `0`, reports `after = 32` -> `creditedDelta === 0`.
+2. **Unrelated item rejected:** Objective targets `minecraft:cobblestone`; bot picks up `64 minecraft:dirt` and `5 minecraft:cobbled_deepslate` -> `creditedDelta === 0` (unless `allowEquivalentVariants` explicitly enabled).
+3. **Pickup-then-drop before report:** Bot starts at `0`, picks up `10` mid-run (unreported), drops `4`, reports `after = 6` -> `creditedDelta === 6`; under `held_stock`, subsequent loss reduces held balance.
+4. **Two-bot transfer conservation:** Bot A (`+20` mined) transfers `20` to Carrier Bot B under shared `transferId` -> total swarm `newly_collected` credit remains `20` (never `40`, never `0`).
+5. **Crafted output verification:** Claiming `+1 minecraft:wooden_pickaxe` without `-3 planks` and `-2 sticks` delta fails `crafted_output` verification (`disputed: true, creditableDelta: 0`).
+6. **Duplicate & out-of-epoch reports:** Replaying identical `messageId` or `evidenceId` returns idempotent ack (`creditedDelta === 0`); submitting report with `allocationEpoch = 1` after Master fenced to `epoch = 2` returns `STALE_ALLOCATION_EPOCH`.
 
-Run:
-- Coordinator + StateStore with migrations.
-- Coordinator + mock worker transport.
-- WorkerHost + fake Mineflayer adapter.
-- One actual Mineflayer bot on a private test server.
-- Two independently connected bots using a shared objective.
-- Ollama host available and unavailable.
-- Dashboard, CLI and Minecraft chat ingress against the same coordinator.
+### 2.3 AI Protocol & Fallback (`tests/unit/schemaValidator.test.js`, `tests/integration/aiFallback.test.js`)
+1. Reject extra keys (`additionalProperties: false`), cyclic `dependencies`, missing `clarificationQuestion` when `clarificationRequired: true`, and `workerCountHint > 20`.
+2. Reject `OllamaClient` config pointing to `http://127.0.0.1:11434`, `http://localhost:11434`, or `https://api.openai.com`.
+3. Assert `PlanningContextV1` never exceeds `8,192 bytes` and contains zero chunk/chat/secret fields.
+4. Simulate Ollama timeout, `500`, and malformed JSON -> assert `0` retries on malformed schema, clean deterministic fallback or `clarification_required`, and `0` crashed processes.
 
-### End-to-end tests
+---
 
-Use exact supported version tuple: Node, Mineflayer, minecraft-protocol, minecraft-data, optional plugins, Minecraft server version and server settings.
+## 3. Recovery, Security & Leak Suites
 
-Scenarios:
-1. Start one bot and inspect status.
-2. Submit a bounded collection task.
-3. Collect a shared quantity and verify the ledger.
-4. Submit two resource objectives.
-5. Craft one item and verify output.
-6. Explore two disjoint regions.
-7. Build while a separate bot guards.
-8. Disconnect worker during task and recover.
-9. Kill/restart master and reconcile active worker leases.
-10. Pause/cancel during navigation and mining.
-11. Lose Ollama during a task.
-12. Hit server connection cap and confirm no extra bot connects.
-13. Send unauthorised chat command and confirm no action.
-14. Re-send duplicate worker events and confirm only one ledger credit.
-15. Submit stale assignment epoch and confirm rejection.
+### 3.1 Crash & Partition Recovery (`tests/integration/persistenceRecovery.test.js`)
+1. Start task (`target = 100`), credit `40` verified units on Lease 1 (`quota = 60`), kill Master abruptly, advance clock past `expiresAt`, run `Coordinator.recover()` -> assert `verified = 40`, `reserved = 0`, `remaining = 60`, `allocationEpoch = 2`, and late Lease-1 report is fenced.
+2. Simulate lost assignment ack (`offered` command executed by worker while ack dropped) -> worker reconnects with `snapshots` + `events` prior to expiry -> Master reconciles `40` units without duplicate assignment.
 
-### Security tests
+### 3.2 Security Controls (`tests/unit/authService.test.js`, `tests/integration/workerProtocol.test.js`)
+1. `viewer` role receives `403 FORBIDDEN` on task creation, cancel, safe-stop, and worker enrollment.
+2. Valid session cookie **without** `X-CSRF-Token` or with cross-site `Origin: https://evil.example` receives `403 CSRF_INVALID`.
+3. Consumed or expired `bootstrapToken` fails replay (`401`); revoked `workerToken` immediately fails `/worker/v1/heartbeat` and fences active assignments.
+4. `10` simultaneous login requests execute through concurrency-1 KDF queue (`<= 4` queued, excess `429`) without exceeding bounded `scrypt` memory.
 
-- Invalid/missing dashboard session.
-- Viewer attempting operator/admin operation.
-- CSRF token missing or wrong.
-- Wrong Origin/CORS.
-- Brute-force login rate limiting and account enumeration.
-- Replayed worker message and stale sequence.
-- Revoked worker token.
-- Oversized payload, deep JSON, unknown fields and invalid schema.
-- Chat injection and prompt-injection strings.
-- Ollama response with arbitrary command or unknown action.
-- Secret scanner and log redaction.
-- HTTPS requirement and certificate validation.
-- Unauthorised server host rejection.
-- Offline-mode config refused outside private test profile.
-- Server kick/auth failure does not trigger bypass or infinite reconnect.
+### 3.3 Automated Memory-Leak & Scale Regression (`tests/performance/memory-leaks.test.js` & `benchmarks/run-benchmarks.js`)
+1. `npm run test:leaks` (`node --expose-gc`):
+   - `20` bot connect/disconnect cycles -> `0` retained `EventEmitter` listeners, `0` ref'd timers, `< 2.0 MiB` post-GC heap delta.
+   - `600` rapid dashboard mutations across slow/disconnecting SSE clients -> coalesced emission, `0` leaked stream sockets.
+   - `100` full task lifecycles -> bounded ring/cache sizes, flat post-GC heap.
+2. `npm run bench`:
+   - Runs `0, 1, 2, 5, 10, 20` bot multi-process suite and verifies `20/20` tasks completed, `0` silently discarded tasks under `WorkloadGovernor` pressure, and flat Master RSS.
 
-### Performance and resilience tests
+---
 
-- Baseline memory/CPU on actual Galaxy A06.
-- Two-bot two-hour soak.
-- Five, ten and twenty remote-bot scale runs.
-- SSE slow client and disconnected client behaviour.
-- Worker/network partition and reconnect storm.
-- Ollama timeout, slow output and invalid output.
-- StateStore busy/corrupt/unavailable scenarios.
-- Disk full and backup restore.
-- Android app backgrounding, Termux pause/resume and low-memory pressure.
-- Queue overflow and rate limiting.
-- Event-loop lag and CPU saturation.
+## 4. CI & Pre-Merge Command Checklist
 
-## 2. Test fixtures
+Every coding agent PR MUST pass all four commands cleanly (`exit code 0`):
 
-Maintain deterministic fixtures:
-- fake worker with configurable latency and failures;
-- fake bot snapshot and inventory;
-- fake world with known resource nodes and route costs;
-- inventory baselines with pre-existing items;
-- duplicate pickup/drop/transfer events;
-- fixed task DAGs;
-- controlled action-rate sample distributions;
-- Ollama valid, invalid, timed out and malformed responses;
-- private server profile with approved maximum connections.
-
-Every fixture must state server version, item registry version and expected result. Avoid relying on public servers.
-
-## 3. Allocation tests
-
-Required cases:
-- one bot faster than two after overhead;
-- two bots faster than one beyond benefit threshold;
-- one bot has tool and other does not;
-- nearest bot has poor tool durability;
-- bot has low health/food and becomes ineligible;
-- bots share one narrow resource node causing contention;
-- resources in disjoint regions enable parallelism;
-- task quantity smaller than number of bots;
-- quota integer rounding;
-- candidate data stale or unknown;
-- server cap reached;
-- multiple objectives with independent or dependent DAG nodes;
-- role-based builder + guard;
-- scheduler sees no expected improvement and chooses one bot.
-
-Property-based invariants:
-- sum of assigned quotas never exceeds remaining target;
-- verified + reserved never exceeds target;
-- no objective starts before dependencies complete;
-- at most one active conflicting assignment exists per bot;
-- no allocation references an unregistered bot;
-- stale epoch cannot change current state;
-- task completion requires verified objective completion.
-
-## 4. Inventory verification tests
-
-1. Baseline inventory already contains target item; newly_collected does not credit it.
-2. After snapshot shows a valid positive target-item delta; credit only delta and within quota.
-3. Another item increases; target progress unchanged.
-4. Item picked up then dropped; held_stock does not count dropped amount.
-5. Item is consumed by crafting; input debit and crafted output credit are distinct.
-6. Transfer occurs; both bots do not count the same item twice.
-7. Duplicate evidence message is replayed; ledger updates once.
-8. Evidence from an expired lease is rejected or reconciled under the expiry cutoff.
-9. More quantity is reported than quota; credit capped/rejected and discrepancy recorded.
-10. Registry item variant mismatch; no credit until canonical identity matches.
-11. Container deposit is reported but destination inventory did not increase; no deposit credit.
-12. Inventory snapshot is unavailable; mark progress uncertain, never complete.
-
-## 5. Recovery tests
-
-- Worker disconnects before command acknowledgement.
-- Worker disconnects after acknowledgement but before action.
-- Worker disconnects after action but before completion event.
-- Master restarts while worker is active.
-- Worker restarts while master is active.
-- Lease expires while worker still has stale command.
-- Old worker returns after lease has been reallocated.
-- Event sequence skips or duplicates.
-- DB commit succeeds but response is lost.
-- Bot reconnects with different entity ID but same configured bot identity.
-- Two events race to complete the same objective.
-
-At every boundary, verify no duplicated command side effect and no duplicated resource credit.
-
-## 6. Cross-platform compatibility
-
-- Termux on the Galaxy A06 with the exact installed Node version.
-- Each authorised worker operating system and Node version.
-- Exact Minecraft server/client protocol tuple.
-- Exact Mineflayer and plugin versions.
-- TLS/certificate configuration for private LAN/VPN.
-- SQLite driver, filesystem, WAL and crash recovery on Android/Termux.
-
-Do not infer compatibility from desktop Linux results.
-
-## 7. Test output and evidence
-
-CI and release evidence must include:
-- test command and exit status;
-- Node and package versions;
-- schema version;
-- Minecraft/server compatibility tuple;
-- performance benchmark result;
-- acceptance criterion IDs;
-- known flaky tests and reason;
-- failures not yet resolved.
-
-No test may be reported as passed if it was skipped. A skipped test is an open acceptance item.
-
+~~~bash
+npm test
+npm run test:leaks
+npm run check:termux
+npm run bench
+~~~

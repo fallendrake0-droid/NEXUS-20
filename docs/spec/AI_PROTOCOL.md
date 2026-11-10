@@ -1,95 +1,139 @@
-# AI Protocol — Mineflayer AI Swarm
+# AI Protocol, Data Minimization & Strict JSON Schemas
 
-**Specification:** 1.0.0  
-**Schema dialect:** JSON Schema Draft 2020-12  
-**AI host:** User-controlled remote Ollama instance.  
-**Trust:** Model output is untrusted input. It is never executable authority.
+**Document:** `docs/spec/AI_PROTOCOL.md`  
+**Specification version:** 1.1.0  
+**JSON Schema Dialect:** `https://json-schema.org/draft/2020-12/schema`  
+**Related:** `MASTER_SPEC.md`, `ARCHITECTURE.md`, `src/performance/AiEfficiencyController.js`
 
-## 1. Responsibilities
+---
 
-Ollama is used only for:
-- translating authorised natural-language requests into objective plans;
-- decomposing complex tasks into objectives and dependency edges;
-- suggesting a parallelism strategy and maximum useful participant count;
-- identifying missing information and asking a clarification question;
-- proposing plan changes after a material failure or changed objective.
+## 1. Non-Negotiable AI Constraints
 
-Deterministic JavaScript owns:
-- schema and semantic validation;
-- registry resolution and game-version checks;
-- bot eligibility and allocation;
-- exact quota arithmetic;
-- action preconditions and safety;
-- inventory and world-state verification;
-- task completion and resource ledger.
+1. **Zero local inference on phone:** `OllamaClient` rejects `127.0.0.1`, `::1`, `localhost`, `0.0.0.0`, `unix://` and RFC-3927 link-local endpoints (`DomainError('AI_LOCAL_HOST_FORBIDDEN')`).
+2. **Zero paid/cloud APIs:** `OllamaClient` rejects OpenAI, Anthropic, Google Gemini, OpenRouter, Together, Groq and any host outside `config.ai.allowedHosts` (`DomainError('AI_PAID_PROVIDER_FORBIDDEN')`).
+3. **Structured advisory output only:** Ollama receives compact `PlanningContextV1` (`<= 8,192 bytes` serialized UTF-8) via `POST /api/chat` with `stream: false` and `format: TASK_PLAN_V1_SCHEMA`. Model outputs are untrusted proposals validated syntactically and semantically by `SchemaValidator` before `TaskManager` accepts them.
+4. **AI never runs inside real-time control loops:** Reflexes (pathfinding, eating, block digging, combat evasion, lease checks) execute 100% deterministically on `WorkerHost` with `0` LLM calls.
+5. **Fast-path first (`AiEfficiencyController`):** Clear structured commands (`collect/mine/gather <N> <item>`, `craft <N> <item>`, `explore <radius>`, `guard <target>`, `status`, `pause`, `resume`, `cancel`, `stop`) bypass Ollama completely (`0` network tokens, `< 1 ms` latency).
 
-AI is not invoked for movement ticks, path updates, inventory events, eating checks or ordinary deterministic retries.
+---
 
-## 2. Data minimisation
+## 2. Exact Data Sent to Ollama vs Kept Local on Worker
 
-### Sent to Ollama
+### 2.1 Permitted in `PlanningContextV1` (`<= 8,192 bytes` max)
+- `schemaVersion`: `"1.0"`
+- `requestId`: UUID v4
+- `userIntent`: sanitized operator text (`1..500` chars; control characters stripped)
+- `serverProfile`: `{ serverId, minecraftVersion, allowedActions: string[], maxBotsAvailable: integer (0..20) }`
+- `botSummaries`: max `20` entries, each strictly `{ botId, dimension, status, distanceBands: Record<string, 'here'|'near'|'medium'|'far'|'unknown'>, toolTiers: string[], freeSlotBand: 'empty'|'partial'|'low'|'full', healthBand: 'critical'|'low'|'normal' }`
+- `knownStockSummary`: max `25` aggregated `itemKey -> totalCount` pairs relevant to the intent
+- `knownRegions`: max `16` named labels (`{ label, dimension, known: boolean }`)
+- `activeConstraints`: `{ allowExistingStock: boolean, maxRiskLevel: 'low'|'medium'|'high' }`
 
-Only a compact task context:
-- request ID and current plan version;
-- user's bounded natural-language objective;
-- relevant objective types and known item/block names;
-- compact list of candidate capability summaries (if allocation advice is requested);
-- approximate positions or region labels only when travel/geometry affects strategy;
-- inventory counts for required items, not slot contents;
-- tool class and remaining durability band;
-- health/food bands;
-- measured rate summaries with sample counts and confidence;
-- task dependencies, progress totals and typed failure reasons;
-- configured max participant count and server connection cap.
+### 2.2 Strictly Forbidden in Any Ollama Payload (Kept on Worker / Master DB)
+- Raw chunk columns, voxel arrays, heightmaps, `prismarine-world` objects, pathfinder node graphs, or entity lists (`<= 549,000` voxels stay strictly inside `WorkerHost` RAM).
+- Full player chat logs or untrusted in-game sign/book text (prompt-injection vector).
+- Coordinates of unrelated player bases unless explicitly named in the operator's request.
+- Credentials, `bootstrapToken`, `workerToken`, session IDs, Minecraft auth tokens, file paths, IPs, or environment variables.
 
-### Never sent to Ollama
+---
 
-- Minecraft account credentials, Microsoft tokens, cookies or device auth files;
-- worker tokens, dashboard sessions, API secrets or private keys;
-- raw protocol packets, complete world/chunk dumps, full entity maps or full player lists;
-- full inventory NBT/slot dumps when compact item counts suffice;
-- unbounded server logs, private chat history or arbitrary files;
-- phone filesystem paths, contacts or unrelated device data;
-- any user data not needed for the current decision.
-
-All model input is built from explicit allowlisted DTO fields. Never serialize a Bot object or arbitrary object graph to construct a prompt.
-
-## 3. Ollama transport contract
-
-Use Ollama's documented local HTTP API through the private LAN/VPN route. Preferred call: POST /api/chat with:
-- configured model name;
-- system and user messages containing a compact request;
-- format set to the exact JSON Schema object below;
-- stream false for a single bounded response;
-- temperature low or zero where supported by the selected model;
-- num_predict/output cap;
-- keep_alive configured explicitly;
-- request timeout and AbortSignal;
-- bounded response body.
-
-Ollama documents JSON Schema structured outputs through the format field and supports stream false: https://github.com/ollama/ollama/blob/main/docs/api.md
-
-Do not assume every model perfectly obeys every schema. Parse the response content, validate locally, then run semantic validation. The coordinator must not expose Ollama directly to browser clients or workers. Protect the API endpoint with a private network boundary and authenticated TLS proxy or equivalent. No paid fallback endpoint is configured.
-
-Recommended inference policy:
-- one concurrent request by default;
-- small bounded waiting queue;
-- deduplicate repeated planning requests by requestId;
-- cancel superseded requests;
-- timeout and retry at most once for transient transport errors;
-- no repeated retry on invalid schema;
-- on failure use deterministic fallback for supported simple tasks;
-- if complex task cannot be safely decomposed, return needs_clarification.
-
-## 4. Plan schema
-
-A plan contains objective decomposition, not concrete executable code and not authoritative bot assignments. Each objective has a local ID, target, dependency references, parallelism mode and a worker-count hint. The scheduler chooses actual bots.
+## 3. Schema 1: `PlanningContextV1` (Master -> Ollama User Message JSON)
 
 ~~~json
 {
+  "$id": "https://mineflayer-ai-swarm.local/schemas/PlanningContextV1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mineflayer-ai-swarm.local/schemas/task-plan-v1.json",
-  "title": "TaskPlanV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "userIntent",
+    "serverProfile",
+    "botSummaries",
+    "knownStockSummary",
+    "knownRegions",
+    "activeConstraints"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "requestId": { "type": "string", "format": "uuid" },
+    "userIntent": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "serverProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serverId", "minecraftVersion", "allowedActions", "maxBotsAvailable"],
+      "properties": {
+        "serverId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "minecraftVersion": { "type": "string", "minLength": 3, "maxLength": 16 },
+        "allowedActions": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["mine", "collect", "craft", "build", "explore", "guard", "transfer", "repair", "inspect"]
+          }
+        },
+        "maxBotsAvailable": { "type": "integer", "minimum": 0, "maximum": 20 }
+      }
+    },
+    "botSummaries": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["botId", "dimension", "status", "toolTiers", "freeSlotBand", "healthBand"],
+        "properties": {
+          "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
+          "dimension": { "enum": ["overworld", "the_nether", "the_end", "unknown"] },
+          "status": { "enum": ["ready", "busy", "degraded"] },
+          "toolTiers": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 32 } },
+          "freeSlotBand": { "enum": ["empty", "partial", "low", "full"] },
+          "healthBand": { "enum": ["critical", "low", "normal"] }
+        }
+      }
+    },
+    "knownStockSummary": {
+      "type": "object",
+      "maxProperties": 25,
+      "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+    },
+    "knownRegions": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "dimension", "known"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1, "maxLength": 48 },
+          "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+          "known": { "type": "boolean" }
+        }
+      }
+    },
+    "activeConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowExistingStock", "maxRiskLevel"],
+      "properties": {
+        "allowExistingStock": { "type": "boolean" },
+        "maxRiskLevel": { "enum": ["low", "medium", "high"] }
+      }
+    }
+  }
+}
+~~~
+
+---
+
+## 4. Schema 2: `TaskPlanV1` (Ollama / Fast-Path -> Master)
+
+~~~json
+{
+  "$id": "https://mineflayer-ai-swarm.local/schemas/TaskPlanV1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -98,244 +142,158 @@ A plan contains objective decomposition, not concrete executable code and not au
     "intentSummary",
     "clarificationRequired",
     "clarificationQuestion",
-    "objectives",
     "riskLevel",
-    "notes"
+    "constraints",
+    "objectives",
+    "assumptions"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": "1.0" },
     "requestId": { "type": "string", "format": "uuid" },
-    "intentSummary": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "intentSummary": { "type": "string", "minLength": 1, "maxLength": 240 },
     "clarificationRequired": { "type": "boolean" },
-    "clarificationQuestion": {
-      "type": ["string", "null"],
-      "maxLength": 500
+    "clarificationQuestion": { "type": ["string", "null"], "maxLength": 240 },
+    "riskLevel": { "enum": ["low", "medium", "high"] },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowExistingStock", "maxBotsHint", "deadlineSeconds", "protectedRadiusBlocks"],
+      "properties": {
+        "allowExistingStock": { "type": "boolean" },
+        "maxBotsHint": { "type": ["integer", "null"], "minimum": 1, "maximum": 20 },
+        "deadlineSeconds": { "type": ["integer", "null"], "minimum": 10, "maximum": 86400 },
+        "protectedRadiusBlocks": { "type": ["integer", "null"], "minimum": 0, "maximum": 512 }
+      }
     },
     "objectives": {
       "type": "array",
-      "minItems": 1,
-      "maxItems": 20,
-      "items": { "$ref": "#/$defs/objective" }
-    },
-    "riskLevel": { "enum": ["low", "medium", "high"] },
-    "notes": {
-      "type": "array",
-      "maxItems": 10,
-      "items": { "type": "string", "maxLength": 300 }
-    }
-  },
-  "$defs": {
-    "objective": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "localId",
-        "kind",
-        "target",
-        "dependencies",
-        "parallelism",
-        "workerCountHint",
-        "constraints",
-        "verification"
-      ],
-      "properties": {
-        "localId": {
-          "type": "string",
-          "pattern": "^[a-zA-Z0-9_-]{1,48}$"
-        },
-        "kind": {
-          "enum": [
-            "mine",
-            "collect",
-            "craft",
-            "build",
-            "explore",
-            "guard",
-            "transfer",
-            "repair",
-            "inspect"
-          ]
-        },
-        "target": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["resourceId", "quantity", "regionLabel", "description"],
-          "properties": {
-            "resourceId": {
-              "type": ["string", "null"],
-              "maxLength": 128
-            },
-            "quantity": {
-              "type": ["integer", "null"],
-              "minimum": 1,
-              "maximum": 1000000
-            },
-            "regionLabel": {
-              "type": ["string", "null"],
-              "maxLength": 120
-            },
-            "description": {
-              "type": "string",
-              "maxLength": 500
-            }
-          }
-        },
-        "dependencies": {
-          "type": "array",
-          "maxItems": 20,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9_-]{1,48}$"
-          }
-        },
-        "parallelism": {
-          "enum": [
-            "single",
-            "partitionable",
-            "spatial",
-            "role_based",
-            "serial"
-          ]
-        },
-        "workerCountHint": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 20
-        },
-        "constraints": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "maxRisk",
-            "avoidHazards",
-            "allowExistingStock",
-            "maxTravelBlocks"
-          ],
-          "properties": {
-            "maxRisk": { "enum": ["low", "medium", "high"] },
-            "avoidHazards": {
-              "type": "array",
-              "maxItems": 20,
-              "items": { "type": "string", "maxLength": 64 }
-            },
-            "allowExistingStock": { "type": "boolean" },
-            "maxTravelBlocks": {
-              "type": ["integer", "null"],
-              "minimum": 0,
-              "maximum": 100000
-            }
-          }
-        },
-        "verification": {
-          "enum": [
-            "newly_collected",
-            "held_stock",
-            "deposited_stock",
-            "crafted_output",
-            "block_state",
-            "region_visited",
-            "role_duration",
-            "operator_review"
-          ]
+      "minItems": 0,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "objectiveId",
+          "kind",
+          "resourceId",
+          "targetQuantity",
+          "regionLabel",
+          "description",
+          "dependencies",
+          "parallelism",
+          "workerCountHint",
+          "verificationPolicy",
+          "rationale"
+        ],
+        "properties": {
+          "objectiveId": { "type": "string", "pattern": "^obj_[a-z0-9_]{1,28}$" },
+          "kind": {
+            "enum": ["mine", "collect", "craft", "build", "explore", "guard", "transfer", "repair", "inspect"]
+          },
+          "resourceId": {
+            "type": ["string", "null"],
+            "pattern": "^[a-z0-9_]+:[a-z0-9_./-]+$"
+          },
+          "targetQuantity": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
+          "regionLabel": { "type": ["string", "null"], "maxLength": 48 },
+          "description": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "dependencies": {
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^obj_[a-z0-9_]{1,28}$" }
+          },
+          "parallelism": { "enum": ["single", "partitionable", "spatial", "role_based"] },
+          "workerCountHint": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "verificationPolicy": {
+            "enum": [
+              "newly_collected",
+              "held_stock",
+              "deposited_stock",
+              "crafted_output",
+              "block_state",
+              "region_visited",
+              "role_duration"
+            ]
+          },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 160 }
         }
       }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string", "maxLength": 160 }
     }
   }
 }
 ~~~
 
-### Plan semantic rules
+**Semantic Validation Rules (`SchemaValidator.validatePlanSemantics`):**
+1. If `clarificationRequired === true`, `clarificationQuestion` must be non-null and `objectives.length === 0`.
+2. If `clarificationRequired === false`, `objectives.length >= 1` and all `objectiveId` values are unique.
+3. Every ID in `dependencies` must reference an `objectiveId` in the same `objectives` array, and topological sort must succeed with `0` cycles.
+4. For `kind` in `{"mine", "collect", "craft", "transfer"}`, `resourceId !== null` and `targetQuantity >= 1`.
 
-- If clarificationRequired is true, clarificationQuestion must be non-empty and no executable assignments are created.
-- If clarificationRequired is false, clarificationQuestion must be null.
-- localId values must be unique.
-- Every dependency must reference a different objective in the same plan.
-- Dependency graph must be acyclic.
-- Quantity must be present and positive for quantity objectives and null for non-quantity objectives unless a concrete task type defines otherwise.
-- resourceId must resolve through the active minecraft-data registry; unknown IDs require clarification.
-- workerCountHint is a suggestion, not a minimum and not an instruction to allocate that many workers.
-- High-risk objectives require an explicit policy decision or operator confirmation.
-- Model-suggested arbitrary coordinates, commands or action strings are not accepted. Target area references must be resolved by deterministic code.
+---
 
-## 5. Assignment schema
+## 5. Schema 3: `BotAssignmentV1` (Master -> WorkerHost)
 
-Actual bot assignments are authored by TaskScheduler and persisted by TaskManager, not accepted from Ollama as authoritative instructions. Worker receives this schema as a lease-bound command.
+*Note: `workerCountHint` from `TaskPlanV1` is advisory only; `TaskScheduler` computes the authoritative `BotAssignmentV1` quotas.*
 
 ~~~json
 {
+  "$id": "https://mineflayer-ai-swarm.local/schemas/BotAssignmentV1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mineflayer-ai-swarm.local/schemas/bot-assignment-v1.json",
-  "title": "BotAssignmentV1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "assignmentId",
+    "leaseId",
+    "allocationEpoch",
     "taskId",
     "objectiveId",
     "workerId",
     "botId",
-    "allocationEpoch",
-    "leaseId",
+    "actionType",
+    "resourceId",
+    "quotaQuantity",
+    "partitionId",
+    "regionBounds",
+    "verificationPolicy",
+    "safetyPolicy",
     "issuedAt",
     "expiresAt",
-    "actionType",
-    "quota",
-    "scope",
-    "verificationPolicy",
-    "constraints"
+    "checkpointIntervalMs"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": "1.0" },
     "assignmentId": { "type": "string", "format": "uuid" },
-    "taskId": { "type": "string", "format": "uuid" },
-    "objectiveId": { "type": "string", "format": "uuid" },
-    "workerId": { "type": "string", "format": "uuid" },
-    "botId": { "type": "string", "format": "uuid" },
-    "allocationEpoch": { "type": "integer", "minimum": 1 },
     "leaseId": { "type": "string", "format": "uuid" },
-    "issuedAt": { "type": "string", "format": "date-time" },
-    "expiresAt": { "type": "string", "format": "date-time" },
+    "allocationEpoch": { "type": "integer", "minimum": 1 },
+    "taskId": { "type": "string", "format": "uuid" },
+    "objectiveId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "workerId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
     "actionType": {
-      "enum": [
-        "mine",
-        "collect",
-        "craft",
-        "build",
-        "explore",
-        "guard",
-        "transfer",
-        "repair",
-        "inspect"
-      ]
+      "enum": ["mine", "collect", "craft", "build", "explore", "guard", "transfer", "repair", "inspect", "safe_stop"]
     },
-    "quota": {
-      "type": "object",
+    "resourceId": { "type": ["string", "null"], "pattern": "^[a-z0-9_]+:[a-z0-9_./-]+$" },
+    "quotaQuantity": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
+    "partitionId": { "type": ["string", "null"], "maxLength": 48 },
+    "regionBounds": {
+      "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["itemKey", "targetQuantity", "baselineQuantity"],
+      "required": ["dimension", "minX", "maxX", "minY", "maxY", "minZ", "maxZ"],
       "properties": {
-        "itemKey": { "type": ["string", "null"], "maxLength": 160 },
-        "targetQuantity": {
-          "type": ["integer", "null"],
-          "minimum": 1,
-          "maximum": 1000000
-        },
-        "baselineQuantity": {
-          "type": ["integer", "null"],
-          "minimum": 0,
-          "maximum": 1000000
-        }
-      }
-    },
-    "scope": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["regionId", "partitionId", "description"],
-      "properties": {
-        "regionId": { "type": ["string", "null"], "maxLength": 128 },
-        "partitionId": { "type": ["string", "null"], "maxLength": 128 },
-        "description": { "type": "string", "maxLength": 500 }
+        "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+        "minX": { "type": "integer" },
+        "maxX": { "type": "integer" },
+        "minY": { "type": "integer", "minimum": -64, "maximum": 320 },
+        "maxY": { "type": "integer", "minimum": -64, "maximum": 320 },
+        "minZ": { "type": "integer" },
+        "maxZ": { "type": "integer" }
       }
     },
     "verificationPolicy": {
@@ -346,229 +304,202 @@ Actual bot assignments are authored by TaskScheduler and persisted by TaskManage
         "crafted_output",
         "block_state",
         "region_visited",
-        "role_duration",
-        "operator_review"
+        "role_duration"
       ]
     },
-    "constraints": {
+    "safetyPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "maxRisk",
-        "stopOnDeath",
-        "stopOnLeaseExpiry",
-        "maxActionSeconds"
-      ],
+      "required": ["minHealth", "minFood", "avoidLava", "maxFallBlocks", "allowPvp"],
       "properties": {
-        "maxRisk": { "enum": ["low", "medium", "high"] },
-        "stopOnDeath": { "type": "boolean" },
-        "stopOnLeaseExpiry": { "const": true },
-        "maxActionSeconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3600
-        }
+        "minHealth": { "type": "number", "minimum": 4, "maximum": 20 },
+        "minFood": { "type": "number", "minimum": 4, "maximum": 20 },
+        "avoidLava": { "type": "boolean" },
+        "maxFallBlocks": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "allowPvp": { "const": false }
       }
-    }
+    },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "checkpointIntervalMs": { "type": "integer", "minimum": 2000, "maximum": 30000 }
   }
 }
 ~~~
 
-Assignment semantic rules:
-- workerId and botId must belong to one active registered worker.
-- lease expiry must be later than issuedAt and no longer than configured maximum.
-- targetQuantity must equal the quota committed in TaskManager.
-- Sum of active quotas plus verified progress must not exceed objective target.
-- Worker can execute only actionType present in its locally registered allowlist.
-- Worker rejects an unknown schema version or stale allocationEpoch.
-- Assignment command contains no credentials or arbitrary JavaScript.
+---
 
-## 6. Replanning request schema
-
-Replanning is event-triggered, not continuous. Triggers include worker loss, unexpected resource depletion, blocked path, tool break, objective failure, changed user request or a material deviation from ETA.
+## 6. Schema 4: `ReplanRequestV1` (Master -> ReasoningEngine / Ollama)
 
 ~~~json
 {
+  "$id": "https://mineflayer-ai-swarm.local/schemas/ReplanRequestV1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mineflayer-ai-swarm.local/schemas/replan-request-v1.json",
-  "title": "ReplanRequestV1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "requestId",
     "taskId",
-    "planVersion",
-    "trigger",
-    "affectedObjectiveIds",
+    "previousPlanVersion",
+    "triggerReason",
+    "completedObjectiveIds",
     "verifiedProgress",
-    "activeReservations",
-    "eligibleBotSummaries",
-    "failureSummary",
-    "constraints"
+    "failedObjective",
+    "botSummaries"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": "1.0" },
     "requestId": { "type": "string", "format": "uuid" },
     "taskId": { "type": "string", "format": "uuid" },
-    "planVersion": { "type": "integer", "minimum": 1 },
-    "trigger": {
+    "previousPlanVersion": { "type": "integer", "minimum": 1 },
+    "triggerReason": {
       "enum": [
-        "worker_lost",
-        "bot_lost",
-        "resource_unavailable",
-        "path_blocked",
-        "tool_unavailable",
-        "risk_changed",
-        "objective_failed",
-        "user_changed_request",
-        "eta_deviation"
+        "RESOURCE_DEPLETED",
+        "MISSING_PREREQUISITE_TOOL",
+        "PATH_PERMANENTLY_BLOCKED",
+        "BOT_CAPABILITY_LOST",
+        "REPEATED_EXECUTION_FAILURE",
+        "OPERATOR_CLARIFICATION"
       ]
     },
-    "affectedObjectiveIds": {
+    "completedObjectiveIds": {
       "type": "array",
-      "minItems": 1,
-      "maxItems": 20,
-      "uniqueItems": true,
-      "items": { "type": "string", "format": "uuid" }
+      "maxItems": 16,
+      "items": { "type": "string", "maxLength": 64 }
     },
     "verifiedProgress": {
-      "type": "array",
-      "maxItems": 20,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["objectiveId", "verifiedQuantity"],
-        "properties": {
-          "objectiveId": { "type": "string", "format": "uuid" },
-          "verifiedQuantity": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          }
-        }
-      }
+      "type": "object",
+      "maxProperties": 16,
+      "additionalProperties": { "type": "integer", "minimum": 0 }
     },
-    "activeReservations": {
-      "type": "array",
-      "maxItems": 20,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["assignmentId", "objectiveId", "quantity", "state"],
-        "properties": {
-          "assignmentId": { "type": "string", "format": "uuid" },
-          "objectiveId": { "type": "string", "format": "uuid" },
-          "quantity": { "type": "integer", "minimum": 0, "maximum": 1000000 },
-          "state": { "enum": ["offered", "accepted", "running", "expired", "revoked"] }
-        }
-      }
-    },
-    "eligibleBotSummaries": {
-      "type": "array",
-      "maxItems": 20,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["botId", "status", "dimension", "healthBand", "foodBand", "capabilities"],
-        "properties": {
-          "botId": { "type": "string", "format": "uuid" },
-          "status": { "enum": ["ready", "busy", "degraded", "unreachable"] },
-          "dimension": { "type": "string", "maxLength": 64 },
-          "healthBand": { "enum": ["critical", "low", "normal", "unknown"] },
-          "foodBand": { "enum": ["critical", "low", "normal", "unknown"] },
-          "capabilities": {
-            "type": "array",
-            "maxItems": 40,
-            "items": { "type": "string", "maxLength": 80 }
-          }
-        }
-      }
-    },
-    "failureSummary": { "type": "string", "maxLength": 1000 },
-    "constraints": {
+    "failedObjective": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxBots", "serverRemainingSlots", "maxRisk"],
+      "required": ["objectiveId", "failureCode", "summary"],
       "properties": {
-        "maxBots": { "type": "integer", "minimum": 1, "maximum": 20 },
-        "serverRemainingSlots": { "type": "integer", "minimum": 0, "maximum": 20 },
-        "maxRisk": { "enum": ["low", "medium", "high"] }
+        "objectiveId": { "type": "string", "maxLength": 64 },
+        "failureCode": { "type": "string", "maxLength": 48 },
+        "summary": { "type": "string", "maxLength": 200 }
       }
+    },
+    "botSummaries": {
+      "$ref": "https://mineflayer-ai-swarm.local/schemas/PlanningContextV1.json#/properties/botSummaries"
     }
   }
 }
 ~~~
 
-Ollama's replan result uses the TaskPlanV1 schema with a new plan version and an explicit set of affected/new objectives. TaskManager preserves completed objectives and immutable verified credits. The model cannot erase or lower verified progress.
+---
 
-## 7. Task completion report schema
-
-A completion report originates from a worker. It is not a trusted final task-completion decision.
+## 7. Schema 5: `TaskCompletionReportV1` (WorkerHost -> Master)
 
 ~~~json
 {
+  "$id": "https://mineflayer-ai-swarm.local/schemas/TaskCompletionReportV1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mineflayer-ai-swarm.local/schemas/task-completion-v1.json",
-  "title": "TaskCompletionReportV1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
-    "messageId",
+    "reportId",
+    "assignmentId",
+    "leaseId",
+    "allocationEpoch",
+    "taskId",
+    "objectiveId",
     "workerId",
     "botId",
-    "assignmentId",
-    "allocationEpoch",
-    "workerSequence",
-    "reportedStatus",
-    "startedAt",
-    "finishedAt",
-    "evidence"
+    "outcome",
+    "durationMs",
+    "beforeSnapshot",
+    "afterSnapshot",
+    "evidence",
+    "reportedAt"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "messageId": { "type": "string", "format": "uuid" },
-    "workerId": { "type": "string", "format": "uuid" },
-    "botId": { "type": "string", "format": "uuid" },
+    "schemaVersion": { "const": "1.0" },
+    "reportId": { "type": "string", "format": "uuid" },
     "assignmentId": { "type": "string", "format": "uuid" },
+    "leaseId": { "type": "string", "format": "uuid" },
     "allocationEpoch": { "type": "integer", "minimum": 1 },
-    "workerSequence": { "type": "integer", "minimum": 1 },
-    "reportedStatus": { "enum": ["completed", "partial", "stopped"] },
-    "startedAt": { "type": "string", "format": "date-time" },
-    "finishedAt": { "type": "string", "format": "date-time" },
+    "taskId": { "type": "string", "format": "uuid" },
+    "objectiveId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "workerId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
+    "outcome": { "enum": ["completed", "partial"] },
+    "durationMs": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+    "beforeSnapshot": { "$ref": "#/$defs/InventorySnapshot" },
+    "afterSnapshot": { "$ref": "#/$defs/InventorySnapshot" },
     "evidence": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 100,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["evidenceId", "kind", "itemKey", "beforeCount", "afterCount", "observedAt"],
-        "properties": {
-          "evidenceId": { "type": "string", "format": "uuid" },
-          "kind": {
-            "enum": [
-              "inventory_delta",
-              "container_delta",
-              "crafted_output",
-              "block_state",
-              "region_waypoint",
-              "role_interval"
-            ]
-          },
-          "itemKey": { "type": ["string", "null"], "maxLength": 160 },
-          "beforeCount": {
-            "type": ["integer", "null"],
-            "minimum": 0,
-            "maximum": 1000000
-          },
-          "afterCount": {
-            "type": ["integer", "null"],
-            "minimum": 0,
-            "maximum": 1000000
-          },
-          "observedAt": { "type": "string", "format": "date-time" }
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/EvidenceItem" }
+    },
+    "reportedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "InventorySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["botId", "capturedAt", "itemCounts"],
+      "properties": {
+        "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "capturedAt": { "type": "string", "format": "date-time" },
+        "itemCounts": {
+          "type": "object",
+          "maxProperties": 45,
+          "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 100000 }
+        }
+      }
+    },
+    "EvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidenceId", "kind", "itemKey", "claimedDelta", "details"],
+      "properties": {
+        "evidenceId": { "type": "string", "format": "uuid" },
+        "kind": {
+          "enum": [
+            "inventory_delta",
+            "container_delta",
+            "craft_delta",
+            "transfer_delta",
+            "block_state",
+            "region_visited",
+            "role_duration"
+          ]
+        },
+        "itemKey": { "type": ["string", "null"], "pattern": "^[a-z0-9_]+:[a-z0-9_./-]+$" },
+        "claimedDelta": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "transferId": { "type": "string", "format": "uuid" },
+            "counterpartyBotId": { "type": "string", "maxLength": 48 },
+            "containerPos": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["dimension", "x", "y", "z"],
+              "properties": {
+                "dimension": { "enum": ["overworld", "the_nether", "the_end"] },
+                "x": { "type": "integer" },
+                "y": { "type": "integer" },
+                "z": { "type": "integer" }
+              }
+            },
+            "containerBeforeCount": { "type": "integer", "minimum": 0 },
+            "containerAfterCount": { "type": "integer", "minimum": 0 },
+            "consumedInputs": {
+              "type": "object",
+              "maxProperties": 9,
+              "additionalProperties": { "type": "integer", "minimum": 1 }
+            },
+            "verifiedBlocks": { "type": "integer", "minimum": 0 },
+            "coverageRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+            "patrolSeconds": { "type": "number", "minimum": 0 }
+          }
         }
       }
     }
@@ -576,109 +507,78 @@ A completion report originates from a worker. It is not a trusted final task-com
 }
 ~~~
 
-The transport DTO is intentionally compact. Rich evidence payloads for block coordinates, container identity or waypoint coverage use separately versioned kind-specific schemas in implementation. The worker must not smuggle unknown nested fields into this DTO.
+---
 
-## 8. Failure report schema
+## 8. Schema 6: `FailureReportV1` (WorkerHost -> Master)
 
 ~~~json
 {
+  "$id": "https://mineflayer-ai-swarm.local/schemas/FailureReportV1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mineflayer-ai-swarm.local/schemas/failure-report-v1.json",
-  "title": "FailureReportV1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
-    "messageId",
+    "reportId",
+    "assignmentId",
+    "leaseId",
+    "allocationEpoch",
+    "taskId",
+    "objectiveId",
     "workerId",
     "botId",
-    "assignmentId",
-    "allocationEpoch",
-    "workerSequence",
     "failureCode",
     "retryable",
-    "occurredAt",
     "safeState",
-    "summary"
+    "summary",
+    "partialReport",
+    "reportedAt"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "messageId": { "type": "string", "format": "uuid" },
-    "workerId": { "type": "string", "format": "uuid" },
-    "botId": { "type": "string", "format": "uuid" },
+    "schemaVersion": { "const": "1.0" },
+    "reportId": { "type": "string", "format": "uuid" },
     "assignmentId": { "type": "string", "format": "uuid" },
+    "leaseId": { "type": "string", "format": "uuid" },
     "allocationEpoch": { "type": "integer", "minimum": 1 },
-    "workerSequence": { "type": "integer", "minimum": 1 },
+    "taskId": { "type": "string", "format": "uuid" },
+    "objectiveId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "workerId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "botId": { "type": "string", "minLength": 1, "maxLength": 48 },
     "failureCode": {
       "enum": [
-        "NO_PATH",
-        "PATH_TIMEOUT",
-        "BOT_DISCONNECTED",
-        "BOT_KICKED",
-        "BOT_DIED",
-        "MISSING_TOOL",
-        "TOOL_BROKEN",
-        "LOW_HEALTH",
-        "LOW_FOOD",
+        "PATH_BLOCKED",
         "RESOURCE_NOT_FOUND",
+        "TOOL_BROKEN_OR_MISSING",
         "INVENTORY_FULL",
-        "LEASE_EXPIRED",
-        "ACTION_UNSUPPORTED",
-        "SERVER_LIMIT",
-        "AUTH_FAILED",
-        "UNKNOWN_ACTION_ERROR"
+        "HEALTH_CRITICAL",
+        "BOT_DIED",
+        "BOT_DISCONNECTED",
+        "BOT_KICKED_OR_BANNED",
+        "LEASE_EXPIRED_LOCALLY",
+        "OPERATOR_CANCELLED",
+        "ACTION_TIMEOUT",
+        "INTERNAL_EXECUTOR_ERROR"
       ]
     },
     "retryable": { "type": "boolean" },
-    "occurredAt": { "type": "string", "format": "date-time" },
-    "safeState": {
-      "enum": ["stopped", "paused", "disconnected", "unknown"]
+    "safeState": { "enum": ["idle_safe", "eating_shelter", "stopped", "disconnected"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "partialReport": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "https://mineflayer-ai-swarm.local/schemas/TaskCompletionReportV1.json" }
+      ]
     },
-    "summary": { "type": "string", "maxLength": 1000 }
+    "reportedAt": { "type": "string", "format": "date-time" }
   }
 }
 ~~~
 
-## 9. Assignment command envelope
+---
 
-Worker commands are sent over authenticated transport and include the assignment plus a delivery sequence. They are acknowledged before execution. Retries use the same commandId and leaseId; workers must deduplicate them.
+## 9. Wire Envelope Schemas (`CommandEnvelopeV1` & `DomainEventEnvelopeV1`)
 
-~~~json
-{
-  "schemaVersion": 1,
-  "commandId": "uuid",
-  "commandSequence": 17,
-  "commandType": "assignment.start",
-  "issuedAt": "2026-11-09T12:00:00.000Z",
-  "assignment": {}
-}
-~~~
-
-## 10. Schema validation and safe fallback
-
-- Use a maintained validator supporting JSON Schema Draft 2020-12; pin the version.
-- Set additionalProperties false on every object.
-- Bound strings, arrays, quantities and nesting.
-- Enable format checks for UUID and date-time.
-- Run semantic validation after schema validation.
-- Reject duplicate local IDs, cycles, unknown registry IDs, unsupported action types, unsafe scopes and quota totals.
-- Never parse model output with eval or Function.
-- Never retry forever to coerce a model response.
-- Keep a golden schema-valid response set for each supported model.
-- Store model name, model digest/tag, prompt version, schema version, duration and validation result, but not sensitive prompt content.
-- If structured output is unsupported or invalid, do not silently downgrade to unconstrained text. Use deterministic fallback or request clarification.
-
-## 11. Prompt-injection and instruction handling
-
-User objectives, chat strings, server text, item names and failure summaries are untrusted content. Put them in structured user data, not as instructions to replace the system policy. The system policy explicitly states the model must return only a TaskPlan, cannot select arbitrary code and cannot override limits. The validator ignores free-form notes for control decisions. No direct tool execution or command dispatch is exposed to Ollama.
-
-## 12. Versioning and compatibility
-
-- Schema version is an integer in every top-level message.
-- Unknown major version: reject with PROTOCOL_VERSION_UNSUPPORTED.
-- Adding optional fields requires a compatible schema revision and worker rollout plan.
-- Removing or changing field meaning requires a new major schema version.
-- Worker and master declare supported versions during registration.
-- Test schema conformance against the exact pinned Ollama release and model.
-- The AI feature is optional: deterministic supported tasks must work with Ollama offline.
-
+- **`CommandEnvelopeV1`** (`Master -> WorkerHost`):
+  `additionalProperties: false`, required `["schemaVersion", "commandId", "sequence", "workerId", "issuedAt", "expiresAt", "commandType", "payload"]`, where `commandType` is in `["assign", "cancel", "pause", "resume", "safe_stop", "request_snapshot", "fence_epoch"]`.
+- **`DomainEventEnvelopeV1`** (`WorkerHost -> Master`):
+  `additionalProperties: false`, required `["schemaVersion", "messageId", "workerId", "workerSequence", "createdAt", "eventType", "payload"]`, where `eventType` is in `["assignment_progress", "assignment_completed", "assignment_failed", "bot_lifecycle", "survival_override", "chat_intent"]`.

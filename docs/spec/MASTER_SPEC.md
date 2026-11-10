@@ -1,223 +1,217 @@
 # Mineflayer AI Swarm — Master Implementation Specification
 
-**Document:** MASTER_SPEC.md  
-**Specification version:** 1.0.0  
-**Status:** Baseline for implementation; unresolved decisions are listed in this document and in ACCEPTANCE_CRITERIA.md.  
-**Source of truth:** The repository-root MASTER_PROJECT_CONTEXT.md plus this specification.  
+**Document:** `docs/spec/MASTER_SPEC.md`  
+**Specification version:** 1.1.0  
+**Status:** Authoritative implementation baseline. Performance monitoring primitives (`src/monitoring/*`, `src/performance/*`, `src/events/EventBus.js`) are implemented; core orchestration, persistence, worker and UI modules are specified here for implementation. Unresolved decisions are tracked in §17 and `ACCEPTANCE_CRITERIA.md`.  
+**Source of truth:** Repository-root `MASTER_PROJECT_CONTEXT.md` plus `docs/spec/*.md`.  
 **Target controller:** Samsung Galaxy A06, Android 16, Termux, Node.js, 4 GB physical RAM.  
 **Target game:** Minecraft Java Edition through Mineflayer, initially in a private authorised test environment.
 
+---
+
 ## 1. Purpose
 
-Define the shared technical contract for a distributed Mineflayer swarm whose central coordinator runs on the Galaxy A06 and whose worker processes may run on other authorised devices. The initial operational target is two bots. The architecture must support at most twenty concurrently registered bot identities across all workers, subject to independently configured device, server and operator limits.
+Define the complete, unambiguous technical contract for an intelligent, distributed Mineflayer multi-bot system whose central coordinator runs on a Samsung Galaxy A06 (`4 GB` RAM, Android 16, Termux) and whose Mineflayer worker processes run on authorised worker devices.
 
-The coordinator is the only authority for task state, objective totals, assignment leases, resource credit and scheduling. All user interfaces submit commands to the same coordinator. Workers execute bounded instructions and report observations; they do not create competing task truth.
+- **Initial operational deployment:** `2` bots.
+- **Global architectural ceiling:** `20` concurrently registered bot identities distributed across authorised worker hosts, subject to independently configured per-worker, per-server and adaptive workload caps.
+- **Single source of task truth:** Exactly one central `Coordinator` and one authoritative `TaskManager` own all user intents, objective DAGs, assignment leases, resource accounting and state transitions. All interfaces (Minecraft chat, Express web dashboard and Termux CLI) submit requests through `Coordinator`. Workers execute bounded deterministic instructions and submit verifiable evidence; they never maintain competing schedulers or progress ledgers.
 
-This is an implementation specification, not a claim that code has been built or tested.
+---
 
-## 2. Non-negotiable invariants
+## 2. Non-Negotiable Architectural & Correctness Invariants
 
-1. One shared TaskManager owns all tasks, objectives, assignment leases, verified progress and state transitions.
-2. A target quantity belongs to an objective, not to each bot. For example, “mine 100 cobblestone” means one aggregate target of 100.
-3. No objective is assigned to every bot by default. Candidate participants are selected by measured capability and predicted benefit.
-4. A one-bot solution wins whenever adding bots does not produce a material, confidence-supported improvement.
-5. Different resources become separate objectives. Dependencies form a directed acyclic graph (DAG).
-6. All execution-critical behaviour is deterministic JavaScript. Ollama proposes plans and strategy; validators and policy code decide what may execute.
-7. No LLM inference is performed for each movement, inventory slot update or routine survival action.
-8. The phone runs the coordinator only by default. It must not host twenty Mineflayer clients or a local LLM.
-9. No paid API, subscription or paid inference fallback is permitted. If remote Ollama is unavailable, deterministic planning and execution continue where safe.
-10. Minecraft online-mode accounts use legitimate, separately authenticated accounts. Offline-mode identities are permitted only on a private server explicitly controlled for testing.
-11. Never bypass server authentication, anti-cheat, player limits, rate limits or access restrictions.
-12. No worker, dashboard, CLI or chat adapter may maintain a separate task scheduler or progress ledger.
-13. A worker report is evidence, not verified completion. The coordinator verifies it against snapshots, leases, sequence numbers and task-specific proof.
-14. Every externally visible protocol message is versioned, bounded in size and validated with a strict schema.
-15. Never claim compatibility or successful operation without running the corresponding compatibility and acceptance tests.
+1. **Single Authoritative Ledger (`G-01`):** One shared `TaskManager` (backed by `StateStore` transactions and `InventoryLedger`) owns all tasks, objectives, assignment leases, verified progress and state transitions.
+2. **Aggregate Quantity Semantics (`G-03`):** A target quantity belongs to the objective across the entire swarm, never per bot. `"Mine 100 cobblestone"` means `targetQuantity = 100` total across all participating bots, never `100 × N`.
+3. **Quota Conservation (`G-03`):** At every point in time for any quantity objective:
+   - `0 <= verifiedQuantity <= targetQuantity`
+   - `reservedQuantity = sum(active, unexpired assignment quotas)`
+   - `verifiedQuantity + reservedQuantity <= targetQuantity`
+   - `remainingQuantity = max(0, targetQuantity - verifiedQuantity - reservedQuantity)`
+   - Newly allocated assignment quotas are strictly positive integers, non-overlapping, and sum to at most `remainingQuantity` (equalling `remainingQuantity` when partitioning the full remainder).
+4. **Evidence-Driven Participant Count (`G-04`, `G-05`):** Never assign every bot by default. Prefer a **1-bot** assignment unless adding another eligible bot reduces predicted `p90` completion time by at least `MIN_RELATIVE_GAIN` (default `0.10`) beyond estimation uncertainty after travel, setup, coordination, contention and delivery/merge costs.
+5. **Multi-Resource & Role Separation (`G-06`):** Distinct resource types (`"100 cobblestone and 40 coal"`) and distinct roles (`"build a shelter while one bot guards"`) become separate objectives connected by an explicit directed acyclic graph (DAG). Cyclic graphs are rejected.
+6. **Two-Level Intelligence (`G-10`, `G-11`):**
+   - **Level 1 (Deterministic JavaScript):** Owns movement, pathfinding, mining, crafting, building primitives, inventory management, eating, survival, progress evidence, reconnection and lease enforcement. Never calls an LLM on movement ticks, slot updates or routine survival checks.
+   - **Level 2 (Remote Ollama):** Used only for natural-language interpretation, complex DAG decomposition, parallelism hints, ambiguity detection and event-triggered strategic replanning. AI output is untrusted data validated against strict JSON Schemas (`AI_PROTOCOL.md`) and semantic rules before `TaskScheduler` makes authoritative decisions.
+7. **Hardware & Financial Exclusions (`G-12`, `G-13`):**
+   - **Never run Ollama or any local LLM on the Galaxy A06.**
+   - **Never run 20 Mineflayer clients on the Galaxy A06** (`localBotSlots = 0` by default).
+   - **Zero paid APIs, paid subscriptions, cloud inference endpoints or automatic paid fallbacks.** When remote Ollama is unreachable or throttled, deterministic planning continues for supported tasks and complex ambiguous intents return `clarification_required`.
+8. **Legitimate Server & Account Operation (`G-14`):** Online-mode connections require legitimate, separately authenticated Minecraft/Microsoft accounts stored only on the worker device that hosts each bot. Offline-mode identities are permitted solely inside an explicit `private_offline_test` server profile controlled by the project owner. Never bypass authentication, anti-cheat, CAPTCHAs, player caps, rate limits or moderation.
+9. **Shared Ingress Boundary (`G-02`):** Minecraft chat, Web Dashboard and Termux CLI all call the same `Coordinator` use-case methods. None may mutate `StateStore` or invoke Mineflayer directly.
+10. **Evidence Over Claims (`G-07`, `G-08`, `G-09`):** Worker reports are untrusted evidence. Progress is credited only after verifying baseline-to-post-action inventory/container/world deltas under an active lease, valid `allocationEpoch`, monotonic `workerSequence` and unique `messageId`/`evidenceId`. Lost acknowledgements trigger state reconciliation before any retry of a non-idempotent action.
+11. **Strict Protocol & Resource Bounds (`G-15`, `G-17`):** Every external payload carries `schemaVersion`, enforces `additionalProperties: false` and strict byte caps, and every cache, queue, SSE stream and log file has hard upper bounds. Low-priority work may be paused/deferred under memory pressure, **never silently discarded**.
+12. **Honest Engineering (`G-18`):** Never invent package APIs, Minecraft version support, test results or device RAM numbers. Unknown platform metrics are reported as `'unavailable'`, never `0`.
+
+---
 
 ## 3. Scope
 
-### Included
+### 3.1 Included
+- Master controller process on Samsung Galaxy A06 (Termux, Node.js CommonJS).
+- Remote `WorkerHost` processes supervising isolated `BotController` instances.
+- Authenticated worker registration, token rotation/revocation, heartbeats, long-polled lease commands, acknowledgements, sequenced evidence batches and crash/network reconciliation.
+- Two-level planning: deterministic intent templates + remote Ollama structured DAG planning (`TaskPlanV1`) and replanning (`ReplanRequestV1`).
+- Capability profiling, travel/rate/contention estimation, marginal-benefit participant selection, largest-remainder aggregate quota splitting and spatial/role partitioning.
+- Canonical item identity (`InventoryLedger`) and multi-policy progress verification.
+- Transactional SQLite persistence (`StateStore`) with forward-only migrations and verified backup/restore.
+- Adaptive resource monitoring (`ResourceMonitor`) and pressure governance (`WorkloadGovernor`).
+- Express HTTPS API, vanilla HTML/CSS/JS dashboard with coalesced SSE (`SseCoalescer`), Termux CLI and UUID-allowlisted `ChatCommandAdapter`.
+- Automated unit, contract, integration, security, leak and multi-bot scale tests (`1 -> 2 -> 5 -> 10 -> 20`).
 
-- Master controller and shared coordinator services.
-- Independent Mineflayer bot controllers hosted by worker processes.
-- Worker registration, heartbeats, leases, commands, acknowledgements and recovery.
-- Natural-language objective parsing and DAG planning through remote Ollama.
-- Deterministic candidate evaluation and task allocation.
-- Aggregate quantity accounting and inventory verification.
-- Individual and shared objectives, role tasks, spatial exploration and dependencies.
-- Persistence, monitoring, logs, dashboard, CLI and allowlisted Minecraft chat commands.
-- Security boundaries, automated tests and staged scaling from one to twenty bots.
+### 3.2 Excluded
+- Unauthorised automation on public or third-party servers.
+- Bypassing authentication, anti-cheat, connection limits, bans or server rules.
+- Running a local LLM or production multi-bot Mineflayer load on the Galaxy A06.
+- Any paid API, metered cloud AI fallback, TypeScript/ESM backend rewrite or React/SPA build toolchain.
+- AI execution of arbitrary code, shell commands, raw packets or unvalidated Mineflayer methods.
 
-### Excluded
+---
 
-- Public-server automation without explicit server authorisation.
-- Circumvention of anti-cheat, authentication, CAPTCHA, connection quotas or moderation.
-- A Mineflayer client running on the Galaxy A06 as a production requirement.
-- A local language model on the phone.
-- Paid hosted inference or a paid cloud coordinator.
-- Direct AI execution of arbitrary JavaScript, shell commands, packet manipulation or unrestricted game actions.
-- Guaranteeing that twenty bots can connect to one game server or be hosted on one device.
+## 4. Runtime, Language & Dependency Constraints
 
-## 4. Runtime and implementation constraints
+- **Language & Module System:** JavaScript (`'use strict'`), CommonJS (`require` / `module.exports`), `async`/`await`.
+- **Node.js Runtime:** Minimum `>=22.5.0` (verified in CI on `v22.22.3`); production target is Termux `Node.js 24.17.0` (and `Node 26 LTS` forward compatibility).
+- **Phone Launch Flags:** Master Controller on the 4 GB Galaxy A06 must run with `NODE_OPTIONS="--max-old-space-size=256"` under `termux-wake-lock` so V8 performs proactive garbage collection well below Android `lmkd` thresholds (see `PERFORMANCE_PLAN.md` §3).
+- **Package Separation & Pinning:**
+  - Exact versions pinned in `package-lock.json` (no caret/tilde ranges in production dependencies).
+  - **Master Controller process MUST NEVER `require('mineflayer')`, `mineflayer-pathfinder`, `prismarine-world`, or full `minecraft-data`** (empirically measured at `540 MiB` unpacked disk and `+37.9 to +45.4 MiB` RSS). Master uses a compact exported registry allowlist JSON (`< 100 KiB`) matching the active server version tuple.
+  - Native C++ addons lacking `android-arm64` Bionic prebuilds (`better-sqlite3`, `argon2`, `bcrypt`, `sqlite3`) must not be made mandatory on Termux without an approved ADR; prefer Node's built-in `node:sqlite` (pending on-device `U-03` closure) and concurrency-1 bounded `node:crypto.scrypt` (or verified built-in `crypto.argon2`).
 
-- Language: JavaScript, CommonJS modules, async/await and classes where they clarify ownership.
-- Runtime: Node.js 24 or newer. The initial target must be tested on the user's Termux Node 24.17.0; Node 26 LTS compatibility should be included in CI where the project dependencies support it.
-- Package installation: exact versions recorded in package-lock.json. No floating production dependency ranges.
-- Game client: Mineflayer. Optional navigation and game plugins must be pinned and tested against the selected Mineflayer, minecraft-protocol, minecraft-data and server versions.
-- Coordinator API: Express, with built-in HTTP(S), streams and Node APIs used where practical.
-- Dashboard: vanilla HTML, CSS and JavaScript served by Express. Do not replace it with React or a frontend build system.
-- Persistence: transactional SQLite behind a StateStore interface. Select the concrete SQLite driver only after it passes Termux and target-Node compatibility tests; see unresolved decisions.
-- Worker transport: versioned HTTPS REST with bounded long polling for commands and event submissions. No mandatory message broker.
-- Browser updates: Server-Sent Events (SSE) for dashboard snapshots and event summaries.
-- Local CLI: Node CLI that calls the coordinator's local API; it does not open its own database connection.
-- AI: Ollama on a separately controlled device, reachable only through a private LAN or VPN and protected network boundary.
+---
 
-## 5. Logical topology
+## 5. Formal Lifecycle State Machines
 
-There are three deployment roles:
+All state transitions execute inside `StateStore.transaction(...)` owned by `TaskManager`. Any unlisted transition throws `DomainError('INVALID_STATE_TRANSITION')`.
 
-1. **Master controller:** runs on the Galaxy A06. Hosts the coordinator, TaskManager, scheduler, worker registry/gateway, persistence, dashboard API, CLI API, chat-intent ingress, monitoring and Ollama client.
-2. **Worker host:** runs on each authorised worker device. Hosts one WorkerHost process, one or more independent BotController instances, deterministic action modules and local snapshots. A worker host may be the same machine as the coordinator during isolated development, but this is not the default deployment.
-3. **Remote Ollama host:** runs the selected model on a separate device. It receives compact task context and returns schema-constrained plans. It is never trusted to issue executable commands.
+### 5.1 Task State Machine
+- **States:** `queued`, `planning`, `clarification_required`, `ready`, `running`, `paused`, `blocked`, `completed`, `failed`, `cancelled`.
+- **Terminal states (immutable):** `completed`, `failed`, `cancelled`.
+- **Legal transitions:**
+  - `queued -> planning | cancelled`
+  - `planning -> ready | clarification_required | failed | cancelled`
+  - `clarification_required -> planning | cancelled` *(when operator supplies clarification)*
+  - `ready -> running | paused | blocked | cancelled`
+  - `running -> paused | blocked | completed | failed | cancelled`
+  - `paused -> ready | running | cancelled`
+  - `blocked -> planning | ready | paused | failed | cancelled`
 
-The number of workers is not the number of bot accounts. A worker host can own multiple bot sessions, with explicit per-host and global limits.
+### 5.2 Objective State Machine
+- **States:** `pending`, `ready`, `assigned`, `running`, `verifying`, `completed`, `blocked`, `failed`, `cancelled`.
+- **Terminal states:** `completed`, `failed`, `cancelled`.
+- **Legal transitions:**
+  - `pending -> ready | blocked | cancelled` *(becomes `ready` iff all `dependencies` are `completed`)*
+  - `ready -> assigned | blocked | cancelled`
+  - `assigned -> running | ready | blocked | failed | cancelled` *(`-> ready` if all leases expire/reject with remaining > 0)*
+  - `running -> verifying | assigned | ready | blocked | completed | failed | cancelled`
+  - `verifying -> completed | running | ready | blocked | failed | cancelled`
+  - `blocked -> ready | failed | cancelled`
 
-## 6. Shared interfaces
+### 5.3 Assignment (Lease) State Machine
+- **States:** `offered`, `accepted`, `running`, `reporting`, `verifying`, `completed`, `failed`, `revoked`, `expired`.
+- **Terminal states:** `completed`, `failed`, `revoked`, `expired`.
+- **Legal transitions:**
+  - `offered -> accepted | revoked | expired | failed`
+  - `accepted -> running | revoked | expired | failed`
+  - `running -> reporting | verifying | completed | failed | revoked | expired`
+  - `reporting -> verifying | running | completed | failed | revoked | expired`
+  - `verifying -> completed | running | failed | revoked | expired`
 
-All three control interfaces must route through the same application service:
+### 5.4 Worker Health State Machine
+- **States:** `alive`, `degraded`, `unreachable`, `disabled`.
+- **Transitions:**
+  - `alive -> degraded` *(missed 1 heartbeat interval: `now - lastHeartbeatAt > heartbeatIntervalMs * 1.5`)*
+  - `alive | degraded -> unreachable` *(`now - lastHeartbeatAt > leaseGraceMs`, default `3 × heartbeatIntervalMs`; triggers lease expiry & reconciliation)*
+  - `degraded | unreachable -> alive` *(authenticated heartbeat + `reconcileWorker` completed)*
+  - `* -> disabled` *(explicit operator disable or token revocation; revokes active leases immediately)*
 
-- Minecraft chat: an allowlisted player's prefixed command is converted to an IntentRequest and submitted to Coordinator.
-- Dashboard: authenticated HTTP action is converted to an IntentRequest or operator action and submitted to Coordinator.
-- Termux CLI: authenticated local API call is converted to the same application request.
+---
 
-No interface directly calls Mineflayer methods, writes task rows or edits progress totals.
+## 6. Canonical Domain Error Taxonomy
 
-## 7. Two-level intelligence
+All modules throw or return structured `DomainError` instances (`{ code, message, retryable, httpStatus, details }`), never raw strings or stack traces to external clients:
 
-### Level 1 — deterministic execution and control
+| Error Code | HTTP | Retryable | Meaning |
+|---|---:|---|---|
+| `UNAUTHENTICATED` | `401` | No | Missing, expired or invalid session/token |
+| `FORBIDDEN` | `403` | No | Principal role or worker ownership lacks permission |
+| `CSRF_INVALID` | `403` | No | Missing or mismatched `X-CSRF-Token` / `Origin` |
+| `RATE_LIMITED` | `429` | Yes | Per-principal, login, worker or chat rate cap exceeded |
+| `PROTOCOL_VERSION_UNSUPPORTED` | `400` | No | Unsupported `schemaVersion` |
+| `SCHEMA_VALIDATION_FAILED` | `400` | No | Payload violates strict JSON Schema or byte cap |
+| `SEMANTIC_VALIDATION_FAILED` | `422` | No | Cyclic DAG, unknown `resourceId` or invalid bounds |
+| `NOT_FOUND` | `404` | No | Unknown `taskId`, `objectiveId`, `workerId` or `botId` |
+| `CONFLICT` | `409` | Yes | Optimistic version mismatch or concurrent state mutation |
+| `INVALID_STATE_TRANSITION` | `409` | No | Disallowed lifecycle transition (e.g. mutating terminal state) |
+| `STALE_ALLOCATION_EPOCH` | `409` | No | Worker submitted event/ack for superseded `allocationEpoch` |
+| `LEASE_EXPIRED` | `409` | No | Assignment lease passed `expiresAt` on server clock |
+| `GLOBAL_BOT_CAP_EXCEEDED` | `409` | No | Attempted to register > 20 bot identities |
+| `WORKLOAD_CONSTRAINED` | `503` | Yes | `WorkloadGovernor` paused/rejected optional admission under pressure |
+| `AI_UNAVAILABLE` | `503` | Yes | Remote Ollama unreachable or timed out (triggers fallback) |
+| `AI_INVALID_RESPONSE` | `502` | No | Remote Ollama output failed schema/semantic validation |
+| `AI_POLICY_VIOLATION` | `400` | No | Local phone Ollama host or paid cloud provider configured |
+| `PERSISTENCE_ERROR` | `500` | Yes | SQLite busy/I/O failure; coordinator enters safe mode |
 
-Owns movement, pathfinding, mining, crafting, building primitives, inventory operations, eating, tool selection, health checks, survival, task progress events, reconnection and safe cancellation. It uses local Mineflayer state and does not wait for an LLM for ordinary actions.
+---
 
-### Level 2 — remote strategic reasoning
+## 7. Canonical Configuration Schema (`loadConfig`)
 
-Uses Ollama for natural-language interpretation, objective decomposition, dependencies, high-level parallelism hints, ambiguity detection and strategic replanning. It returns JSON constrained by the schemas in AI_PROTOCOL.md.
+Configuration is loaded from environment variables and optional JSON config file, deeply frozen, and redacted via `redactConfig()`:
 
-The coordinator validates every proposal, resolves registry identifiers, rejects impossible dependencies or unsafe bounds, and runs the deterministic scheduler. AI recommendations are advisory; policy, evidence and scheduling constraints override them.
+| Config Path / Env Var | Type | Default | Constraint / Rule |
+|---|---|---|---|
+| `envProfile` (`SWARM_ENV_PROFILE`) | `'private_offline_test' \| 'authorised_online'` | `'authorised_online'` | Offline Minecraft auth refused unless `'private_offline_test'` |
+| `http.host` (`SWARM_BIND_HOST`) | `string` | `'127.0.0.1'` | Non-loopback requires TLS (`tls.enabled = true`) |
+| `http.port` (`SWARM_PORT`) | `integer` | `8443` | `1024..65535` |
+| `tls.enabled` (`SWARM_TLS_ENABLED`) | `boolean` | `true` | `false` allowed ONLY when `http.host === '127.0.0.1'` in dev/test |
+| `capacity.globalMaxBots` | `integer` | `20` | **Hard validation error if `> 20` or `< 1`** |
+| `capacity.initialEnabledBots` | `integer` | `2` | `1..globalMaxBots` |
+| `capacity.phoneLocalBotSlots` | `integer` | `0` | Must be `0` in production on Galaxy A06 |
+| `capacity.defaultLeaseDurationMs` | `integer` | `30000` | `5000..120000` |
+| `capacity.heartbeatIntervalMs` | `integer` | `5000` | `1000..30000`; `leaseDurationMs >= 3 * heartbeatIntervalMs` |
+| `ai.enabled` (`SWARM_AI_ENABLED`) | `boolean` | `true` | Deterministic tasks work when `false` |
+| `ai.ollamaBaseUrl` (`SWARM_OLLAMA_URL`) | `string \| null` | `null` | Rejects `localhost`/`127.0.0.1` on phone & all paid cloud domains |
+| `ai.model` (`SWARM_OLLAMA_MODEL`) | `string` | `'unresolved'` | Must match tested `U-07` model |
+| `ai.maxConcurrent` | `integer` | `1` | `1..2` |
+| `ai.maxQueue` | `integer` | `3` | `0..10` |
+| `ai.timeoutMs` | `integer` | `8000` | `1000..30000` |
+| `storage.sqlitePath` (`SWARM_DB_PATH`) | `string` | `'./data/swarm.db'` | Must reside on native POSIX FS (`$HOME`), never `/sdcard` |
+| `logging.level` (`SWARM_LOG_LEVEL`) | `'debug'\|'info'\|'warn'\|'error'` | `'info'` | Secrets redacted before serialization |
+| `logging.maxFileBytes` | `integer` | `5242880` | `5 MiB` per file, `maxFiles = 3` |
+| `chat.commandPrefix` | `string` | `'!swarm'` | Non-empty, `<= 16` chars |
+| `chat.allowedPlayerUuids` | `string[]` | `[]` | Explicit UUID v4 allowlist per server profile |
 
-## 8. Objective and assignment model
+---
 
-A task is a user-requested goal. A task contains one or more objectives. An objective has one aggregate target and optionally one or more dependencies. An assignment is a time-limited lease of a bounded portion of an objective to one bot.
+## 8. Compatibility Governance
 
-For a quantity objective:
+The tuple `(Node version, Mineflayer version, minecraft-protocol, minecraft-data, optional plugins, Minecraft Java server version, auth mode)` is governed by an explicit repository compatibility table (`compatibility.json` once `U-01`/`U-02` close). Untested tuples fail closed unless an operator explicitly sets `allowExperimentalProtocolTuple: true` in `private_offline_test` mode.
 
-- targetQuantity is the task-wide target.
-- verifiedQuantity is the authoritative amount already credited.
-- reservedQuantity is the sum of active, unexpired, non-overlapping assignment quotas.
-- remainingQuantity = max(0, targetQuantity - verifiedQuantity - reservedQuantity).
-- The scheduler divides only remainingQuantity.
-- The sum of newly created assignment quotas must equal remainingQuantity exactly.
-- Assignment expiry, cancellation or worker loss releases only its unverified reservation after reconciliation.
-- A stale assignment epoch cannot mutate a newer assignment.
+---
 
-For non-quantity objectives, the scheduler uses one assignment or an explicit spatial/role decomposition with disjoint work scopes.
+## 9. Required Specification Suite
 
-## 9. Task lifecycle
+1. `docs/spec/MASTER_SPEC.md` — Normative rules, invariants, lifecycles, errors and config contract (this document).
+2. `docs/spec/ARCHITECTURE.md` — Process topology, wire REST/SSE protocol contracts and SQLite DDL schema.
+3. `docs/spec/MODULE_INTERFACES.md` — Module ownership, DTO dictionary, inputs, outputs, methods, events and failure modes.
+4. `docs/spec/TASK_ALLOCATION.md` — Mathematical estimation, marginal benefit algorithm, quota splitting, DAG scheduling and verification ledger.
+5. `docs/spec/AI_PROTOCOL.md` — Strict JSON Schema Draft 2020-12 definitions and Ollama data-minimisation boundary.
+6. `docs/spec/PERFORMANCE_PLAN.md` — Galaxy A06 4 GB RAM budgets, adaptive `WorkloadGovernor`, Termux constraints and benchmark evidence.
+7. `docs/spec/SECURITY_PLAN.md` — Principal RBAC matrix, session/CSRF/token controls, Minecraft auth isolation and incident response.
+8. `docs/spec/TEST_PLAN.md` — Unit, contract, integration, E2E, security, recovery and memory-leak test specifications.
+9. `docs/spec/ACCEPTANCE_CRITERIA.md` — Global invariants `G-01..G-18`, Stage `0..5` rollout gates and Unresolved Decisions `U-01..U-14`.
 
-Task states: queued, planning, ready, running, paused, blocked, completed, failed, cancelled.
+---
 
-Objective states: pending, ready, assigned, running, verifying, completed, blocked, failed, cancelled.
+## 10. Summary of Unresolved Decisions (`U-01` – `U-14`)
 
-Assignment states: offered, accepted, running, reporting, verifying, completed, failed, revoked, expired.
+Full resolution criteria are maintained in `ACCEPTANCE_CRITERIA.md` §9. Coding agents **must not** silently invent production values for open items:
 
-All state changes occur through TaskManager transactions. Terminal states are immutable except for a specifically audited administrative correction event. Dependencies must be completed before dependent objectives become ready. Cyclic dependency graphs are rejected.
-
-## 10. Verification and evidence
-
-The worker submits an initial baseline snapshot when an assignment begins and subsequent bounded snapshots or action evidence. The coordinator credits only evidence consistent with the current assignment lease and objective verification policy.
-
-For item acquisition, canonical item identity includes registry name plus relevant metadata/NBT fingerprint when relevant. Inventory counts are derived from Mineflayer inventory state; pickup events are hints and not sole proof. The default acquisition objective counts net newly acquired units after the assignment baseline, not pre-existing inventory. A task may explicitly allow existing stock, in which case the baseline policy is different and recorded.
-
-For resource transfer, the ledger debits and credits through one transfer transaction with a unique transfer ID. For deposit objectives, both the bot's inventory decrease and destination container increase must be verified when the container is accessible. For crafting, the output inventory delta and recipe/action record are checked. For building, the requested block positions are checked against the loaded world state; unloaded or unavailable positions remain unverified. The full verification model is in TASK_ALLOCATION.md.
-
-## 11. Failure and recovery
-
-- Workers send a heartbeat every configured interval and reconnect with exponential backoff plus jitter.
-- Worker state is alive, degraded, unreachable or disabled.
-- Lost worker leases expire after a bounded grace period and are reconciled before reassignment.
-- The coordinator persists transitions before acknowledging accepted commands.
-- Messages are idempotent by message ID and worker sequence number.
-- A recovered worker reports current bot identity, task lease, inventory snapshot and local execution checkpoint before receiving new work.
-- The coordinator never repeats a non-idempotent action solely because an acknowledgement was lost. It first reconciles observed state.
-- On bot death or disconnect, the bot controller stops movement, records a failure report and enters bounded reconnect logic. It does not create an independent replacement task.
-- Reconnection must use legitimate account authentication already configured on the worker.
-
-## 12. Security boundaries
-
-Separate credentials and authorisation for:
-- Human dashboard sessions.
-- Local CLI access.
-- Worker service identity.
-- Minecraft account authentication.
-- Ollama network access.
-
-Store no plaintext credentials in source, logs, task plans or Ollama prompts. Worker credentials must be distinct, revocable and least-privilege. Minecraft credentials remain on the worker device. Do not expose the Ollama API directly to the public internet. Dashboard and worker transport require HTTPS over a private LAN/VPN. The complete controls are in SECURITY_PLAN.md.
-
-## 13. Performance objectives
-
-The phone is the coordinator, not a game simulation host. It should hold compact summaries, not chunks, entity graphs, pathfinding maps or Mineflayer bot objects for remote bots.
-
-- Global maximum: 20 bot identities, hard rejected above this setting.
-- Initial runtime setting: two bots; scale only after each stage's acceptance gate.
-- Local phone bot slots: zero by default.
-- AI inference concurrency: one by default; bounded queue.
-- Dashboard: event-driven SSE, with coalesced summary updates; no high-frequency full-state polling.
-- Memory and CPU budgets: measured on the actual device, not assumed from the 4 GB label.
-- Caches, event buffers, SSE client queues and logs have explicit caps.
-- Under memory pressure, stop accepting additional work, reduce telemetry and inference, preserve durable state, and allow workers to finish or safely pause.
-
-PERFORMANCE_PLAN.md defines measurement and initial configurable starting caps.
-
-## 14. Compatibility policy
-
-The target Minecraft Java version, Mineflayer version, minecraft-protocol version, minecraft-data version, Node version and optional plugin versions form one tested compatibility tuple. Do not infer support from a package's current release number or from support for a nearby Minecraft version. A connection smoke test and core action tests must pass for each tuple before it is marked supported.
-
-At project start, the exact game/server version and package versions are not fixed by this specification. The implementation must maintain a compatibility matrix in the repository and fail closed or require an explicit experimental flag for an untested tuple.
-
-## 15. Required repository documents
-
-- ARCHITECTURE.md — deployment and component topology.
-- MODULE_INTERFACES.md — module ownership and APIs.
-- TASK_ALLOCATION.md — scheduling, estimates, quotas and verification.
-- AI_PROTOCOL.md — JSON schemas and Ollama contract.
-- PERFORMANCE_PLAN.md — device budgets and benchmarks.
-- SECURITY_PLAN.md — identities, transport, secrets and abuse controls.
-- TEST_PLAN.md — test layers and scenarios.
-- ACCEPTANCE_CRITERIA.md — release gates and unresolved decisions.
-
-## 16. Decision log and unresolved choices
-
-The following must remain visible until proven by tests or explicitly decided:
-
-1. **Exact Minecraft Java version and server implementation:** user supplied target environment is private/authorised, but the version tuple is not stated in this master context. Resolve before dependency pinning.
-2. **Mineflayer compatibility:** confirm support for the exact game protocol through an integration test. Never fabricate support for future or recent releases.
-3. **SQLite driver:** choose between Node's built-in SQLite and a maintained package after checking stability, Node 24/26 compatibility, Android/Termux support, WAL behaviour and crash recovery. Keep StateStore independent of the driver.
-4. **Worker placement:** specify which physical devices host the initial one- and two-bot stages. The phone remains coordinator-only by default.
-5. **Server bot limit:** obtain explicit operator-approved connection cap; global project capacity of twenty does not override it.
-6. **Online authentication method:** select supported legitimate Mineflayer auth mode and worker-local credential handling for the exact package version.
-7. **Ollama model and host hardware:** select a free self-hosted model that passes schema adherence, planning quality and latency benchmarks. No paid fallback.
-8. **Default task risk policy:** agree whether high-risk actions (lava, hostile areas, PvP zones, unknown blocks, building near other players) require operator confirmation.
-9. **Chat authorisation:** configure allowed player UUIDs and command prefix per server.
-10. **Dashboard human account provisioning and MFA:** choose initial administrator bootstrap process and recovery procedure.
-
-A decision is closed only when recorded in a short ADR or an updated specification, with tests where relevant.
-
-## 17. Source references
-
-Verified against public documentation on 2026-11-09; package compatibility still requires project tests.
-
-- Mineflayer API and event reference: https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md
-- Mineflayer pathfinder interface and goals: https://github.com/PrismarineJS/mineflayer-pathfinder
-- Ollama API and structured output format: https://github.com/ollama/ollama/blob/main/docs/api.md
-- Node.js process memory measurements: https://nodejs.org/api/process.html
-- Node.js releases: https://nodejs.org/en/about/previous-releases
-- Node.js SQLite API and stability notes: https://nodejs.org/api/sqlite.html
-
+- **`U-01` / `U-02`:** Exact Minecraft Java Edition server version & pinned `mineflayer` / plugin package versions.
+- **`U-03`:** Final on-device Termux SQLite driver sign-off (`node:sqlite` validated in Linux CI with WAL + `backup`; physical Galaxy A06 Termux Node `24.17.0` run required to close).
+- **`U-04` / `U-05` / `U-14`:** Physical worker host inventory, operator-approved server connection cap, and multi-session server policy.
+- **`U-06`:** Verified legitimate online Microsoft/Minecraft auth flow for pinned `mineflayer` version.
+- **`U-07`:** Self-hosted remote Ollama model name, digest and host hardware passing schema/latency benchmarks.
+- **`U-08` / `U-09` / `U-10` / `U-11` / `U-13`:** High-risk task approval policy, server chat UUID allowlist, admin bootstrap/MFA flow, worker mTLS vs bearer+TLS decision, and worker local checkpoint format.
+- **`U-12`:** On-device Galaxy A06 numeric memory/latency SLO thresholds (candidate `220 MiB` warning / `300 MiB` critical RSS implemented as configurable defaults; physical phone measurement required to close).
