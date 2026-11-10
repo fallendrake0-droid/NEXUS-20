@@ -96,12 +96,29 @@ function validateInventorySnapshot(snap, prefix, errors) {
     errors.push(`${prefix} must be an object`);
     return;
   }
-  checkAllowedKeys(snap, new Set(['botId', 'capturedAt', 'itemCounts']), prefix, errors);
+  checkAllowedKeys(snap, new Set(['botId', 'capturedAt', 'itemCounts', 'heldTool']), prefix, errors);
   if (typeof snap.botId !== 'string' || snap.botId.length < 1 || snap.botId.length > 64) {
     errors.push(`${prefix}.botId invalid`);
   }
   if (!isIsoDateString(snap.capturedAt)) {
     errors.push(`${prefix}.capturedAt must be ISO date-time`);
+  }
+  if (snap.heldTool !== undefined && snap.heldTool !== null) {
+    if (!isPlainObject(snap.heldTool)) {
+      errors.push(`${prefix}.heldTool must be null or object`);
+    } else {
+      checkAllowedKeys(snap.heldTool, new Set(['itemKey', 'remainingDurability']), `${prefix}.heldTool`, errors);
+      if (typeof snap.heldTool.itemKey !== 'string' || !RESOURCE_ID_RE.test(snap.heldTool.itemKey)) {
+        errors.push(`${prefix}.heldTool.itemKey invalid`);
+      }
+      if (
+        snap.heldTool.remainingDurability !== undefined &&
+        snap.heldTool.remainingDurability !== null &&
+        (!Number.isSafeInteger(snap.heldTool.remainingDurability) || snap.heldTool.remainingDurability < 0)
+      ) {
+        errors.push(`${prefix}.heldTool.remainingDurability must be null or integer >= 0`);
+      }
+    }
   }
   if (!isPlainObject(snap.itemCounts)) {
     errors.push(`${prefix}.itemCounts must be an object`);

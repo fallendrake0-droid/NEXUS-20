@@ -223,14 +223,57 @@ class BotRegistry extends EventEmitter {
 
       const existingWorker = this._store.get('SELECT * FROM workers WHERE worker_id = ?', workerId);
       if (existingWorker) {
+        // Fence & release any stale active assignments from prior worker incarnation
+        const staleAsgs = this._store.all(
+          `SELECT * FROM assignments
+           WHERE worker_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+          workerId
+        );
+        const staleObjs = new Set(staleAsgs.map((a) => a.objective_id));
+        for (const objId of staleObjs) {
+          this._store.run(
+            `UPDATE objectives
+             SET allocation_epoch = allocation_epoch + 1, version = version + 1
+             WHERE objective_id = ? AND state NOT IN ('completed', 'cancelled', 'failed')`,
+            objId
+          );
+        }
+        for (const asg of staleAsgs) {
+          const uncredited =
+            asg.quota_quantity !== null ? Math.max(0, asg.quota_quantity - asg.credited_quantity) : 0;
+          this._store.run(
+            `UPDATE assignments SET state = 'revoked', completed_at = ? WHERE assignment_id = ?`,
+            nowIso,
+            asg.assignment_id
+          );
+          if (uncredited > 0) {
+            this._store.run(
+              `UPDATE objectives
+               SET reserved_quantity = MAX(0, reserved_quantity - ?),
+                   state = CASE WHEN state IN ('assigned', 'running') THEN 'ready' ELSE state END,
+                   version = version + 1
+               WHERE objective_id = ?`,
+              uncredited,
+              asg.objective_id
+            );
+          }
+        }
+
+        // Reset inbound event sequence & dedup table for freshly enrolled worker incarnation
+        this._store.run('DELETE FROM worker_inbound_messages WHERE worker_id = ?', workerId);
         this._store.run(
           `UPDATE workers
            SET token_verifier_hash = ?, hostname = ?, status = 'alive', max_bot_slots = ?,
-               last_heartbeat_at = ?, revoked_at = NULL
+               last_heartbeat_at = ?, last_event_seq = 0, revoked_at = NULL
            WHERE worker_id = ?`,
           verifierHash,
           hostname,
           maxBotSlots,
+          nowIso,
+          workerId
+        );
+        this._store.run(
+          `UPDATE bots SET enabled = 0, connection_state = 'disconnected', updated_at = ? WHERE worker_id = ?`,
           nowIso,
           workerId
         );
@@ -303,6 +346,7 @@ class BotRegistry extends EventEmitter {
         schemaVersion: 1,
         workerId,
         workerToken: rawWorkerToken,
+        lastAckedWorkerSequence: 0,
         heartbeatIntervalMs: this._config.capacity?.heartbeatIntervalMs ?? 5_000,
         leaseDurationMs: this._config.capacity?.defaultLeaseDurationMs ?? 30_000,
         maxEventBatchSize: 100,
@@ -395,11 +439,12 @@ class BotRegistry extends EventEmitter {
         workerId
       );
 
-      // Renew unexpired active leases for this worker; report expired leases for immediate fencing (MED-02 & HIGH-05)
+      // Renew unexpired active leases ONLY for connected bots; never renew leases of disconnected bots!
       const activeLeases = this._store.all(
-        `SELECT assignment_id, lease_id, bot_id, state, expires_at
-         FROM assignments
-         WHERE worker_id = ? AND state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
+        `SELECT a.assignment_id, a.lease_id, a.bot_id, a.state, a.expires_at, b.connection_state
+         FROM assignments a
+         JOIN bots b ON b.bot_id = a.bot_id
+         WHERE a.worker_id = ? AND a.state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`,
         workerId
       );
 
@@ -408,7 +453,7 @@ class BotRegistry extends EventEmitter {
       const newExpiresIso = new Date(nowMs + leaseDurationMs).toISOString();
 
       for (const l of activeLeases) {
-        if (Date.parse(l.expires_at) <= nowMs) {
+        if (Date.parse(l.expires_at) <= nowMs || l.connection_state === 'disconnected') {
           expiredLeaseIds.push(l.lease_id);
         } else {
           this._store.run(
@@ -586,10 +631,10 @@ class BotRegistry extends EventEmitter {
     );
 
     const activeAssignmentRows = this._store.all(
-      `SELECT bot_id FROM assignments
+      `SELECT bot_id, action_type, objective_id FROM assignments
        WHERE state IN ('offered', 'accepted', 'running', 'reporting', 'verifying')`
     );
-    const busySet = new Set(activeAssignmentRows.map((r) => r.bot_id));
+    const activeByBot = new Map(activeAssignmentRows.map((r) => [r.bot_id, r]));
 
     const results = [];
     for (const row of rows) {
@@ -609,6 +654,7 @@ class BotRegistry extends EventEmitter {
         row.connection_state === 'ready' &&
         snap !== null &&
         snap.status !== 'disconnected';
+      const activeAsg = activeByBot.get(row.bot_id) || null;
 
       const cap = {
         botId: row.bot_id,
@@ -617,7 +663,9 @@ class BotRegistry extends EventEmitter {
         username: row.username,
         connected,
         spawned: connected,
-        busy: busySet.has(row.bot_id),
+        busy: Boolean(activeAsg),
+        currentAction: activeAsg ? activeAsg.action_type : null,
+        currentObjectiveId: activeAsg ? activeAsg.objective_id : null,
         dimension: snap?.dimension || 'unknown',
         position: snap?.position || null,
         healthBand: snap?.healthBand || 'unknown',

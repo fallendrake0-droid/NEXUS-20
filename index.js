@@ -17,6 +17,7 @@ const { StateStore, StateManager } = require('./src/persistence/StateStore');
 const { InventoryLedger } = require('./src/inventory/InventoryLedger');
 const { BotRegistry, WorkerRegistry } = require('./src/workers/BotRegistry');
 const { TaskManager } = require('./src/tasks/TaskManager');
+const { TaskScheduler } = require('./src/scheduler/TaskScheduler');
 const { splitQuota, partitionRegion } = require('./src/scheduler/quotaMath');
 const { Coordinator, authorizeRole } = require('./src/coordinator/Coordinator');
 const { createMaster } = require('./src/master/createMaster');
@@ -79,6 +80,7 @@ module.exports = {
   BotRegistry,
   WorkerRegistry,
   TaskManager,
+  TaskScheduler,
   Coordinator,
   authorizeRole,
   splitQuota,

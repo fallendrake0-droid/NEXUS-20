@@ -112,6 +112,7 @@ class Coordinator {
     this._logger = options.logger || null;
     this._safeMode = false;
     this._safeModeReason = null;
+    this._inFlightIdempotency = new Map();
   }
 
   get safeMode() {
@@ -166,74 +167,88 @@ class Coordinator {
     }
     this._assertWritable();
 
-    const taskId = crypto.randomUUID();
-    const govDecision = this._governor.classifyWork({ taskId, priority });
-    if (govDecision.decision === 'reject_backpressure') {
-      throw new DomainError('WORKLOAD_CONSTRAINED', govDecision.message || 'Deferred queue full');
+    const idemKey = idempotencyKey ? String(idempotencyKey) : null;
+    if (idemKey && this._inFlightIdempotency.has(idemKey)) {
+      return this._inFlightIdempotency.get(idemKey);
     }
 
-    try {
-      // CRIT-03 reconciliation: Persist task in SQLite BEFORE returning even if paused by Governor!
-      if (govDecision.decision === 'paused_and_queued') {
-        const pausedDetail = this._tasks.createTask({
+    const executeSubmit = async () => {
+      const taskId = crypto.randomUUID();
+      const govDecision = this._governor.classifyWork({ taskId, priority });
+      if (govDecision.decision === 'reject_backpressure') {
+        throw new DomainError('WORKLOAD_CONSTRAINED', govDecision.message || 'Deferred queue full');
+      }
+
+      try {
+        // CRIT-03 reconciliation: Persist task in SQLite BEFORE returning even if paused by Governor!
+        if (govDecision.decision === 'paused_and_queued') {
+          const pausedDetail = this._tasks.createTask({
+            taskId,
+            idempotencyKey: idemKey,
+            actorId: actor.principalId,
+            source,
+            rawText: text,
+            priority,
+            initialState: 'paused',
+            pauseReason: 'WORKLOAD_GOVERNOR'
+          });
+          this._publishPostCommit('task.created', pausedDetail.taskId, pausedDetail);
+          return pausedDetail;
+        }
+
+        const created = this._tasks.createTask({
           taskId,
-          idempotencyKey,
+          idempotencyKey: idemKey,
           actorId: actor.principalId,
           source,
           rawText: text,
           priority,
-          initialState: 'paused',
-          pauseReason: 'WORKLOAD_GOVERNOR'
+          initialState: 'planning'
         });
-        this._publishPostCommit('task.created', pausedDetail.taskId, pausedDetail);
-        return pausedDetail;
-      }
 
-      const created = this._tasks.createTask({
-        taskId,
-        idempotencyKey,
-        actorId: actor.principalId,
-        source,
-        rawText: text,
-        priority,
-        initialState: 'planning'
-      });
-
-      // If idempotencyKey matched an already-planned task, return it immediately
-      if (created.planVersion > 0 || created.state !== 'planning') {
-        return created;
-      }
-
-      const candidates = this._registry.eligibleBots({ onlyReady: true });
-      const planResult = await this._ai.createPlan({
-        requestId,
-        taskId: created.taskId,
-        userText: text,
-        compactContext: {
-          maxBots: this._registry.enabledBotsCap,
-          serverRemainingSlots: this._registry.enabledBotsCap,
-          candidates
+        // If idempotencyKey matched an already-existing task, return it immediately
+        if (created.taskId !== taskId || created.planVersion > 0 || created.state !== 'planning') {
+          return created;
         }
-      });
 
-      const planned = this._tasks.attachPlan({
-        taskId: created.taskId,
-        plan: planResult.plan
-      });
+        const planResult = await this._ai.createPlan({
+          requestId,
+          taskId: created.taskId,
+          userText: text,
+          compactContext: this.buildSwarmWorldContext()
+        });
 
-      if (planned.state === 'ready') {
-        await this.scheduleReadyObjectives(planned.taskId);
+        const planned = this._tasks.attachPlan({
+          taskId: created.taskId,
+          plan: planResult.plan
+        });
+
+        if (planned.state === 'ready') {
+          await this.scheduleReadyObjectives(planned.taskId);
+        }
+
+        const finalTask = this._tasks.getTask(created.taskId);
+        this._publishPostCommit('task.created', finalTask.taskId, finalTask);
+        return finalTask;
+      } catch (err) {
+        if (isDomainError(err) && err.code === 'PERSISTENCE_ERROR') {
+          this._enterSafeMode(err);
+        }
+        throw err;
       }
+    };
 
-      const finalTask = this._tasks.getTask(created.taskId);
-      this._publishPostCommit('task.created', finalTask.taskId, finalTask);
-      return finalTask;
-    } catch (err) {
-      if (isDomainError(err) && err.code === 'PERSISTENCE_ERROR') {
-        this._enterSafeMode(err);
-      }
-      throw err;
+    if (!idemKey) {
+      return executeSubmit();
     }
+
+    const p = executeSubmit().finally(() => {
+      if (this._inFlightIdempotency.get(idemKey) === p) {
+        this._inFlightIdempotency.delete(idemKey);
+      }
+    });
+    this._inFlightIdempotency.set(idemKey, p);
+    return p;
   }
 
   /**
@@ -342,10 +357,7 @@ class Coordinator {
       requestId: crypto.randomUUID(),
       taskId,
       userText: answerText || combinedText,
-      compactContext: {
-        maxBots: this._registry.enabledBotsCap,
-        candidates: this._registry.eligibleBots({ onlyReady: true })
-      }
+      compactContext: this.buildSwarmWorldContext()
     });
 
     const updated = this._tasks.attachPlan({ taskId, plan: planResult.plan });
@@ -376,10 +388,7 @@ class Coordinator {
         requestId: crypto.randomUUID(),
         taskId,
         userText: full.rawText,
-        compactContext: {
-          maxBots: this._registry.enabledBotsCap,
-          candidates: this._registry.eligibleBots({ onlyReady: true })
-        }
+        compactContext: this.buildSwarmWorldContext()
       });
       this._tasks.attachPlan({ taskId, plan: planRes.plan });
     }
@@ -494,6 +503,77 @@ class Coordinator {
     };
   }
 
+  /**
+   * Build compact, bounded NEXUS-20 swarm world-state snapshot for the central AI brain.
+   * Summarizes online/offline/busy bots, positions, tools, inventories, task states, and swarm resources.
+   */
+  buildSwarmWorldContext() {
+    const allCapBots = this._registry.eligibleBots({ onlyReady: false });
+    const allListedBots = this._registry.listBots();
+    const capById = new Map(allCapBots.map((b) => [b.botId, b]));
+
+    let onlineBotCount = 0;
+    let offlineBotCount = 0;
+    let busyBotCount = 0;
+    const availableResources = {};
+
+    for (const b of allListedBots) {
+      if (!b.enabled) continue;
+      const cap = capById.get(b.botId);
+      if (cap && cap.connected) {
+        onlineBotCount += 1;
+        if (cap.busy) busyBotCount += 1;
+        for (const [itemKey, count] of Object.entries(cap.itemCounts || {})) {
+          if (Number.isFinite(count) && count > 0) {
+            availableResources[itemKey] = (availableResources[itemKey] || 0) + count;
+          }
+        }
+      } else {
+        offlineBotCount += 1;
+      }
+    }
+
+    const taskCounts = this._store.get(
+      `SELECT
+         SUM(CASE WHEN state IN ('queued', 'ready', 'running') THEN 1 ELSE 0 END) AS availableTasks,
+         SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END) AS blockedTasks
+       FROM tasks`
+    );
+    const completedObjRow = this._store.get(
+      `SELECT COUNT(*) AS cnt FROM objectives WHERE state = 'completed'`
+    );
+    const reqObjRows = this._store.all(
+      `SELECT resource_id, SUM(MAX(0, target_quantity - verified_quantity)) AS needed
+       FROM objectives
+       WHERE resource_id IS NOT NULL
+         AND target_quantity IS NOT NULL
+         AND state NOT IN ('completed', 'cancelled', 'failed')
+       GROUP BY resource_id`
+    );
+    const requiredResources = {};
+    for (const r of reqObjRows) {
+      if (r.resource_id && Number(r.needed) > 0) {
+        requiredResources[r.resource_id] = Number(r.needed);
+      }
+    }
+
+    return {
+      maxBots: this._registry.enabledBotsCap,
+      serverRemainingSlots: Math.max(0, this._registry.enabledBotsCap - busyBotCount),
+      swarmState: {
+        onlineBotCount,
+        offlineBotCount,
+        busyBotCount,
+        availableTaskCount: Number(taskCounts?.availableTasks || 0),
+        blockedTaskCount: Number(taskCounts?.blockedTasks || 0),
+        completedObjectiveCount: Number(completedObjRow?.cnt || 0),
+        availableResources,
+        requiredResources
+      },
+      candidates: allCapBots
+    };
+  }
+
   async handleWorkerHeartbeat(authWorker, heartbeatDto = {}) {
     if (!authWorker || !authWorker.workerId) {
       throw new DomainError('UNAUTHENTICATED', 'Unauthenticated worker heartbeat');
@@ -506,6 +586,12 @@ class Coordinator {
     const pinnedItemKeys = activeResRows.map((r) => r.resource_id);
 
     const ack = this._registry.heartbeat(authWorker.workerId, heartbeatDto, { pinnedItemKeys });
+    if (ack.expiredLeaseIds.length > 0 && !this._safeMode) {
+      this._tasks.expireLeases(ack.serverTime);
+    }
+    if (!this._safeMode) {
+      await this.scheduleReadyObjectives(null);
+    }
     const d = this._governor.getDirectives();
     return {
       ...ack,
@@ -532,13 +618,16 @@ class Coordinator {
       const ack = this._tasks.applyWorkerEvent(authWorker.workerId, env, authWorker);
       results.push(ack);
       if (env.payload?.taskId) touchedTaskIds.add(env.payload.taskId);
+      if (Array.isArray(ack.affectedTaskIds)) {
+        for (const tId of ack.affectedTaskIds) touchedTaskIds.add(tId);
+      }
+    }
+
+    if (!this._safeMode) {
+      await this.scheduleReadyObjectives(null);
     }
 
     for (const tId of touchedTaskIds) {
-      const detail = this._tasks.getTask(tId);
-      if (detail.state === 'running' || detail.state === 'ready') {
-        await this.scheduleReadyObjectives(tId);
-      }
       this._publishPostCommit('task.updated', tId, this._tasks.getTask(tId));
     }
 
@@ -563,6 +652,10 @@ class Coordinator {
        ORDER BY created_at ASC`
     );
     this._governor.rehydratePausedTasks(pausedGovernorRows);
+
+    if (!this._safeMode) {
+      await this.scheduleReadyObjectives(null);
+    }
 
     const nonTerminal = this._store.all(
       `SELECT task_id FROM tasks WHERE state IN ('queued', 'planning', 'ready', 'running', 'paused', 'blocked')`

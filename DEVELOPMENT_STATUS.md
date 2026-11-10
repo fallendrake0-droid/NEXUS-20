@@ -38,13 +38,13 @@ All core foundation modules are implemented in CommonJS (`'use strict'`), zero e
 | SQLite WAL State Manager | `src/persistence/StateStore.js` | **Complete** | 15 tables, `CHECK` invariants, nested `SAVEPOINT` tx, verified online backup, pruning |
 | Authoritative Ledger | `src/inventory/InventoryLedger.js` | **Complete** | Baseline delta, craft input verification, clamped credit, transfer expiry |
 | Worker & Bot Registry | `src/workers/BotRegistry.js`, `WorkerRegistry.js` | **Complete** | Single-use SHA-256 bootstrap tokens, `timingSafeEqual` auth, `<=20` cap, liveness, revoke |
-| Quota & Spatial Math | `src/scheduler/quotaMath.js` | **Complete** | Water-filling `splitQuota` (250-run conservation fuzz) & `partitionRegion` |
-| Task & Lease State Machine | `src/tasks/TaskManager.js` | **Complete** | `finish_to_start` + `start_with` DAG, outbox commands, seq dedup, epoch fencing |
-| Central Coordinator | `src/coordinator/Coordinator.js` | **Complete** | RBAC, idempotency, 1-bot vs N-bot selection, durable governor deferral/recovery, safe-stop |
-| Runtime Monitoring & AI | `src/monitoring/*`, `src/performance/*`, `src/events/*` | **Complete** | `ResourceMonitor`, `WorkloadGovernor`, `AiEfficiencyController`, `SseCoalescer`, etc. |
+| Quota & TaskScheduler | `src/scheduler/quotaMath.js`, `TaskScheduler.js` | **Complete** | Water-filling `splitQuota`, `TaskScheduler` (`p50`/`p90`, 1-step craft lookahead, empirical rates, priority preemption) |
+| Task & Lease State Machine | `src/tasks/TaskManager.js` | **Complete** | `finish_to_start` + `start_with` DAG, outbox commands, seq dedup, epoch fencing, incremental baseline & cancel safety |
+| Central Coordinator | `src/coordinator/Coordinator.js` | **Complete** | NEXUS-20 full swarm world-state (`buildSwarmWorldContext`), RBAC, concurrent idempotency, durable governor deferral/recovery |
+| Runtime Monitoring & AI | `src/monitoring/*`, `src/performance/*`, `src/events/*` | **Complete** | `ResourceMonitor`, `WorkloadGovernor`, `AiEfficiencyController` (safe JSON/timeout/duplicate-objective guards), `SseCoalescer` |
 
 ### Verified Test & Benchmark Results (2026-11-10)
-- `npm test`: **29 / 29 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js` and `tests/performance/*.test.js`.
+- `npm test`: **41 / 41 passing** (`0` failures, `0` skipped) across `tests/foundation/*.test.js`, `tests/adversarial/*.test.js` (`REG-01..08` + `ADV-01..04` 200-step randomized fuzz), and `tests/performance/*.test.js`.
 - `npm run test:leaks`: **3 / 3 passing** under `--expose-gc` (`0` retained world buffers, SSE client buffers, or native timers).
 - `npm run check:termux`: **Passing** (`node:sqlite` v3.51.3 WAL + online backup verified, `/proc/meminfo` & `crypto.scrypt` verified).
 - `npm run bench`: **Passing** (`20_bots_distributed` Master Peak RSS `64.05 MiB`, Post-GC Heap `6.32 MiB`, Loop p95 `25.28 ms`, `0` tasks discarded).

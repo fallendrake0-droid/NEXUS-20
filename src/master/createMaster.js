@@ -13,6 +13,7 @@ const { SchemaValidator } = require('../protocol/SchemaValidator');
 const { InventoryLedger } = require('../inventory/InventoryLedger');
 const { BotRegistry } = require('../workers/BotRegistry');
 const { TaskManager } = require('../tasks/TaskManager');
+const { TaskScheduler } = require('../scheduler/TaskScheduler');
 const { Coordinator } = require('../coordinator/Coordinator');
 
 /**
@@ -120,6 +121,17 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       transportOverride: dependencies.aiTransportOverride || null
     });
 
+  const taskScheduler =
+    dependencies.taskScheduler ||
+    new TaskScheduler({
+      stateStore,
+      taskManager,
+      botRegistry,
+      governor,
+      config,
+      logger: logger.child({ module: 'TaskScheduler' })
+    });
+
   const coordinator =
     dependencies.coordinator ||
     new Coordinator({
@@ -132,7 +144,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
       governor,
       eventBus,
       sseCoalescer,
-      taskScheduler: dependencies.taskScheduler || null,
+      taskScheduler,
       logger: logger.child({ module: 'Coordinator' })
     });
 
@@ -190,6 +202,7 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
     inventoryLedger,
     botRegistry,
     taskManager,
+    taskScheduler,
     aiController,
     coordinator,
 

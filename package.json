@@ -11,9 +11,10 @@
   "scripts": {
     "start": "node index.js",
     "check:config": "node index.js --check-config",
-    "test": "node --test tests/foundation/*.test.js tests/performance/*.test.js",
+    "test": "node --test tests/foundation/*.test.js tests/adversarial/*.test.js tests/performance/*.test.js",
     "test:foundation": "node --test tests/foundation/*.test.js",
-    "test:unit": "node --test tests/foundation/*.test.js tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
+    "test:adversarial": "node --test tests/adversarial/*.test.js",
+    "test:unit": "node --test tests/foundation/*.test.js tests/adversarial/*.test.js tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
     "test:leaks": "node --expose-gc --test tests/performance/memory-leaks.test.js",
     "bench": "node --expose-gc benchmarks/run-benchmarks.js",
     "check:termux": "node benchmarks/termux-compatibility-check.js"

@@ -27,7 +27,7 @@ function parseBool(val, fallback) {
   const norm = String(val).trim().toLowerCase();
   if (norm === 'true' || norm === '1' || norm === 'yes') return true;
   if (norm === 'false' || norm === '0' || norm === 'no') return false;
-  return fallback;
+  return `__INVALID_BOOL__:${String(val)}`;
 }
 
 function parseIntOr(val, fallback) {
@@ -198,6 +198,9 @@ function validateConfig(config) {
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
     errors.push('http.port must be an integer in 1..65535');
   }
+  if (typeof config.tls?.enabled !== 'boolean') {
+    errors.push('tls.enabled must be a valid boolean');
+  }
   const isLoopback = LOOPBACK_HOSTS.has(host);
   if (!isLoopback && config.tls?.enabled !== true) {
     errors.push('Non-loopback http.host requires tls.enabled === true');
@@ -250,6 +253,9 @@ function validateConfig(config) {
 
   // AI policy validation (no phone-local LLM, no paid cloud endpoints - G-09)
   const ai = config.ai || {};
+  if (typeof ai.enabled !== 'boolean') {
+    errors.push('ai.enabled must be a valid boolean');
+  }
   if (ai.ollamaBaseUrl !== null && ai.ollamaBaseUrl !== '') {
     try {
       validateOllamaEndpointPolicy(ai.ollamaBaseUrl, {
@@ -266,8 +272,28 @@ function validateConfig(config) {
   if (!Number.isSafeInteger(ai.maxQueue) || ai.maxQueue < 0 || ai.maxQueue > 10) {
     errors.push('ai.maxQueue must be in 0..10');
   }
-  if (!Number.isSafeInteger(ai.timeoutMs) || ai.timeoutMs < 200 || ai.timeoutMs > 60_000) {
-    errors.push('ai.timeoutMs must be in 200..60000');
+  if (!Number.isSafeInteger(ai.connectTimeoutMs) || ai.connectTimeoutMs < 100 || ai.connectTimeoutMs > 60_000) {
+    errors.push('ai.connectTimeoutMs must be in 100..60000');
+  }
+  if (!Number.isSafeInteger(ai.timeoutMs) || ai.timeoutMs < 100 || ai.timeoutMs > 60_000) {
+    errors.push('ai.timeoutMs must be in 100..60000');
+  }
+  if (!Number.isSafeInteger(ai.coldLoadTimeoutMs) || ai.coldLoadTimeoutMs < 200 || ai.coldLoadTimeoutMs > 120_000) {
+    errors.push('ai.coldLoadTimeoutMs must be in 200..120000');
+  }
+  if (
+    Number.isSafeInteger(ai.connectTimeoutMs) &&
+    Number.isSafeInteger(ai.timeoutMs) &&
+    ai.connectTimeoutMs > ai.timeoutMs
+  ) {
+    errors.push('ai.connectTimeoutMs must be <= ai.timeoutMs');
+  }
+  if (
+    Number.isSafeInteger(ai.timeoutMs) &&
+    Number.isSafeInteger(ai.coldLoadTimeoutMs) &&
+    ai.timeoutMs > ai.coldLoadTimeoutMs
+  ) {
+    errors.push('ai.timeoutMs must be <= ai.coldLoadTimeoutMs');
   }
 
   // SQLite storage path validation (never on Android FUSE /sdcard - PERFORMANCE_PLAN.md §1)
@@ -291,6 +317,12 @@ function validateConfig(config) {
   }
 
   // Offline-mode chat spoofing lock (HIGH-06 reconciliation)
+  if (typeof config.chat?.enabled !== 'boolean') {
+    errors.push('chat.enabled must be a valid boolean');
+  }
+  if (typeof config.chat?.allowInsecureOfflineChat !== 'boolean') {
+    errors.push('chat.allowInsecureOfflineChat must be a valid boolean');
+  }
   if (
     config.envProfile === 'private_offline_test' &&
     config.chat?.enabled === true &&

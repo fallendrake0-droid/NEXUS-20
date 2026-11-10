@@ -406,6 +406,26 @@ function validateTaskPlanV1(plan, context = {}) {
         errors.push('Objective dependency graph contains a cycle');
       }
     }
+
+    // Prevent duplicate parallel objectives targeting the exact same resource/region & verification
+    if (errors.length === 0) {
+      const seenSignatures = new Set();
+      for (const obj of plan.objectives) {
+        const canonRes = obj.target?.resourceId
+          ? canonicalizeResourceName(obj.target.resourceId)
+          : '';
+        const depSig = (obj.dependencies || [])
+          .map((d) => (typeof d === 'string' ? `fs:${d}` : `${d.edgeType}:${d.localId}`))
+          .sort()
+          .join(',');
+        const sig = `${obj.kind}|${canonRes}|${obj.target?.regionLabel || ''}|${obj.verification}|${depSig}`;
+        if (seenSignatures.has(sig)) {
+          errors.push(`Duplicate parallel objective detected for ${obj.kind} ${canonRes || obj.localId}`);
+        } else {
+          seenSignatures.add(sig);
+        }
+      }
+    }
   }
 
   return {
@@ -557,13 +577,70 @@ function buildDeterministicPlan(requestId, rawUserText) {
     }
   }
 
+  // Pattern C2: Combined shared quantity + individual guard role ("mine 100 cobblestone while one bot guards")
+  const mineGuardMatch =
+    /^(mine|collect|gather)\s+(\d+)\s+([a-z0-9_: ]{2,48}?)\s+while\s+(?:one|a|1)\s+bot\s+guards\.?$/i.exec(
+      norm
+    );
+  if (mineGuardMatch) {
+    const objKind = mineGuardMatch[1].toLowerCase() === 'mine' ? 'mine' : 'collect';
+    const qty = Number(mineGuardMatch[2]);
+    const resourceId = canonicalizeResourceName(mineGuardMatch[3]);
+    if (Number.isSafeInteger(qty) && qty >= 1 && qty <= 1_000_000 && resourceId) {
+      return {
+        matched: true,
+        plan: {
+          schemaVersion: 1,
+          requestId: reqId,
+          intentSummary: `${objKind} ${qty} ${resourceId} with dedicated guard`,
+          clarificationRequired: false,
+          clarificationQuestion: null,
+          objectives: [
+            {
+              localId: `obj_${objKind}_1`,
+              kind: objKind,
+              target: {
+                resourceId,
+                quantity: qty,
+                regionLabel: null,
+                description: `Aggregate target: ${objKind} ${qty} ${resourceId}`
+              },
+              dependencies: [],
+              parallelism: 'partitionable',
+              workerCountHint: qty < 16 ? 1 : Math.min(19, Math.ceil(qty / 40)),
+              constraints: defaultConstraints,
+              verification: 'newly_collected'
+            },
+            {
+              localId: 'obj_guard_1',
+              kind: 'guard',
+              target: {
+                resourceId: null,
+                quantity: null,
+                regionLabel: 'mining_perimeter',
+                description: `Guard ${objKind} team perimeter`
+              },
+              dependencies: [{ localId: `obj_${objKind}_1`, edgeType: 'start_with' }],
+              parallelism: 'role_based',
+              workerCountHint: 1,
+              constraints: defaultConstraints,
+              verification: 'role_duration'
+            }
+          ],
+          riskLevel: 'low',
+          notes: ['deterministic_shared_plus_role']
+        }
+      };
+    }
+  }
+
   // Pattern D: Single or multi-resource mine/collect ("mine 100 cobblestone", "collect 100 cobblestone and 40 coal")
   const verbMatch = /^(mine|collect|gather)\s+(.+?)\.?$/i.exec(norm);
   if (verbMatch && !norm.includes(' while ') && !norm.includes(' if ') && !norm.includes(' after ')) {
     const verb = verbMatch[1] === 'mine' ? 'mine' : 'collect';
     const clauses = verbMatch[2].split(/\s*(?:,|\band\b)\s*/i).filter(Boolean);
     if (clauses.length >= 1 && clauses.length <= 10) {
-      const objectives = [];
+      const coalescedByKey = new Map();
       let allValid = true;
       for (let i = 0; i < clauses.length; i += 1) {
         const m = /^(?:(mine|collect|gather)\s+)?(\d+)\s+([a-z0-9_: ]{2,48})$/i.exec(
@@ -580,24 +657,32 @@ function buildDeterministicPlan(requestId, rawUserText) {
           break;
         }
         const objKind = m[1] ? (m[1].toLowerCase() === 'mine' ? 'mine' : 'collect') : verb;
-        objectives.push({
-          localId: `obj_${objKind}_${i + 1}`,
-          kind: objKind,
+        const mergeKey = `${objKind}|${resourceId}`;
+        const prev = coalescedByKey.get(mergeKey);
+        if (prev) {
+          prev.qty = Math.min(1_000_000, prev.qty + qty);
+        } else {
+          coalescedByKey.set(mergeKey, { objKind, resourceId, qty });
+        }
+      }
+
+      if (allValid && coalescedByKey.size > 0) {
+        const objectives = Array.from(coalescedByKey.values()).map((entry, idx) => ({
+          localId: `obj_${entry.objKind}_${idx + 1}`,
+          kind: entry.objKind,
           target: {
-            resourceId,
-            quantity: qty,
+            resourceId: entry.resourceId,
+            quantity: entry.qty,
             regionLabel: null,
-            description: `Aggregate target: ${objKind} ${qty} ${resourceId}`
+            description: `Aggregate target: ${entry.objKind} ${entry.qty} ${entry.resourceId}`
           },
           dependencies: [],
           parallelism: 'partitionable',
-          workerCountHint: qty < 16 ? 1 : Math.min(20, Math.ceil(qty / 40)),
+          workerCountHint: entry.qty < 16 ? 1 : Math.min(20, Math.ceil(entry.qty / 40)),
           constraints: defaultConstraints,
           verification: 'newly_collected'
-        });
-      }
+        }));
 
-      if (allValid && objectives.length > 0) {
         return {
           matched: true,
           plan: {
@@ -681,17 +766,44 @@ function validateOllamaEndpointPolicy(rawUrl, options = {}) {
 function buildCompactAiInput({ requestId, userText, compactContext = {}, maxInputBytes = 6144 }) {
   const safeUserText = String(userText || '').trim().slice(0, 500);
   const candidates = Array.isArray(compactContext.candidates)
-    ? compactContext.candidates.slice(0, 20).map((b) => ({
-        botId: String(b.botId || '').slice(0, 48),
-        status: String(b.status || 'ready').slice(0, 16),
-        dimension: String(b.dimension || 'minecraft:overworld').slice(0, 48),
-        healthBand: String(b.healthBand || 'unknown').slice(0, 16),
-        foodBand: String(b.foodBand || 'unknown').slice(0, 16),
-        tool: b.activeTool ? String(b.activeTool.name || b.activeTool).slice(0, 48) : null,
-        capabilities: Array.isArray(b.capabilities)
-          ? b.capabilities.slice(0, 12).map((c) => String(c).slice(0, 32))
-          : []
-      }))
+    ? compactContext.candidates.slice(0, 20).map((b) => {
+        const primaryTool = b.activeTool
+          ? String(b.activeTool.name || b.activeTool).slice(0, 48)
+          : b.toolClasses && typeof b.toolClasses === 'object'
+            ? Object.values(b.toolClasses)[0]?.itemKey || null
+            : null;
+        const rawCaps = Array.isArray(b.capabilities)
+          ? b.capabilities
+          : Array.isArray(b.supportedActions)
+            ? b.supportedActions
+            : [];
+        const topItems = {};
+        if (b.itemCounts && typeof b.itemCounts === 'object') {
+          const entries = Object.entries(b.itemCounts).slice(0, 4);
+          for (const [k, v] of entries) {
+            topItems[String(k).slice(0, 40)] = Math.trunc(Number(v) || 0);
+          }
+        }
+        return {
+          botId: String(b.botId || '').slice(0, 48),
+          status: String(b.status || (b.busy ? 'busy' : b.connected === false ? 'disconnected' : 'ready')).slice(0, 16),
+          currentAction: b.currentAction ? String(b.currentAction).slice(0, 24) : null,
+          dimension: String(b.dimension || 'minecraft:overworld').slice(0, 48),
+          position:
+            b.position && Number.isFinite(b.position.x)
+              ? {
+                  x: Math.round(b.position.x),
+                  y: Math.round(b.position.y),
+                  z: Math.round(b.position.z)
+                }
+              : null,
+          healthBand: String(b.healthBand || 'unknown').slice(0, 16),
+          foodBand: String(b.foodBand || 'unknown').slice(0, 16),
+          tool: primaryTool ? String(primaryTool).slice(0, 48) : null,
+          items: topItems,
+          capabilities: rawCaps.slice(0, 12).map((c) => String(c).slice(0, 32))
+        };
+      })
     : [];
 
   const dto = sanitizeValue({
@@ -700,15 +812,18 @@ function buildCompactAiInput({ requestId, userText, compactContext = {}, maxInpu
     userObjective: safeUserText,
     maxBots: Math.min(20, Math.max(1, Number(compactContext.maxBots || 2))),
     serverRemainingSlots: Math.min(20, Math.max(0, Number(compactContext.serverRemainingSlots ?? 2))),
+    ...(compactContext.swarmState ? { swarmState: compactContext.swarmState } : {}),
     candidates
   });
 
   let encoded = JSON.stringify(dto);
   if (Buffer.byteLength(encoded, 'utf8') > maxInputBytes) {
-    // Trim candidate detail if near byte ceiling
-    dto.candidates = dto.candidates.slice(0, 5).map((c) => ({
+    // Trim candidate detail while preserving swarmState summary if near byte ceiling
+    dto.candidates = dto.candidates.slice(0, 6).map((c) => ({
       botId: c.botId,
       status: c.status,
+      position: c.position,
+      tool: c.tool,
       capabilities: c.capabilities.slice(0, 4)
     }));
     encoded = JSON.stringify(dto);
@@ -988,6 +1103,19 @@ class AiEfficiencyController {
         };
       } catch (err) {
         this._stats.fallbacksUsed += 1;
+        if (err && (err.code === 'AI_INVALID_MODEL_JSON' || err.code === 'AI_INVALID_RESPONSE')) {
+          this._stats.validationFailures += 1;
+          if (this._monitor) {
+            this._monitor.recordAiEvent('validationFailed');
+            this._monitor.recordAiEvent('fallback');
+          }
+          return {
+            source: 'schema_rejected_fallback',
+            validationErrors: [err.message || 'Invalid model JSON'],
+            plan: deterministic.matched ? deterministic.plan : deterministic.clarificationPlan,
+            llmCalled: true
+          };
+        }
         if (err && err.code === 'AI_TIMEOUT') {
           this._stats.timeouts += 1;
           if (this._monitor) this._monitor.recordAiEvent('timeout');
@@ -1125,7 +1253,6 @@ class AiEfficiencyController {
           err.code = 'AI_TIMEOUT';
           reject(err);
         }, this._timeoutMs);
-        if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
       });
 
       const transportCall = this._transportOverride
@@ -1137,18 +1264,27 @@ class AiEfficiencyController {
         : this._httpPostOllama(requestBytes, timeoutController.signal);
 
       const rawResponse = await Promise.race([transportCall, timeoutPromise]);
-      if (typeof rawResponse === 'string') {
-        return JSON.parse(rawResponse);
+      let parsedPlan = null;
+      try {
+        if (typeof rawResponse === 'string') {
+          parsedPlan = JSON.parse(rawResponse);
+        } else if (rawResponse && typeof rawResponse.message?.content === 'string') {
+          parsedPlan = JSON.parse(rawResponse.message.content);
+        } else if (rawResponse && typeof rawResponse === 'object') {
+          parsedPlan = rawResponse;
+        }
+      } catch (parseErr) {
+        const err = new Error(`Malformed model JSON: ${parseErr.message}`);
+        err.code = 'AI_INVALID_MODEL_JSON';
+        throw err;
       }
-      if (rawResponse && typeof rawResponse.message?.content === 'string') {
-        return JSON.parse(rawResponse.message.content);
+
+      if (!parsedPlan || typeof parsedPlan !== 'object' || Array.isArray(parsedPlan)) {
+        const err = new Error('Model response must be a JSON object');
+        err.code = 'AI_INVALID_MODEL_JSON';
+        throw err;
       }
-      if (rawResponse && typeof rawResponse === 'object') {
-        return rawResponse;
-      }
-      const err = new Error('Malformed Ollama response structure');
-      err.code = 'AI_INVALID_RESPONSE';
-      throw err;
+      return parsedPlan;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       signal.removeEventListener('abort', onParentAbort);
