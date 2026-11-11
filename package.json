@@ -6,11 +6,12 @@
   "main": "index.js",
   "type": "commonjs",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "start": "node --max-old-space-size=256 index.js",
+    "start": "node index.js",
     "setup": "node index.js setup",
+    "start:master": "node --max-old-space-size=256 index.js --role=master",
     "start:worker": "node index.js --role=worker",
     "check:config": "node index.js --check-config",
     "cli:help": "node index.js --help",

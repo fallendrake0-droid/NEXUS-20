@@ -2,8 +2,17 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const sqlite = require('node:sqlite');
 const { DomainError, isDomainError } = require('../errors/DomainError');
+
+let _sqlite = null;
+function getSqlite() {
+  if (!_sqlite) {
+    // Lazy-loaded so Worker nodes (e.g. Debian / PC) never require node:sqlite
+    // eslint-disable-next-line global-require
+    _sqlite = require('node:sqlite');
+  }
+  return _sqlite;
+}
 
 const MIGRATION_V1_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -327,6 +336,7 @@ class StateStore {
         const dir = path.dirname(this._sqlitePath);
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
+      const sqlite = getSqlite();
       this._db = new sqlite.DatabaseSync(this._sqlitePath);
 
       // Reconciled Galaxy A06 eMMC 5.1 WAL & memory-cap pragmas (HIGH-04)
@@ -485,6 +495,7 @@ class StateStore {
     if (fs.existsSync(destPath)) {
       fs.unlinkSync(destPath);
     }
+    const sqlite = getSqlite();
     await sqlite.backup(db, destPath);
     try {
       fs.chmodSync(destPath, 0o600);
@@ -501,6 +512,7 @@ class StateStore {
   verifyBackup(backupPath) {
     let copyDb = null;
     try {
+      const sqlite = getSqlite();
       copyDb = new sqlite.DatabaseSync(backupPath, { readOnly: true });
       const row = copyDb.prepare('PRAGMA integrity_check;').get();
       const ok = row && (row.integrity_check === 'ok' || Object.values(row)[0] === 'ok');

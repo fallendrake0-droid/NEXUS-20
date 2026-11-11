@@ -329,7 +329,7 @@ async function runSetupWizard({
     const defaultBackupDir = isCwdEnv ? './data/backups' : path.join(baseDir, 'data', 'backups');
 
     const envOut = {
-      NODE_OPTIONS: '--max-old-space-size=256',
+      ...(actualRole === 'master' ? { NODE_OPTIONS: '--max-old-space-size=256' } : {}),
       SWARM_ROLE: actualRole,
       SWARM_LOCAL_SIM: isLocalSim ? 'true' : 'false',
       SWARM_ENV_PROFILE: envProfile,
