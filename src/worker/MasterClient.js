@@ -46,6 +46,15 @@ class MasterClient {
       ? fs.readFileSync(options.caCertPath)
       : null;
 
+    const isHttps = this._baseUrl.protocol === 'https:';
+    this._agent = isHttps
+      ? new https.Agent({
+          keepAlive: true,
+          maxSockets: 4,
+          ...(this._caCert ? { ca: this._caCert } : {})
+        })
+      : new http.Agent({ keepAlive: true, maxSockets: 4 });
+
     this._workerSequence = 0;
     this._consecutiveFailures = 0;
     this._droppedOverflowEvents = 0;
@@ -205,7 +214,7 @@ class MasterClient {
     }
   }
 
-  async _request(method, reqPath, bodyObj = undefined, { authenticated = true } = {}) {
+  async _request(method, reqPath, bodyObj = undefined, { authenticated = true, _retriedReuse = false } = {}) {
     if (authenticated && !this._workerToken) {
       throw new DomainError('UNAUTHENTICATED', 'MasterClient has no workerToken');
     }
@@ -235,13 +244,25 @@ class MasterClient {
         path: `${targetUrl.pathname}${targetUrl.search}`,
         method,
         headers,
+        agent: this._agent,
         ...(isHttps && this._caCert ? { ca: this._caCert } : {})
       };
 
       let settled = false;
-      const finishErr = (err) => {
+      const finishErr = (err, reqRef) => {
         if (settled) return;
         settled = true;
+        if (
+          !_retriedReuse &&
+          reqRef?.reusedSocket &&
+          (err?.code === 'ECONNRESET' || err?.message === 'socket hang up')
+        ) {
+          this._request(method, reqPath, bodyObj, { authenticated, _retriedReuse: true }).then(
+            resolve,
+            reject
+          );
+          return;
+        }
         this._consecutiveFailures += 1;
         reject(err);
       };
@@ -283,7 +304,7 @@ class MasterClient {
       req.on('close', () => clearTimeout(timer));
       req.on('error', (err) => {
         clearTimeout(timer);
-        finishErr(err);
+        finishErr(err, req);
       });
 
       if (bodyBuf !== null) {
@@ -291,6 +312,10 @@ class MasterClient {
       }
       req.end();
     });
+  }
+
+  destroy() {
+    this._agent.destroy();
   }
 
   stats() {

@@ -17,6 +17,7 @@ const path = require('node:path');
 
 const { DomainError, ERROR_REGISTRY, isDomainError, toErrorEnvelope } = require('./src/errors/DomainError');
 const { loadConfig, validateConfig, redactConfig } = require('./src/config/loadConfig');
+const { loadDotEnvFile } = require('./src/config/envFile');
 const { createLogger } = require('./src/logging/createLogger');
 const { SchemaValidator } = require('./src/protocol/SchemaValidator');
 const { StateStore, StateManager } = require('./src/persistence/StateStore');
@@ -59,6 +60,10 @@ function parseCliArgs(argv = process.argv.slice(2)) {
       flags.role = 'master';
     } else if (arg === '--simulation') {
       flags.simulation = true;
+    } else if (arg === '--setup') {
+      flags.setup = true;
+    } else if (arg === '--no-wizard') {
+      flags['no-wizard'] = true;
     } else if (arg.startsWith('--') && arg.includes('=')) {
       const eq = arg.indexOf('=');
       const key = arg.slice(2, eq);
@@ -86,8 +91,10 @@ function printHelp(stdout = process.stdout) {
     [
       'NEXUS-20 Mineflayer AI Swarm — CLI & Runtime Entrypoint',
       '',
-      'Daemons:',
-      '  node --max-old-space-size=256 index.js [--config=path]   Start Master Controller & Web UI',
+      'Interactive Setup & Daemons:',
+      '  npm start                                                Interactive setup (first run) + start',
+      '  npm run setup   (or: node index.js setup)                Configure options one-by-one (.env)',
+      '  node --max-old-space-size=256 index.js [--no-wizard]     Start Master Controller & Web UI',
       '  node index.js --role=worker [--simulation]               Start Distributed WorkerHost',
       '',
       'Diagnostics:',
@@ -179,14 +186,89 @@ function defaultMasterUrlFromConfig(config, explicitUrl) {
  * Returns `{ exitCode }` for one-shot commands, or `{ role, instance }` when starting a daemon.
  */
 async function runCli(argv = process.argv.slice(2), io = {}) {
+  const stdin = io.stdin || process.stdin;
   const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
-  const env = { ...(io.env || process.env) };
+  const callerEnv = io.env || process.env;
+  const env = { ...callerEnv };
 
   const { flags, positionals } = parseCliArgs(argv);
-  if (flags.help) {
+  const rawSub = positionals[0] ? positionals[0].toLowerCase() : null;
+  if (flags.help || rawSub === 'help') {
     printHelp(stdout);
     return { exitCode: 0 };
+  }
+
+  const subcommand = rawSub === 'start' ? null : rawSub;
+  const envFilePath =
+    typeof flags['env-file'] === 'string'
+      ? path.resolve(flags['env-file'])
+      : path.resolve(io.cwd || process.cwd(), '.env');
+
+  // Explicit `node index.js setup` / `config` / `--setup` subcommand: run interactive wizard one-by-one
+  if (subcommand === 'setup' || subcommand === 'config' || flags.setup) {
+    // eslint-disable-next-line global-require
+    const { runSetupWizard } = require('./src/cli/setupWizard');
+    await runSetupWizard({
+      envFilePath,
+      input: stdin,
+      output: stdout,
+      autoInstallDeps: io.autoInstallDeps !== false
+    });
+    if (!flags.start) {
+      stdout.write('Setup complete! Run "npm start" anytime to launch NEXUS-20.\n');
+      return { exitCode: 0 };
+    }
+  }
+
+  // Auto-detect interactive terminal launch (`npm start` / `node index.js` with no subcommands)
+  const isDaemonLaunch = !subcommand && !flags.checkConfig && !flags.health;
+  const hasExplicitSwarmEnv = Object.keys(callerEnv).some(
+    (k) => k.startsWith('SWARM_') && callerEnv[k] !== undefined && callerEnv[k] !== ''
+  );
+  const isInteractive =
+    Boolean(io.interactive ?? (stdin.isTTY && stdout.isTTY)) &&
+    !flags['no-wizard'] &&
+    env.SWARM_NO_WIZARD !== 'true';
+
+  let dotEnv = loadDotEnvFile(envFilePath);
+
+  if (isDaemonLaunch && isInteractive && !hasExplicitSwarmEnv && !flags.role) {
+    // eslint-disable-next-line global-require
+    const { runSetupWizard, promptQuickStartOrEdit } = require('./src/cli/setupWizard');
+    if (!dotEnv.exists) {
+      const wiz = await runSetupWizard({
+        envFilePath,
+        input: stdin,
+        output: stdout,
+        autoInstallDeps: io.autoInstallDeps !== false
+      });
+      dotEnv = { exists: true, values: wiz.envVars };
+    } else {
+      const action = await promptQuickStartOrEdit({
+        input: stdin,
+        output: stdout,
+        savedValues: dotEnv.values
+      });
+      if (action === 'edit') {
+        const wiz = await runSetupWizard({
+          envFilePath,
+          input: stdin,
+          output: stdout,
+          autoInstallDeps: io.autoInstallDeps !== false
+        });
+        dotEnv = { exists: true, values: wiz.envVars };
+      }
+    }
+  }
+
+  // Merge saved `.env` values ONLY when not explicitly overridden in environment
+  if (dotEnv.exists) {
+    for (const [k, v] of Object.entries(dotEnv.values)) {
+      if (env[k] === undefined || (!hasExplicitSwarmEnv && isDaemonLaunch && isInteractive)) {
+        env[k] = v;
+      }
+    }
   }
 
   if (typeof flags.role === 'string') env.SWARM_ROLE = flags.role;
@@ -237,7 +319,6 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
     return { exitCode: h.status === 'unhealthy' || h.healthy === false ? 1 : 0 };
   }
 
-  const subcommand = positionals[0] ? positionals[0].toLowerCase() : null;
   const cliToken =
     typeof flags.token === 'string' ? flags.token : config.security?.cliOperatorToken || null;
 
@@ -349,21 +430,83 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
 
   const master = createMaster(config);
   const startInfo = await master.start({ listenHttp: true });
+  let embeddedSimWorker = null;
+
+  // Optional all-in-one local simulation mode (`SWARM_LOCAL_SIM=true`)
+  if (env.SWARM_LOCAL_SIM === 'true') {
+    try {
+      const simToken = master.botRegistry.createBootstrapToken({ createdBy: 'local_sim' });
+      const localUrl = `http://127.0.0.1:${startInfo.port}`;
+      const simStatePath = path.join(
+        path.dirname(path.resolve(config.storage.sqlitePath)),
+        'local-sim-worker-state.json'
+      );
+      const simWorkerCfg = loadConfig({
+        ...env,
+        SWARM_ROLE: 'worker',
+        SWARM_MASTER_URL: localUrl,
+        SWARM_WORKER_ID: 'local-sim-worker',
+        SWARM_WORKER_STATE_PATH: simStatePath,
+        SWARM_BOOTSTRAP_TOKEN: simToken.bootstrapToken,
+        SWARM_WORKER_SIMULATION: 'true',
+        SWARM_SPAWN_STAGGER_MS: '150'
+      });
+      embeddedSimWorker = createWorker(simWorkerCfg);
+      await embeddedSimWorker.start();
+    } catch (err) {
+      if (embeddedSimWorker) await embeddedSimWorker.stop();
+      await master.stop();
+      throw err;
+    }
+  }
+
   let shuttingDown = false;
   const shutdownMaster = async (sig) => {
     if (shuttingDown) return;
     shuttingDown = true;
     master.logger.info('Received shutdown signal', { signal: sig });
+    if (embeddedSimWorker) await embeddedSimWorker.stop();
     await master.stop();
     process.exit(0);
   };
   process.once('SIGINT', () => shutdownMaster('SIGINT'));
   process.once('SIGTERM', () => shutdownMaster('SIGTERM'));
+
+  const uiHost =
+    startInfo.host === '0.0.0.0' || startInfo.host === '::' ? '127.0.0.1' : startInfo.host;
+  const uiScheme = config.tls.enabled ? 'https' : 'http';
+  const uiUrl = `${uiScheme}://${uiHost}:${startInfo.port}`;
+
+  if (isInteractive) {
+    const workers = master.botRegistry.listWorkers();
+    let tokenLine = '  Worker Status : Enrolled (' + workers.length + ' worker(s))';
+    if (workers.length === 0 && !embeddedSimWorker) {
+      const autoToken = master.botRegistry.createBootstrapToken({
+        createdBy: 'startup:auto',
+        ttlMs: 30 * 60 * 1000
+      });
+      tokenLine = `  Worker Token  : ${autoToken.bootstrapToken}  (paste into Step 12 on your Worker PC)`;
+    }
+    stdout.write(
+      [
+        '',
+        '============================================================',
+        '  NEXUS-20 Master Controller is LIVE!',
+        `  Control Centre: ${uiUrl}`,
+        `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (${config.envProfile === 'private_offline_test' ? 'Cracked/Offline' : 'Microsoft Online'})`,
+        tokenLine,
+        '  (Press Ctrl+C to stop cleanly)',
+        '============================================================',
+        ''
+      ].join('\n')
+    );
+  }
+
   master.logger.info('Master ready', {
     health: await master.health(),
     listen: { host: startInfo.host, port: startInfo.port }
   });
-  return { role: 'master', instance: master };
+  return { role: 'master', instance: master, embeddedSimWorker };
 }
 
 async function runCliEntry(argv = process.argv.slice(2)) {

@@ -435,6 +435,9 @@ class WorkerHost {
     } catch {
       // Ignore final flush error if Master is already offline
     }
+    if (typeof this.client.destroy === 'function') {
+      this.client.destroy();
+    }
     this.bots.clear();
     this._started = false;
     this._stopping = false;

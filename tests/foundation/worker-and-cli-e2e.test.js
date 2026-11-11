@@ -5,10 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { Writable } = require('node:stream');
+const { Writable, PassThrough } = require('node:stream');
 const { performance } = require('node:perf_hooks');
 
 const { createMaster, createWorker, loadConfig, runCli } = require('../../index');
+const { loadDotEnvFile } = require('../../src/config/envFile');
 const { SkillExecutor } = require('../../src/worker/SkillExecutor');
 const { SimulatedBotDriver } = require('../../src/worker/BotRunner');
 
@@ -550,6 +551,116 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
       if (w1) await w1.stop();
       if (w2) await w2.stop();
       await master.stop();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('E2E-06: Interactive one-by-one setup wizard saves 0600 .env and auto-launches on first interactive npm start', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-wizard-e2e6-'));
+    const envPath1 = path.join(tmpDir, 'master.env');
+    const envPath2 = path.join(tmpDir, 'autosim.env');
+
+    let booted = null;
+    try {
+      // 1. Test `node index.js setup` stepping through every prompt one by one
+      const stdin1 = new PassThrough();
+      const stdout1 = createCaptureStream();
+      const answers1 = [
+        '1',                                // 1. role = master
+        'http://thebasement-wUr4.aternos.me', // 2. server
+        '25565',                            // 3. server_port
+        'yes',                              // 4. cracked = yes
+        '4',                                // 5. initial_bots = 4
+        'Nexus',                            // 6. bot_prefix = Nexus
+        '1',                                // 7. mode = HYBRID
+        '3',                                // 8. performance = BALANCED
+        'no',                               // 9. ai = no (£0 built-in planner)
+        '192.168.1.168',                    // 10. bind_ip
+        '8443',                             // 11. port
+        'commander',                        // 12. admin_user
+        'StrongPass#2026',                  //     admin_password
+        'no'                                // 13. ingame_chat
+      ];
+      stdin1.end(`${answers1.join('\n')}\n`);
+
+      const setupRes = await runCli([`--env-file=${envPath1}`, 'setup'], {
+        stdin: stdin1,
+        stdout: stdout1.stream,
+        env: {},
+        autoInstallDeps: false
+      });
+      assert.equal(setupRes.exitCode, 0);
+      assert.ok(fs.existsSync(envPath1));
+      assert.equal(fs.statSync(envPath1).mode & 0o777, 0o600);
+
+      const parsed = loadDotEnvFile(envPath1).values;
+      assert.equal(parsed.SWARM_ROLE, 'master');
+      assert.equal(parsed.SWARM_MC_HOST, 'thebasement-wUr4.aternos.me');
+      assert.equal(parsed.SWARM_ENV_PROFILE, 'private_offline_test');
+      assert.equal(parsed.SWARM_ENABLED_BOTS, '4');
+      assert.equal(parsed.SWARM_BOT_NAME_PREFIX, 'Nexus');
+      assert.equal(parsed.SWARM_AI_ENABLED, 'false');
+      assert.equal(parsed.SWARM_BIND_HOST, '192.168.1.168');
+      assert.equal(parsed.SWARM_ALLOW_PRIVATE_LAN_HTTP, 'true');
+      assert.equal(parsed.SWARM_ADMIN_USERNAME, 'commander');
+
+      // 2. Test first-run interactive `npm start` (no .env yet -> runs wizard automatically + boots!)
+      const stdin2 = new PassThrough();
+      const stdout2 = createCaptureStream();
+      const answers2 = [
+        '3',                                // 1. role = local_sim (Master + Simulated Bots)
+        'thebasement-wUr4.aternos.me',      // 2. server
+        '25565',                            // 3. server_port
+        'yes',                              // 4. cracked
+        '2',                                // 5. initial_bots = 2
+        'Nexus',                            // 6. bot_prefix
+        '1',                                // 7. mode = HYBRID
+        '3',                                // 8. performance = BALANCED
+        'no',                               // 9. ai = no
+        '127.0.0.1',                        // 10. bind_ip
+        '18943',                            // 11. port
+        '',                                 // 12. admin_user (skip)
+        'no'                                // 13. ingame_chat
+      ];
+      stdin2.end(`${answers2.join('\n')}\n`);
+
+      booted = await runCli([`--env-file=${envPath2}`], {
+        stdin: stdin2,
+        stdout: stdout2.stream,
+        interactive: true,
+        env: {},
+        autoInstallDeps: false
+      });
+      assert.equal(booted.role, 'master');
+      assert.ok(booted.embeddedSimWorker);
+      assert.equal(booted.embeddedSimWorker.bots.size, 2);
+      assert.equal(booted.embeddedSimWorker.bots.get('bot-01').username, 'Nexus_01');
+      assert.equal(booted.embeddedSimWorker.bots.get('bot-02').username, 'Nexus_02');
+      assert.match(stdout2.readText(), /NEXUS-20 Master Controller is LIVE/);
+
+      // Stop first boot and verify second `npm start` shows saved config & quick-starts on [Enter]
+      await booted.embeddedSimWorker.stop();
+      await booted.instance.stop();
+      booted = null;
+
+      const stdin3 = new PassThrough();
+      const stdout3 = createCaptureStream();
+      stdin3.end('\n'); // Press [Enter] to start immediately from saved .env
+
+      booted = await runCli([`--env-file=${envPath2}`], {
+        stdin: stdin3,
+        stdout: stdout3.stream,
+        interactive: true,
+        env: {},
+        autoInstallDeps: false
+      });
+      assert.equal(booted.role, 'master');
+      assert.equal(booted.embeddedSimWorker.bots.size, 2);
+      assert.match(stdout3.readText(), /Saved Configuration \(\.env\)/);
+      assert.match(stdout3.readText(), /Press \[Enter\] to start now, or type \[e\] to edit config one-by-one/);
+    } finally {
+      if (booted?.embeddedSimWorker) await booted.embeddedSimWorker.stop();
+      if (booted?.instance) await booted.instance.stop();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
