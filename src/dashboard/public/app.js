@@ -5,6 +5,7 @@
     csrfToken: sessionStorage.getItem('nexus_csrf') || null,
     actor: null,
     bootstrapRequired: false,
+    envProfile: 'private_offline_test',
     sseClientId: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
     sse: null,
     pollTimer: null
@@ -144,6 +145,7 @@
   }
 
   function renderStatus(st) {
+    if (st.envProfile) state.envProfile = st.envProfile;
     el('kpi-mode').textContent = st.operatingMode || 'HYBRID';
     el('kpi-governor').textContent = 'Governor: ' + st.governorState + ' (' + st.performanceProfile + ')';
     el('mode-select').value = st.operatingMode || 'HYBRID';
@@ -685,11 +687,13 @@
       const cmd = document.createElement('code');
       cmd.className = 'cmd-snippet';
       cmd.textContent =
-        'SWARM_ROLE=worker SWARM_MASTER_URL=' +
+        'SWARM_ROLE=worker SWARM_ENV_PROFILE=' +
+        (state.envProfile || 'private_offline_test') +
+        ' SWARM_MASTER_URL=' +
         window.location.origin +
         ' SWARM_BOOTSTRAP_TOKEN=' +
         out.bootstrapToken +
-        ' SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 node index.js';
+        ' SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_SPAWN_STAGGER_MS=4000 SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 npm run start:worker';
       box.appendChild(title);
       box.appendChild(cmd);
       box.classList.remove('hidden');

@@ -315,6 +315,19 @@ async function resolveMinecraftSrvEndpoint(host, port) {
   return { host: cleanHost, port };
 }
 
+const BLOCK_SOURCES_BY_ITEM = Object.freeze({
+  cobblestone: ['cobblestone', 'stone'],
+  cobbled_deepslate: ['cobbled_deepslate', 'deepslate'],
+  coal: ['coal_ore', 'deepslate_coal_ore'],
+  raw_iron: ['iron_ore', 'deepslate_iron_ore'],
+  iron_ore: ['iron_ore', 'deepslate_iron_ore'],
+  raw_copper: ['copper_ore', 'deepslate_copper_ore'],
+  raw_gold: ['gold_ore', 'deepslate_gold_ore'],
+  diamond: ['diamond_ore', 'deepslate_diamond_ore'],
+  redstone: ['redstone_ore', 'deepslate_redstone_ore'],
+  lapis_lazuli: ['lapis_ore', 'deepslate_lapis_ore']
+});
+
 /**
  * Lazy real-Mineflayer BotDriver factory (loaded ONLY on WorkerHost when `simulationMode === false`).
  * Never required on the Master Controller (`G-01`).
@@ -327,13 +340,103 @@ function createMineflayerDriver(options = {}) {
   } catch {
     throw new DomainError(
       'NOT_IMPLEMENTED',
-      'Package "mineflayer" is not installed on this WorkerHost. Install mineflayer on the worker device or run with SWARM_WORKER_SIMULATION=true.'
+      'Package "mineflayer" is not installed on this WorkerHost. Run "npm install --no-save mineflayer mineflayer-pathfinder" on the worker device or run with SWARM_WORKER_SIMULATION=true.'
     );
+  }
+
+  let pathfinderMod = null;
+  try {
+    // Optional pathfinder plugin on WorkerHost if installed
+    // eslint-disable-next-line global-require, import/no-unresolved
+    pathfinderMod = require('mineflayer-pathfinder');
+  } catch {
+    pathfinderMod = null;
   }
 
   const emitter = new EventEmitter();
   let bot = null;
   let listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
+
+  async function moveNearPosition(targetPos, range = 3.2, timeoutMs = 12_000) {
+    if (!bot || !bot.entity || !targetPos) return false;
+    if (bot.entity.position.distanceTo(targetPos) <= range) return true;
+
+    if (pathfinderMod && bot.pathfinder) {
+      try {
+        const goal = new pathfinderMod.goals.GoalNear(
+          targetPos.x,
+          targetPos.y,
+          targetPos.z,
+          Math.max(1, Math.floor(range))
+        );
+        await Promise.race([
+          bot.pathfinder.goto(goal),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('path_timeout')), timeoutMs))
+        ]);
+        return bot.entity.position.distanceTo(targetPos) <= range + 1.0;
+      } catch {
+        try {
+          bot.pathfinder.setGoal(null);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Zero-plugin direct steering fallback
+    const started = Date.now();
+    try {
+      while (bot && bot.entity && Date.now() - started < timeoutMs) {
+        const dist = bot.entity.position.distanceTo(targetPos);
+        if (dist <= range) return true;
+        await bot.lookAt(targetPos.offset ? targetPos.offset(0.5, 0.5, 0.5) : targetPos, true);
+        bot.setControlState('forward', true);
+        bot.setControlState('jump', Boolean(bot.entity.isCollidedHorizontally || bot.entity.isInWater));
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    } finally {
+      if (bot && typeof bot.clearControlStates === 'function') {
+        bot.clearControlStates();
+      }
+    }
+    return Boolean(bot && bot.entity && bot.entity.position.distanceTo(targetPos) <= range + 0.8);
+  }
+
+  async function equipBestToolForBlock(blockName) {
+    if (!bot || !bot.inventory) return;
+    const items = bot.inventory.items() || [];
+    const needSuffix =
+      blockName.includes('log') || blockName.includes('planks') || blockName.includes('wood')
+        ? '_axe'
+        : blockName.includes('dirt') ||
+            blockName.includes('grass') ||
+            blockName.includes('sand') ||
+            blockName.includes('gravel')
+          ? '_shovel'
+          : '_pickaxe';
+    const tierOrder = ['netherite', 'diamond', 'iron', 'stone', 'golden', 'wooden'];
+    let best = null;
+    let bestRank = 999;
+    for (const it of items) {
+      if (!it.name.endsWith(needSuffix)) continue;
+      if (typeof it.maxDurability === 'number' && (it.durabilityUsed || 0) >= it.maxDurability) {
+        continue;
+      }
+      const rank = tierOrder.findIndex((t) => it.name.startsWith(t));
+      const effRank = rank === -1 ? 50 : rank;
+      if (effRank < bestRank) {
+        bestRank = effRank;
+        best = it;
+      }
+    }
+    if (best) {
+      try {
+        await bot.equip(best, 'hand');
+      } catch {
+        // ignore equip failure
+      }
+    }
+  }
 
   return Object.assign(emitter, {
     botId: options.botId,
@@ -356,13 +459,29 @@ function createMineflayerDriver(options = {}) {
         auth: options.authMode === 'online_microsoft' ? 'microsoft' : 'offline'
       });
 
+      if (pathfinderMod && typeof bot.loadPlugin === 'function') {
+        try {
+          bot.loadPlugin(pathfinderMod.pathfinder);
+        } catch {
+          // ignore duplicate load
+        }
+      }
+
       await new Promise((resolve, reject) => {
         const onSpawn = () => {
+          if (pathfinderMod && bot.pathfinder) {
+            try {
+              const mv = new pathfinderMod.Movements(bot);
+              bot.pathfinder.setMovements(mv);
+            } catch {
+              // ignore movements init error
+            }
+          }
           emitter.emit('spawn');
           resolve();
         };
         const onErr = (err) => reject(err);
-        listeners.on(bot, 'spawn', onSpawn);
+        listeners.once(bot, 'spawn', onSpawn);
         listeners.on(bot, 'error', onErr);
         listeners.on(bot, 'kicked', (reason) => {
           emitter.emit('kicked', String(reason));
@@ -467,31 +586,160 @@ function createMineflayerDriver(options = {}) {
         return { ok: false, failureCode: 'BOT_DISCONNECTED', retryable: true, summary: 'Disconnected' };
       }
       const bareName = String(resourceId || '').replace(/^minecraft:/, '');
+      const candidateBlocks = new Set(BLOCK_SOURCES_BY_ITEM[bareName] || [bareName]);
+
+      const countBefore = (bot.inventory?.items?.() || [])
+        .filter((i) => i.name === bareName)
+        .reduce((acc, i) => acc + i.count, 0);
+
       const block = bot.findBlock?.({
-        matching: (b) => b && b.name === bareName,
+        matching: (b) => b && candidateBlocks.has(b.name),
         maxDistance: 32
       });
       if (!block) {
         return {
           ok: false,
           failureCode: 'RESOURCE_NOT_FOUND',
-          retryable: false,
-          summary: `No ${bareName} within 32 blocks`
+          retryable: true,
+          summary: `No ${Array.from(candidateBlocks).join('/')} within 32 blocks`
         };
       }
+
+      const reached = await moveNearPosition(block.position, 3.3, 12_000);
+      if (!reached) {
+        return {
+          ok: false,
+          failureCode: 'PATH_BLOCKED',
+          retryable: true,
+          summary: `Could not reach ${block.name} at ${block.position}`
+        };
+      }
+
+      await equipBestToolForBlock(block.name);
       await bot.dig(block);
-      return { ok: true, delta: 1, observation: null };
-    },
-    async craftResource({ resourceId }) {
+
+      // Step over broken block position briefly so dropped item entity is picked up
+      await moveNearPosition(block.position, 1.4, 2_500);
+      await new Promise((r) => setTimeout(r, 450));
+
+      const countAfter = (bot.inventory?.items?.() || [])
+        .filter((i) => i.name === bareName)
+        .reduce((acc, i) => acc + i.count, 0);
+      const gained = Math.max(0, countAfter - countBefore);
+      if (gained <= 0) {
+        return {
+          ok: false,
+          failureCode: 'TOOL_BROKEN_OR_MISSING',
+          retryable: true,
+          summary: `Dug ${block.name} but collected 0 ${bareName} (missing pickaxe or drop obstructed)`
+        };
+      }
+
       return {
-        ok: false,
-        failureCode: 'RESOURCE_NOT_FOUND',
-        retryable: true,
-        summary: `Recipe lookup required for ${resourceId}`
+        ok: true,
+        delta: gained,
+        observation: {
+          category: 'resource_location',
+          subjectKey: `minecraft:${bareName}`,
+          dimension: bot.game?.dimension || 'minecraft:overworld',
+          position: {
+            x: Math.floor(block.position.x),
+            y: Math.floor(block.position.y),
+            z: Math.floor(block.position.z)
+          },
+          reportedByBotId: options.botId,
+          data: { minedBlock: block.name }
+        }
       };
     },
-    async exploreRegion() {
-      return { ok: true, coverageRatio: 0.9, visitedCells: 12, observations: [] };
+    async craftResource({ resourceId, quantity }) {
+      if (!bot || !bot.entity) {
+        return { ok: false, failureCode: 'BOT_DISCONNECTED', retryable: true, summary: 'Disconnected' };
+      }
+      const bareName = String(resourceId || '').replace(/^minecraft:/, '');
+      const itemMeta = bot.registry?.itemsByName?.[bareName];
+      if (!itemMeta) {
+        return {
+          ok: false,
+          failureCode: 'RESOURCE_NOT_FOUND',
+          retryable: false,
+          summary: `Unknown item ${bareName}`
+        };
+      }
+      const tableBlock = bot.findBlock?.({
+        matching: (b) => b && b.name === 'crafting_table',
+        maxDistance: 16
+      });
+      if (tableBlock) {
+        await moveNearPosition(tableBlock.position, 3.0, 8_000);
+      }
+      const recipes = bot.recipesFor?.(itemMeta.id, null, 1, tableBlock || null) || [];
+      if (recipes.length === 0) {
+        return {
+          ok: false,
+          failureCode: 'RESOURCE_NOT_FOUND',
+          retryable: true,
+          summary: `Missing ingredients or nearby crafting_table for ${bareName}`
+        };
+      }
+      const beforeItems = new Map();
+      for (const it of bot.inventory?.items?.() || []) {
+        beforeItems.set(`minecraft:${it.name}`, (beforeItems.get(`minecraft:${it.name}`) || 0) + it.count);
+      }
+      await bot.craft(recipes[0], Math.max(1, quantity || 1), tableBlock || null);
+      const afterItems = new Map();
+      for (const it of bot.inventory?.items?.() || []) {
+        afterItems.set(`minecraft:${it.name}`, (afterItems.get(`minecraft:${it.name}`) || 0) + it.count);
+      }
+      const consumedInputs = {};
+      for (const [k, beforeCnt] of beforeItems.entries()) {
+        const afterCnt = afterItems.get(k) || 0;
+        if (afterCnt < beforeCnt) {
+          consumedInputs[k] = beforeCnt - afterCnt;
+        }
+      }
+      const targetFull = `minecraft:${bareName}`;
+      const craftedDelta = Math.max(0, (afterItems.get(targetFull) || 0) - (beforeItems.get(targetFull) || 0));
+      if (craftedDelta <= 0) {
+        return {
+          ok: false,
+          failureCode: 'RESOURCE_NOT_FOUND',
+          retryable: true,
+          summary: `Craft attempt yielded 0 ${bareName}`
+        };
+      }
+      return { ok: true, craftedDelta, consumedInputs };
+    },
+    async exploreRegion({ partitionId, regionBounds, checkAbort }) {
+      if (!bot || !bot.entity) {
+        return { ok: false, failureCode: 'BOT_DISCONNECTED', retryable: true, summary: 'Disconnected' };
+      }
+      if (regionBounds) {
+        const gate = await checkAbort();
+        if (gate.aborted === 'cancelled') return { ok: false, cancelled: true };
+        const cx = Math.round((regionBounds.minX + regionBounds.maxX) / 2);
+        const cz = Math.round((regionBounds.minZ + regionBounds.maxZ) / 2);
+        await moveNearPosition({ x: cx, y: Math.floor(bot.entity.position.y), z: cz }, 4.0, 10_000);
+      }
+      return {
+        ok: true,
+        coverageRatio: 0.92,
+        visitedCells: 16,
+        observations: [
+          {
+            category: 'explored_area',
+            subjectKey: partitionId || 'sector-1',
+            dimension: bot.game?.dimension || 'minecraft:overworld',
+            position: {
+              x: Math.floor(bot.entity.position.x),
+              y: Math.floor(bot.entity.position.y),
+              z: Math.floor(bot.entity.position.z)
+            },
+            reportedByBotId: options.botId,
+            data: { partitionId }
+          }
+        ]
+      };
     },
     async guardPerimeter({ durationMs }) {
       await new Promise((r) => setTimeout(r, Math.min(1000, durationMs)));

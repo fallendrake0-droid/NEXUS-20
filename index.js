@@ -263,7 +263,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
       `${JSON.stringify(
         {
           ...minted,
-          launchHint: `SWARM_ROLE=worker SWARM_MASTER_URL=${masterUrl} SWARM_BOOTSTRAP_TOKEN=${minted.bootstrapToken} SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 node index.js`
+          launchHint: `SWARM_ROLE=worker SWARM_ENV_PROFILE=${config.envProfile} SWARM_MASTER_URL=${masterUrl} SWARM_BOOTSTRAP_TOKEN=${minted.bootstrapToken} SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_SPAWN_STAGGER_MS=4000 SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 npm run start:worker`
         },
         null,
         2

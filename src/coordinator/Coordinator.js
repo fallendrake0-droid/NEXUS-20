@@ -786,6 +786,7 @@ class Coordinator {
 
     return {
       schemaVersion: 1,
+      envProfile: this._config.envProfile,
       operatingMode: this._operatingMode,
       performanceProfile: this._governor.profile,
       safeMode: this._safeMode,
