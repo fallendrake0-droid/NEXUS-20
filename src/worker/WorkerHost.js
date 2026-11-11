@@ -160,13 +160,41 @@ class WorkerHost {
         });
       }
     } else {
-      const rec = await this.client.reconcile([]);
-      if (Array.isArray(rec.canonicalBots) && rec.canonicalBots.length > 0) {
-        const canonById = new Map(rec.canonicalBots.map((c) => [String(c.botId), c]));
-        botDefs = botDefs.map((b) => {
-          const canon = canonById.get(String(b.botId));
-          return canon ? { ...b, username: canon.username } : b;
-        });
+      try {
+        const rec = await this.client.reconcile([]);
+        if (Array.isArray(rec.canonicalBots) && rec.canonicalBots.length > 0) {
+          const canonById = new Map(rec.canonicalBots.map((c) => [String(c.botId), c]));
+          botDefs = botDefs.map((b) => {
+            const canon = canonById.get(String(b.botId));
+            return canon ? { ...b, username: canon.username } : b;
+          });
+        }
+      } catch (err) {
+        if (err?.code === 'UNAUTHENTICATED' && wCfg.bootstrapToken) {
+          this.client.setCredentials(null);
+          const reg = await this.client.register({
+            bootstrapToken: wCfg.bootstrapToken,
+            workerInfo: {
+              schemaVersion: 1,
+              workerId: wCfg.workerId,
+              hostname: wCfg.hostname,
+              maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
+              allowUsernameChange: Boolean(wCfg.forceRenameBots),
+              configuredBots: botDefs
+            }
+          });
+          activeWorkerToken = reg.workerToken;
+          this._heartbeatIntervalMs = reg.heartbeatIntervalMs || this._heartbeatIntervalMs;
+          if (Array.isArray(reg.canonicalBots) && reg.canonicalBots.length > 0) {
+            const canonById = new Map(reg.canonicalBots.map((c) => [String(c.botId), c]));
+            botDefs = botDefs.map((b) => {
+              const canon = canonById.get(String(b.botId));
+              return canon ? { ...b, username: canon.username } : b;
+            });
+          }
+        } else {
+          throw err;
+        }
       }
     }
 

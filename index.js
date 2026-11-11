@@ -412,6 +412,38 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
 
   // Long-running daemon mode: WorkerHost vs Master Controller
   if (config.role === 'worker') {
+    if (isInteractive && !flags['no-wizard']) {
+      let hasSavedWorkerToken = false;
+      try {
+        const sp = config.worker?.statePath ? path.resolve(config.worker.statePath) : null;
+        if (sp && fs.existsSync(sp)) {
+          const saved = JSON.parse(fs.readFileSync(sp, 'utf8'));
+          hasSavedWorkerToken = Boolean(saved && saved.workerToken);
+        }
+      } catch {
+        hasSavedWorkerToken = false;
+      }
+
+      const hasToken =
+        Boolean(config.worker?.workerToken) ||
+        hasSavedWorkerToken ||
+        Boolean(config.worker?.bootstrapToken);
+      const isCrostiniSelfUrl = String(config.worker?.masterUrl || '').includes('100.115.92.');
+
+      if (!hasToken || isCrostiniSelfUrl) {
+        // eslint-disable-next-line global-require
+        const { promptMissingWorkerEnrollment } = require('./src/cli/setupWizard');
+        const filled = await promptMissingWorkerEnrollment({
+          envFilePath,
+          input: stdin,
+          output: stdout,
+          currentEnv: env
+        });
+        Object.assign(env, filled.envVars);
+        config = loadConfig(env, fileConfig);
+      }
+    }
+
     const worker = createWorker(config);
     const started = await worker.start();
     let shuttingDown = false;
@@ -424,6 +456,24 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
     };
     process.once('SIGINT', () => shutdownWorker('SIGINT'));
     process.once('SIGTERM', () => shutdownWorker('SIGTERM'));
+    if (isInteractive) {
+      const botNames = Array.from(worker.bots.values())
+        .map((b) => b.username)
+        .join(', ');
+      stdout.write(
+        [
+          '',
+          '============================================================',
+          '  NEXUS-20 Worker is LIVE & Enrolled!',
+          `  Master Link   : ${config.worker.masterUrl} (${config.worker.workerId})`,
+          `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort}`,
+          `  Active Bots   : ${botNames || started.botCount}`,
+          '  (Press Ctrl+C to disconnect cleanly)',
+          '============================================================',
+          ''
+        ].join('\n')
+      );
+    }
     worker.logger.info('WorkerHost ready', started);
     return { role: 'worker', instance: worker };
   }
@@ -432,24 +482,29 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
   const startInfo = await master.start({ listenHttp: true });
   let embeddedSimWorker = null;
 
-  // Optional all-in-one local simulation mode (`SWARM_LOCAL_SIM=true`)
-  if (env.SWARM_LOCAL_SIM === 'true') {
+  // Optional all-in-one local mode (`SWARM_LOCAL_SIM=true` or `SWARM_LOCAL_STANDALONE=true`)
+  if (env.SWARM_LOCAL_SIM === 'true' || env.SWARM_LOCAL_STANDALONE === 'true') {
+    const isRealStandalone = env.SWARM_LOCAL_STANDALONE === 'true';
     try {
-      const simToken = master.botRegistry.createBootstrapToken({ createdBy: 'local_sim' });
+      const simToken = master.botRegistry.createBootstrapToken({
+        createdBy: isRealStandalone ? 'local_standalone' : 'local_sim'
+      });
       const localUrl = `http://127.0.0.1:${startInfo.port}`;
       const simStatePath = path.join(
         path.dirname(path.resolve(config.storage.sqlitePath)),
-        'local-sim-worker-state.json'
+        isRealStandalone ? 'local-standalone-worker-state.json' : 'local-sim-worker-state.json'
       );
       const simWorkerCfg = loadConfig({
         ...env,
         SWARM_ROLE: 'worker',
         SWARM_MASTER_URL: localUrl,
-        SWARM_WORKER_ID: 'local-sim-worker',
+        SWARM_WORKER_ID: isRealStandalone ? 'local-worker' : 'local-sim-worker',
         SWARM_WORKER_STATE_PATH: simStatePath,
         SWARM_BOOTSTRAP_TOKEN: simToken.bootstrapToken,
-        SWARM_WORKER_SIMULATION: 'true',
-        SWARM_SPAWN_STAGGER_MS: '150'
+        SWARM_WORKER_SIMULATION: isRealStandalone ? 'false' : 'true',
+        SWARM_SPAWN_STAGGER_MS: isRealStandalone
+          ? String(env.SWARM_SPAWN_STAGGER_MS || '4000')
+          : '150'
       });
       embeddedSimWorker = createWorker(simWorkerCfg);
       await embeddedSimWorker.start();

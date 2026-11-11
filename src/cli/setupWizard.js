@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const { execFileSync } = require('node:child_process');
@@ -90,10 +91,97 @@ function pickChoice(input, map, fallback) {
 }
 
 /**
+ * Normalize a user-entered Master URL (e.g. `192.168.1.168` -> `http://192.168.1.168:8443`).
+ */
+function normalizeMasterUrl(input, fallback = 'http://192.168.1.168:8443') {
+  let s = String(input ?? '').trim();
+  if (!s) return fallback;
+  if (!/^https?:\/\//i.test(s)) {
+    s = `http://${s}`;
+  }
+  try {
+    const u = new URL(s);
+    if (!u.port && u.protocol === 'http:') {
+      u.port = '8443';
+    }
+    return u.toString().replace(/\/+$/, '');
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Prompt only for missing Worker enrollment fields (`SWARM_MASTER_URL` if Crostini NAT,
+ * and `SWARM_BOOTSTRAP_TOKEN` when not yet enrolled) instead of failing with UNAUTHENTICATED.
+ */
+async function promptMissingWorkerEnrollment({
+  envFilePath = path.resolve(process.cwd(), '.env'),
+  input = process.stdin,
+  output = process.stdout,
+  currentEnv = {}
+} = {}) {
+  const session = createPromptSession(input, output);
+  const ask = async (label, defaultVal) => {
+    const suffix = defaultVal !== undefined && defaultVal !== '' ? ` [${defaultVal}]` : '';
+    const raw = await session.question(`${label}${suffix}: `);
+    const trimmed = raw.trim();
+    return trimmed === '' && defaultVal !== undefined ? String(defaultVal) : trimmed;
+  };
+
+  try {
+    output.write(
+      [
+        '',
+        '------------------------------------------------------------',
+        '  First-Time Worker Enrollment Needed',
+        '  Start Master on your Phone first ("npm start" -> role 1),',
+        '  then paste the "Worker Token" shown in your Phone banner.',
+        '------------------------------------------------------------',
+        ''
+      ].join('\n')
+    );
+
+    const prevUrl = currentEnv.SWARM_MASTER_URL || '';
+    const suggestedUrl =
+      prevUrl && !prevUrl.includes('100.115.92.')
+        ? prevUrl
+        : 'http://192.168.1.168:8443';
+    const rawUrl = await ask('Phone Master IP or URL', suggestedUrl);
+    const masterUrl = normalizeMasterUrl(rawUrl, suggestedUrl);
+
+    let bootToken = '';
+    while (!bootToken) {
+      bootToken = await ask('Paste Worker Token from your Phone Master', '');
+      if (!bootToken) {
+        output.write('  (A Worker Token is required the first time this Debian Worker connects. Press Ctrl+C to cancel.)\n');
+      }
+    }
+
+    const existing = loadDotEnvFile(envFilePath).values;
+    const merged = {
+      ...existing,
+      ...currentEnv,
+      SWARM_MASTER_URL: masterUrl,
+      SWARM_BOOTSTRAP_TOKEN: bootToken
+    };
+    writeDotEnvFile(envFilePath, merged);
+    output.write(`Updated ${envFilePath} with Master URL (${masterUrl}) and Worker Token.\n\n`);
+    return { masterUrl, bootstrapToken: bootToken, envVars: merged };
+  } finally {
+    session.close();
+  }
+}
+
+/**
  * Print a compact summary of an existing `.env` configuration before launching.
  */
 function formatSavedConfigBanner(values = {}) {
-  const role = values.SWARM_LOCAL_SIM === 'true' ? 'local_sim (Master + Simulated Bots)' : (values.SWARM_ROLE || 'master');
+  const role =
+    values.SWARM_LOCAL_STANDALONE === 'true'
+      ? 'standalone (Master + Real Minecraft Bots on this machine)'
+      : values.SWARM_LOCAL_SIM === 'true'
+        ? 'local_sim (Master + Simulated Bots)'
+        : values.SWARM_ROLE || 'master';
   const server = `${values.SWARM_MC_HOST || 'thebasement-wUr4.aternos.me'}:${values.SWARM_MC_PORT || '25565'}`;
   const cracked = (values.SWARM_ENV_PROFILE || 'private_offline_test') === 'private_offline_test' ? 'yes (cracked/offline)' : 'no (Microsoft online)';
   const bots = values.SWARM_ENABLED_BOTS || values.SWARM_WORKER_BOT_COUNT || '2';
@@ -188,16 +276,22 @@ async function runSetupWizard({
 
     // 1. ROLE
     const prevRoleDefault =
-      existing.SWARM_LOCAL_SIM === 'true'
-        ? 'local_sim'
-        : existing.SWARM_ROLE === 'worker'
-          ? 'worker'
-          : 'master';
+      existing.SWARM_LOCAL_STANDALONE === 'true'
+        ? 'standalone'
+        : existing.SWARM_LOCAL_SIM === 'true'
+          ? 'local_sim'
+          : existing.SWARM_ROLE === 'worker'
+            ? 'worker'
+            : 'master';
     output.write('Step 1 — Device Role:\n');
-    output.write('  1) master    — Phone / Termux Control Centre & Web Dashboard (0 local bots)\n');
-    output.write('  2) worker    — PC / Laptop / VPS connecting real bots to Minecraft\n');
-    output.write('  3) local_sim — All-in-one Master + Simulated Bots (test without Minecraft)\n');
-    const roleRaw = await ask('1. role (1=master, 2=worker, 3=local_sim)', prevRoleDefault);
+    output.write('  1) master     — Phone / Termux Control Centre & Web Dashboard (0 local bots)\n');
+    output.write('  2) worker     — Debian / PC Worker connecting real bots to your Phone Master\n');
+    output.write('  3) local_sim  — All-in-one Master + Simulated Bots (test without Minecraft)\n');
+    output.write('  4) standalone — All-in-one Master + Real Minecraft Bots on this machine\n');
+    const roleRaw = await ask(
+      '1. role (1=master, 2=worker, 3=local_sim, 4=standalone)',
+      prevRoleDefault
+    );
     const roleChoice = pickChoice(
       roleRaw,
       {
@@ -209,12 +303,16 @@ async function runSetupWizard({
         w: 'worker',
         '3': 'local_sim',
         local_sim: 'local_sim',
-        sim: 'local_sim'
+        sim: 'local_sim',
+        '4': 'standalone',
+        standalone: 'standalone',
+        all: 'standalone'
       },
       prevRoleDefault
     );
     const actualRole = roleChoice === 'worker' ? 'worker' : 'master';
     const isLocalSim = roleChoice === 'local_sim';
+    const isLocalStandalone = roleChoice === 'standalone';
 
     // 2. SERVER
     const defaultHost = existing.SWARM_MC_HOST || 'thebasement-wUr4.aternos.me';
@@ -329,9 +427,12 @@ async function runSetupWizard({
     const defaultBackupDir = isCwdEnv ? './data/backups' : path.join(baseDir, 'data', 'backups');
 
     const envOut = {
-      ...(actualRole === 'master' ? { NODE_OPTIONS: '--max-old-space-size=256' } : {}),
+      ...(actualRole === 'master' && !isLocalStandalone
+        ? { NODE_OPTIONS: '--max-old-space-size=256' }
+        : {}),
       SWARM_ROLE: actualRole,
       SWARM_LOCAL_SIM: isLocalSim ? 'true' : 'false',
+      SWARM_LOCAL_STANDALONE: isLocalStandalone ? 'true' : 'false',
       SWARM_ENV_PROFILE: envProfile,
       SWARM_OPERATING_MODE: operatingMode,
       SWARM_PERFORMANCE_PROFILE: performanceProfile,
@@ -409,19 +510,64 @@ async function runSetupWizard({
         if (uuids) envOut.SWARM_CHAT_ALLOWED_UUIDS = uuids;
       }
       envOut.SWARM_MASTER_URL = `http://${bindIp}:${httpPort}`;
+
+      if (isLocalStandalone) {
+        const staggerMs = clampInt(
+          await ask(
+            '14. spawn_stagger_ms (Delay in ms between bots joining Aternos)',
+            existing.SWARM_SPAWN_STAGGER_MS || '4000'
+          ),
+          0,
+          60_000,
+          4000
+        );
+        envOut.SWARM_SPAWN_STAGGER_MS = String(staggerMs);
+        if (autoInstallDeps) {
+          let hasMineflayer = false;
+          try {
+            require.resolve('mineflayer');
+            hasMineflayer = true;
+          } catch {
+            hasMineflayer = false;
+          }
+          if (!hasMineflayer) {
+            const instRaw = await ask(
+              '\nMineflayer is not installed yet. Install mineflayer + mineflayer-pathfinder now? (yes/no)',
+              'yes'
+            );
+            if (isYes(instRaw, true)) {
+              output.write('Installing mineflayer + mineflayer-pathfinder...\n');
+              execFileSync('npm', ['install', '--no-save', 'mineflayer', 'mineflayer-pathfinder'], {
+                cwd: path.dirname(envFilePath),
+                stdio: 'inherit'
+              });
+            }
+          }
+        }
+      }
     } else {
-      // Worker PC setup
-      const defaultMasterUrl = existing.SWARM_MASTER_URL || `http://${lanIp}:8443`;
-      const masterUrl = await ask(
-        '\n10. master_url (Phone / Master Control Centre URL)',
+      // Worker PC / Debian setup: never default to ChromeOS Crostini's own 100.115.92.x VM NAT IP
+      const nonCrostiniLanIp = lanIp && !lanIp.startsWith('100.115.92.') ? lanIp : '192.168.1.168';
+      const defaultMasterUrl =
+        existing.SWARM_MASTER_URL && !existing.SWARM_MASTER_URL.includes('100.115.92.')
+          ? existing.SWARM_MASTER_URL
+          : `http://${nonCrostiniLanIp}:8443`;
+      const rawMasterUrl = await ask(
+        '\n10. master_url (Phone Master IP or URL, e.g. http://192.168.1.168:8443)',
         defaultMasterUrl
       );
-      const workerId = await ask('11. worker_id (Unique ID for this Worker PC)', existing.SWARM_WORKER_ID || 'worker-1');
-      const statePath = existing.SWARM_WORKER_STATE_PATH || `./data/${workerId}-state.json`;
-      const bootToken = await ask(
-        `12. bootstrap_token (Paste token from Master UI, or Enter if ${statePath} is already enrolled)`,
-        existing.SWARM_BOOTSTRAP_TOKEN || ''
+      const masterUrl = normalizeMasterUrl(rawMasterUrl, defaultMasterUrl);
+      const workerId = await ask(
+        '11. worker_id (Unique ID for this Worker PC)',
+        existing.SWARM_WORKER_ID || 'worker-1'
       );
+      const statePath = existing.SWARM_WORKER_STATE_PATH || `./data/${workerId}-state.json`;
+      const absStatePath = path.resolve(path.dirname(envFilePath), statePath);
+      const hasSavedState = fs.existsSync(absStatePath);
+      const tokenPrompt = hasSavedState
+        ? `12. bootstrap_token (Already enrolled in ${statePath} — press Enter to reuse, or paste new token)`
+        : '12. bootstrap_token (Paste "Worker Token" from your Phone Master terminal)';
+      const bootToken = await ask(tokenPrompt, existing.SWARM_BOOTSTRAP_TOKEN || '');
       const staggerMs = clampInt(
         await ask('13. spawn_stagger_ms (Delay in ms between bots joining Aternos)', existing.SWARM_SPAWN_STAGGER_MS || '4000'),
         0,
@@ -484,5 +630,7 @@ async function runSetupWizard({
 module.exports = {
   runSetupWizard,
   promptQuickStartOrEdit,
+  promptMissingWorkerEnrollment,
+  normalizeMasterUrl,
   formatSavedConfigBanner
 };
