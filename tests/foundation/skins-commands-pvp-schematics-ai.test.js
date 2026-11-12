@@ -25,31 +25,32 @@ const {
 } = require('../../src/combat/CombatAndSurvivalEngine');
 const { SchematicRegistry } = require('../../src/schematics/SchematicBuilder');
 
-test('NEXUS-SKINS: Generates valid 64x64 RGBA PNGs for Crimson Knight & Multi-Colour Leader Robes', () => {
+test('NEXUS-SKINS: Exclusively equips all bots (bot-01..bot-20) with the 64x64 Crimson Shadow Knight skin', () => {
   const sm = new SkinManager();
   const skins = sm.listSkins();
-  assert.ok(skins.length >= 12, 'At least 12 Knight & Commander Robe skins available');
+  assert.equal(skins.length, 1, 'Only the Crimson Shadow Knight skin should be registered');
+  assert.equal(skins[0].skinId, 'knight_crimson');
+  assert.equal(skins[0].archetype, 'knight');
 
-  for (const sk of skins) {
-    const png = sm.getPngBuffer(sk.skinId);
-    // PNG magic header: 89 50 4E 47 0D 0A 1A 0A
-    assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    // IHDR width=64, height=64, bitDepth=8, colorType=6 (RGBA)
-    assert.equal(png.readUInt32BE(16), 64);
-    assert.equal(png.readUInt32BE(20), 64);
-    assert.equal(png[24], 8);
-    assert.equal(png[25], 6);
-    assert.equal(sk.preview.head.length, 8);
-    assert.equal(sk.preview.body.length, 12);
+  const png = sm.getPngBuffer('knight_crimson');
+  // PNG magic header: 89 50 4E 47 0D 0A 1A 0A
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  // IHDR width=64, height=64, bitDepth=8, colorType=6 (RGBA)
+  assert.equal(png.readUInt32BE(16), 64);
+  assert.equal(png.readUInt32BE(20), 64);
+  assert.equal(png[24], 8);
+  assert.equal(png[25], 6);
+  assert.equal(skins[0].preview.head.length, 8);
+  assert.equal(skins[0].preview.body.length, 12);
+
+  // Every bot in the entire 20-bot swarm strictly wears `knight_crimson`
+  for (let i = 1; i <= 20; i += 1) {
+    const botId = `bot-${String(i).padStart(2, '0')}`;
+    const resolved = sm.resolveBotSkin(botId, i - 1);
+    assert.equal(resolved.skinId, 'knight_crimson', `${botId} must wear knight_crimson`);
+    assert.equal(resolved.archetype, 'knight');
   }
-
-  // Default hierarchy: bot-01 is Supreme Leader (Gold Robe), bot-02..05 are Crimson Shadow Knights
-  const leader = sm.resolveBotSkin('bot-01', 0);
-  const soldier = sm.resolveBotSkin('bot-02', 1);
-  assert.equal(leader.archetype, 'robe');
-  assert.equal(leader.isLeader, true);
-  assert.equal(soldier.skinId, 'knight_crimson');
-  assert.equal(soldier.isLeader, false);
+  assert.equal(sm.isValidSkinId('robe_gold'), false);
 });
 
 test('NEXUS-ZERO-AI: All 1,370+ catalog commands & natural user phrases resolve with 0 LLM calls and valid TaskPlanV1', () => {

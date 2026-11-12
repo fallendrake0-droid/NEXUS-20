@@ -843,7 +843,7 @@ class MasterHttpServer {
       return;
     }
 
-    // Custom Knight & Commander Robe Skins (`/api/v1/skins`)
+    // Crimson Shadow Knight Skin (`/api/v1/skins`)
     if (method === 'GET' && pathname === '/api/v1/skins') {
       const skins = await this._coordinator.listSkins({ actor });
       this._sendJson(res, 200, skins);

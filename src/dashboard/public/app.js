@@ -903,14 +903,14 @@
       for (const sk of skinsRes.skins || []) {
         state.skinsById[sk.skinId] = sk;
         const card = document.createElement('div');
-        card.className = 'skin-card ' + (sk.archetype === 'robe' ? 'skin-card-leader' : 'skin-card-knight');
+        card.className = 'skin-card skin-card-knight';
 
         const badge = document.createElement('span');
-        badge.className = 'badge ' + (sk.archetype === 'robe' ? 'badge-leader' : 'badge-knight');
+        badge.className = 'badge badge-knight';
         badge.textContent = sk.badge;
         card.appendChild(badge);
 
-        card.appendChild(createSkinFullCanvas(sk.preview, 4));
+        card.appendChild(createSkinFullCanvas(sk.preview, 5));
 
         const title = document.createElement('div');
         title.className = 'command-card-title';
@@ -932,11 +932,11 @@
 
         const applyAllBtn = document.createElement('button');
         applyAllBtn.type = 'button';
-        applyAllBtn.className = 'btn small primary';
-        applyAllBtn.textContent = 'Set All Bots';
+        applyAllBtn.className = 'btn small accent-red';
+        applyAllBtn.textContent = 'Apply to All Bots';
         applyAllBtn.onclick = async () => {
-          await api('/api/v1/skins/assign', { method: 'POST', body: { botId: '*', skinId: sk.skinId } });
-          showToast('Assigned ' + sk.name + ' across swarm');
+          await api('/api/v1/skins/assign', { method: 'POST', body: { botId: '*', skinId: 'knight_crimson' } });
+          showToast('Synced Crimson Shadow Knight skin across entire swarm');
           refreshSkinsAndSchematics();
           refreshStatusAndTasks();
         };
@@ -953,7 +953,7 @@
       const botSkins = skinsRes.botSkins || [];
       if (botSkins.length === 0) {
         const tr = document.createElement('tr');
-        const td = tdText('Enroll a WorkerHost to customize individual bot Knight / Leader Robe skins.');
+        const td = tdText('Enroll a WorkerHost to see active Crimson Shadow Knight bots.');
         td.colSpan = 5;
         td.className = 'muted';
         tr.appendChild(td);
@@ -971,33 +971,29 @@
 
           const rankTd = document.createElement('td');
           const rb = document.createElement('span');
-          rb.className = 'badge ' + (bs.skin.isLeader ? 'badge-leader' : 'badge-knight');
-          rb.textContent = bs.skin.isLeader ? 'LEADER ROBE' : 'SHADOW KNIGHT';
+          rb.className = 'badge badge-knight';
+          rb.textContent = 'CRIMSON KNIGHT';
           rankTd.appendChild(rb);
           tr.appendChild(rankTd);
 
           tr.appendChild(tdText(bs.skin.name));
 
-          const selTd = document.createElement('td');
-          const sel = document.createElement('select');
-          for (const sk of skinsRes.skins || []) {
-            const opt = document.createElement('option');
-            opt.value = sk.skinId;
-            opt.textContent = sk.name;
-            if (sk.skinId === bs.skin.skinId) opt.selected = true;
-            sel.appendChild(opt);
-          }
-          sel.onchange = async () => {
+          const syncTd = document.createElement('td');
+          const syncBtn = document.createElement('button');
+          syncBtn.type = 'button';
+          syncBtn.className = 'btn small ghost';
+          syncBtn.textContent = 'Re-Sync Skin';
+          syncBtn.onclick = async () => {
             await api('/api/v1/skins/assign', {
               method: 'POST',
-              body: { botId: bs.botId, skinId: sel.value }
+              body: { botId: bs.botId, skinId: 'knight_crimson' }
             });
-            showToast('Updated ' + bs.username + ' skin -> ' + sel.value);
+            showToast('Re-synced Crimson Shadow Knight skin -> ' + bs.username);
             refreshSkinsAndSchematics();
             refreshStatusAndTasks();
           };
-          selTd.appendChild(sel);
-          tr.appendChild(selTd);
+          syncTd.appendChild(syncBtn);
+          tr.appendChild(syncTd);
           bsBody.appendChild(tr);
         }
       }
