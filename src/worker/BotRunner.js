@@ -328,6 +328,117 @@ const BLOCK_SOURCES_BY_ITEM = Object.freeze({
   lapis_lazuli: ['lapis_ore', 'deepslate_lapis_ore']
 });
 
+function flattenMotd(desc) {
+  if (!desc) return '';
+  if (typeof desc === 'string') return desc.replace(/§[0-9a-fk-or]/gi, '').trim();
+  if (typeof desc === 'object') {
+    let out = typeof desc.text === 'string' ? desc.text : '';
+    if (Array.isArray(desc.extra)) {
+      out += desc.extra.map((item) => flattenMotd(item)).join('');
+    }
+    return out.replace(/§[0-9a-fk-or]/gi, '').trim();
+  }
+  return '';
+}
+
+/**
+ * Pre-flight Minecraft status ping that:
+ *  1) Sends the genuine virtual hostname (`bobthechickem.aternos.me`) in the Handshake packet
+ *     while letting `minecraft-protocol` resolve `_minecraft._tcp.<host>` SRV dynamically.
+ *  2) Detects Aternos Offline / Starting / Queue states (`protocol === -1`) BEFORE `autoVersion.js`
+ *     can crash with `Unsupported protocol version '-1'` / `TypeError: reading 'minecraftVersion'`.
+ *  3) Resolves an explicit supported `minecraft-data` version string when online.
+ */
+async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, requestedVersion }) {
+  const cleanHost = String(host || '127.0.0.1').trim();
+  const cleanPort = Number(port || 25565);
+
+  if (requestedVersion && requestedVersion !== 'auto') {
+    return { host: cleanHost, port: cleanPort, version: String(requestedVersion) };
+  }
+
+  if (!mp || typeof mp.ping !== 'function') {
+    return { host: cleanHost, port: cleanPort, version: false };
+  }
+
+  let pingRes;
+  try {
+    pingRes = await new Promise((resolve, reject) => {
+      let done = false;
+      const t = setTimeout(() => {
+        if (done) return;
+        done = true;
+        reject(new Error(`Server ${cleanHost} did not respond within 6s (offline or waking up)`));
+      }, 6_000);
+
+      mp.ping({ host: cleanHost, port: cleanPort, closeTimeout: 4_500 }, (err, res) => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        if (err) reject(err);
+        else resolve(res);
+      });
+    });
+  } catch (err) {
+    const code = err?.code || '';
+    if (code === 'ENOTFOUND') {
+      throw new Error(`Server address "${cleanHost}" was not found in DNS — check spelling in Step 2`);
+    }
+    if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE') {
+      throw new Error(`Server "${cleanHost}" is currently offline or starting up (${code})`);
+    }
+    throw new Error(`Server "${cleanHost}" is unreachable (${err?.message || 'offline'})`);
+  }
+
+  const proto = Number(pingRes?.version?.protocol);
+  const verName = String(pingRes?.version?.name || '')
+    .replace(/§[0-9a-fk-or]/gi, '')
+    .trim();
+  const motd = flattenMotd(pingRes?.description);
+
+  if (
+    !Number.isFinite(proto) ||
+    proto <= 0 ||
+    /offline|starting|preparing|loading|queue|saving|stopping/i.test(verName) ||
+    /this server is offline/i.test(motd)
+  ) {
+    const statusLabel = verName || motd || 'Offline';
+    throw new Error(
+      `Aternos server "${cleanHost}" is "${statusLabel}" — click Start on aternos.org (bots will auto-join!)`
+    );
+  }
+
+  // Resolve exact version string supported by installed minecraft-data / mineflayer
+  const tested = Array.isArray(mineflayerMod?.testedVersions) ? mineflayerMod.testedVersions : [];
+  let resolvedVersion = null;
+
+  if (mcDataMod) {
+    const byProto = mcDataMod.postNettyVersionsByProtocolVersion?.pc?.[proto];
+    if (Array.isArray(byProto) && byProto.length > 0) {
+      const preferred =
+        byProto.find((v) => tested.includes(v.minecraftVersion)) || byProto[0];
+      if (preferred?.minecraftVersion && mcDataMod(preferred.minecraftVersion)) {
+        resolvedVersion = preferred.minecraftVersion;
+      }
+    }
+    if (!resolvedVersion) {
+      const m = verName.match(/\b(1\.\d+(?:\.\d+)?)\b/);
+      if (m && mcDataMod(m[1])) {
+        resolvedVersion = m[1];
+      }
+    }
+  }
+
+  if (!resolvedVersion) {
+    const latestTested = tested.length > 0 ? tested[tested.length - 1] : '1.21.4';
+    throw new Error(
+      `Server "${cleanHost}" is running "${verName}" (protocol ${proto}); Mineflayer supports up to ${latestTested}. Switch server version to ${latestTested} or add ViaVersion+ViaBackwards on Aternos`
+    );
+  }
+
+  return { host: cleanHost, port: cleanPort, version: resolvedVersion };
+}
+
 /**
  * Lazy real-Mineflayer BotDriver factory (loaded ONLY on WorkerHost when `simulationMode === false`).
  * Never required on the Master Controller (`G-01`).
@@ -342,6 +453,18 @@ function createMineflayerDriver(options = {}) {
       'NOT_IMPLEMENTED',
       'Package "mineflayer" is not installed on this WorkerHost. Run "npm install --no-save mineflayer mineflayer-pathfinder" on the worker device or run with SWARM_WORKER_SIMULATION=true.'
     );
+  }
+
+  let mpMod = null;
+  let mcDataMod = null;
+  try {
+    // eslint-disable-next-line global-require, import/no-unresolved
+    mpMod = require('minecraft-protocol');
+    // eslint-disable-next-line global-require, import/no-unresolved
+    mcDataMod = require('minecraft-data');
+  } catch {
+    mpMod = null;
+    mcDataMod = null;
   }
 
   let pathfinderMod = null;
@@ -447,51 +570,98 @@ function createMineflayerDriver(options = {}) {
     async connect() {
       listeners.dispose();
       listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
-      const endpoint = await resolveMinecraftSrvEndpoint(
-        options.minecraftHost,
-        options.minecraftPort ?? 25565
-      );
-      bot = mineflayer.createBot({
-        host: endpoint.host,
-        port: endpoint.port,
-        username: options.username,
-        version: options.minecraftVersion || false,
-        auth: options.authMode === 'online_microsoft' ? 'microsoft' : 'offline'
+      if (bot) {
+        try {
+          bot.quit('reconnecting');
+        } catch {
+          // ignore
+        }
+        bot = null;
+      }
+
+      const target = await probeMinecraftServer(mpMod, mcDataMod, mineflayer, {
+        host: options.minecraftHost,
+        port: options.minecraftPort ?? 25565,
+        requestedVersion: options.minecraftVersion || null
       });
 
-      if (pathfinderMod && typeof bot.loadPlugin === 'function') {
+      const currentBot = mineflayer.createBot({
+        host: target.host,
+        port: target.port,
+        fakeHost: target.host,
+        username: options.username,
+        version: target.version,
+        auth: options.authMode === 'online_microsoft' ? 'microsoft' : 'offline',
+        hideErrors: true
+      });
+      bot = currentBot;
+      currentBot.on('error', () => {});
+
+      if (pathfinderMod && typeof currentBot.loadPlugin === 'function') {
         try {
-          bot.loadPlugin(pathfinderMod.pathfinder);
+          currentBot.loadPlugin(pathfinderMod.pathfinder);
         } catch {
           // ignore duplicate load
         }
       }
 
+      const connectTimeoutMs = Math.max(3_000, Number(options.connectTimeoutMs || 25_000));
+
       await new Promise((resolve, reject) => {
-        const onSpawn = () => {
-          if (pathfinderMod && bot.pathfinder) {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try {
+            currentBot.quit('connect_timeout');
+          } catch {
+            // ignore
+          }
+          reject(new Error(`Timed out (${connectTimeoutMs}ms) joining ${target.host}`));
+        }, connectTimeoutMs);
+
+        const finishResolve = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        const finishReject = (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        };
+
+        listeners.once(currentBot, 'spawn', () => {
+          if (pathfinderMod && currentBot.pathfinder) {
             try {
-              const mv = new pathfinderMod.Movements(bot);
-              bot.pathfinder.setMovements(mv);
+              const mv = new pathfinderMod.Movements(currentBot);
+              currentBot.pathfinder.setMovements(mv);
             } catch {
               // ignore movements init error
             }
           }
           emitter.emit('spawn');
-          resolve();
-        };
-        const onErr = (err) => reject(err);
-        listeners.once(bot, 'spawn', onSpawn);
-        listeners.on(bot, 'error', onErr);
-        listeners.on(bot, 'kicked', (reason) => {
-          emitter.emit('kicked', String(reason));
+          finishResolve();
         });
-        listeners.on(bot, 'end', (reason) => {
+        listeners.on(currentBot, 'error', (err) => {
+          finishReject(err);
+        });
+        listeners.on(currentBot, 'kicked', (reason) => {
+          const cleanReason = String(reason || 'kicked').replace(/\s+/g, ' ').trim();
+          emitter.emit('kicked', cleanReason);
+          finishReject(new Error(`Kicked by server: ${cleanReason}`));
+        });
+        listeners.on(currentBot, 'end', (reason) => {
+          const cleanReason = String(reason || 'end');
           listeners.dispose();
-          emitter.emit('end', String(reason || 'end'));
+          if (bot === currentBot) bot = null;
+          emitter.emit('end', cleanReason);
+          finishReject(new Error(`Connection closed before spawn (${cleanReason})`));
         });
-        listeners.on(bot, 'chat', (username, message) => {
-          const player = bot.players && bot.players[username];
+        listeners.on(currentBot, 'chat', (username, message) => {
+          const player = currentBot.players && currentBot.players[username];
           emitter.emit('chat', {
             senderName: username,
             senderUuid: player?.uuid || null,
@@ -804,6 +974,7 @@ class BotRunner extends EventEmitter {
             ...(options.minecraftConfig || {})
           }));
 
+    this._simulationMode = Boolean(options.simulationMode || options.driver);
     this._listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
     this._activeLease = null;
     this._worldObservations = [];
@@ -879,11 +1050,15 @@ class BotRunner extends EventEmitter {
   async _attemptConnect() {
     if (this._stopped || this._connecting) return false;
     this._connecting = true;
+    const prevErr = this._lastConnectError;
     try {
       await this._driver.connect();
       this._reconnectAttempt = 0;
       this._lastConnectError = null;
       this._connecting = false;
+      if (!this._simulationMode && process.stdout?.isTTY) {
+        process.stdout.write(`  [MC] ${this.username} connected & spawned in Minecraft!\n`);
+      }
       this._logger?.info('Bot connected and spawned in Minecraft', {
         botId: this.botId,
         username: this.username
@@ -898,6 +1073,9 @@ class BotRunner extends EventEmitter {
       this._connecting = false;
       const reason = String(err?.message || err || 'connect_failed').slice(0, 180);
       this._lastConnectError = reason;
+      if (!this._simulationMode && process.stdout?.isTTY && reason !== prevErr) {
+        process.stdout.write(`  [MC] ${this.username}: ${reason}\n`);
+      }
       this._logger?.warn('Bot could not connect to Minecraft yet; will retry automatically', {
         botId: this.botId,
         username: this.username,
