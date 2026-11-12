@@ -218,30 +218,37 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
     resolveUnifiedCommandExecution
   } = require('./src/commands/CommandCompleter');
 
-  const actor = { id: 'cli:tty', username: 'cli-admin', role: 'admin' };
-  const getCtx = () => {
+  const actor = { principalId: 'cli:tty', username: 'cli-admin', role: 'admin' };
+  let autocompleteContext = { bots: [], players: [] };
+  const refreshAutocompleteContext = async () => {
     try {
-      const snap = master.coordinator.getStatusSnapshot?.() || {};
-      const bots = Array.isArray(snap.bots)
-        ? snap.bots.map((b) => b.botId || b.username).filter(Boolean)
-        : [];
-      const players = Array.isArray(snap.observedPlayers)
-        ? snap.observedPlayers.filter((p) => !p.isSwarmBot && p.username).map((p) => p.username)
-        : [];
-      return { bots, players };
+      const [playersRes, bots] = await Promise.all([
+        master.coordinator.listServerPlayers({ actor }),
+        Promise.resolve(master.botRegistry.listBots())
+      ]);
+      autocompleteContext = {
+        bots: bots.map((b) => b.botId || b.username).filter(Boolean),
+        players: (playersRes.players || [])
+          .filter((p) => !p.isSwarmBot && p.username)
+          .map((p) => p.username)
+      };
     } catch {
-      return {};
+      // Retain the last successful snapshot; the CLI completer itself has safe fallbacks.
     }
   };
+  const contextRefreshTimer = setInterval(refreshAutocompleteContext, 5000);
+  contextRefreshTimer.unref?.();
+  void refreshAutocompleteContext();
 
   const rl = readline.createInterface({
     input: stdin,
     output: stdout,
-    completer: createReadlineCompleter(getCtx),
-    prompt: 'nexus / > ',
+    completer: createReadlineCompleter(() => autocompleteContext),
+    prompt: 'nexus> ',
     historySize: 100
   });
 
+  rl.on('close', () => clearInterval(contextRefreshTimer));
   rl.on('SIGINT', () => {
     rl.close();
     onQuit('SIGINT');
@@ -261,13 +268,13 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
     if (trimmed === 'help' || trimmed === '/help' || trimmed === '?') {
       stdout.write(
         '  Commands (press [Tab] after any word to auto-complete!):\n' +
-          '    /mine <ore_or_block> [count]   /collect <resource> [count]\n' +
-          '    /craft <item> [count]          /smelt <item> [count]\n' +
-          '    /kit <progression_kit>         /build <schematic> [bot]\n' +
-          '    /kill <player> [weapon] [bot]  /follow <player>  /protect <player>\n' +
-          '    /surround <player>             /drop <player> [item]  /hunt\n' +
-          '    /skin sync                     /mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>\n' +
-          '    /botcap <1..20>                /stop             quit\n'
+          '    mine <ore_or_block> [count]     collect <resource> [count]\n' +
+          '    craft <item> [count]            smelt <item> [count]\n' +
+          '    kit <progression_kit>           build <schematic> [bot]\n' +
+          '    kill <player> [weapon] [bot]    follow <player>  protect <player>\n' +
+          '    surround <player>               drop <player> [item]  hunt\n' +
+          '    skin sync                       mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>\n' +
+          '    botcap <1..20>                  stop              quit\n'
       );
       rl.prompt();
       return;
@@ -724,7 +731,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
         `  Control Centre: ${uiUrl}`,
         `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (MC ${config.worker.minecraftVersion}, ${config.envProfile === 'private_offline_test' ? 'Cracked/Offline' : 'Microsoft Online'})`,
         tokenLine,
-        '  Command Bar   : Type / + press [Tab] below (or in the Web UI) to autocomplete commands!',
+        '  Command Bar   : Type a command and press [Tab] below (or in the Web UI) to autocomplete!',
         '  (Press Ctrl+C to stop cleanly)',
         '============================================================',
         ''

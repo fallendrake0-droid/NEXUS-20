@@ -42,7 +42,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
    npm start
    ```
 
-   The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus / >` prompt. Type a slash command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly).
+   The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus>` prompt. Type a command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly).
 
    For the dashboard to be reachable from another device on your Wi-Fi, configure the Master bind host as `0.0.0.0`, allow the chosen port through the host firewall, and open `http://<phone-LAN-IP>:<port>` from the other device. Only expose the Control Centre to trusted networks; use the project's TLS/reverse-proxy options for public access.
 
@@ -81,7 +81,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
    npm start
    ```
 
-   Select **Master** in setup. `npm start` opens the Control Centre and, in a real interactive terminal, the `nexus / >` command prompt. `node index.js console` is an explicit alias for launching the Master with the interactive command prompt. Use **Tab** for Minecraft-style command completion, **Shift+Tab** to cycle backwards, arrow keys to browse, and Enter to run. `help` lists examples; `quit` cleanly stops the Master.
+   Select **Master** in setup. `npm start` opens the Control Centre and, in a real interactive terminal, the `nexus>` command prompt. `node index.js console` is an explicit alias for launching the Master with the interactive command prompt. Use **Tab** for Minecraft-style command completion, **Shift+Tab** to cycle backwards, arrow keys to browse, and Enter to run. `help` lists examples; `quit` cleanly stops the Master.
 
 4. To host the Control Centre on a LAN, set the Master bind host to `0.0.0.0`, open the configured port in your firewall, and browse to `http://<linux-host-LAN-IP>:<port>`. Keep it behind an authenticated, trusted network or a correctly configured TLS reverse proxy; do not expose an unauthenticated/plain-HTTP instance to the public internet.
 
@@ -92,19 +92,19 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 Use the Web Control Centre's always-visible command bar, or the interactive Master terminal:
 
 ```text
-/mine diamond 64
-/collect oak_log 64
-/craft diamond_pickaxe 1
-/smelt iron_ingot 32
-/kit full_iron_kit
-/build watchtower
-/kill Steve mace
-/follow Steve
-/mode HYBRID
-/stop
+mine diamond 64
+collect oak_log 64
+craft diamond_pickaxe 1
+smelt iron_ingot 32
+kit full_iron_kit
+build watchtower
+kill Steve mace
+follow Steve
+mode HYBRID
+stop
 ```
 
-Press Tab after a partial token—for example `/mi`, `/mine di`, or `/kill Steve ma`. Tab inserts a suggested token; repeated Tab cycles matches, and adding a space advances to suggestions for the next argument. In the web interface the visible `⇥ Tab` button provides the same completion for touch devices. Commands that are not one of the direct slash actions are submitted to the deterministic Zero-AI/task intent engine.
+Press Tab after a partial token—for example `mi`, `mine di`, or `kill Steve ma`. Tab inserts a suggested token; repeated Tab cycles matches, and adding a space advances to suggestions for the next argument. In the web interface the visible `⇥ Tab` button provides the same completion for touch devices. Commands that are not one of the direct command actions are submitted to the deterministic Zero-AI/task intent engine. Enter commands exactly as shown, without a leading slash.
 
 ## Non-interactive / service launch
 

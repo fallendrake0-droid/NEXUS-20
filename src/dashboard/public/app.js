@@ -1446,28 +1446,28 @@
   // =========================================================================
   const FALLBACK_AUTOCOMPLETE_DICT = {
     rootCommands: [
-      { name: 'mine', syntax: '/mine <ore_or_block> [count]', category: 'mining', description: 'Mine ores or stone across swarm', hasArgs: true },
-      { name: 'collect', syntax: '/collect <resource> [count]', category: 'gathering', description: 'Gather logs, crops or drops', hasArgs: true },
-      { name: 'craft', syntax: '/craft <item> [count]', category: 'crafting', description: 'Auto-craft tools, mace, spears & armor', hasArgs: true },
-      { name: 'smelt', syntax: '/smelt <item> [count]', category: 'smelting', description: 'Smelt ores or cook food in furnace', hasArgs: true },
-      { name: 'kit', syntax: '/kit <progression_kit>', category: 'progression', description: 'Run full DAG kit (stone_tools, full_iron_kit, mace_pvp_kit...)', hasArgs: true },
-      { name: 'build', syntax: '/build <schematic> [bot]', category: 'schematics', description: 'Construct 3D schematic blueprint', hasArgs: true },
-      { name: 'kill', syntax: '/kill <player> [weapon] [bot]', category: 'pvp', description: 'Elite PvP attack on player', hasArgs: true },
-      { name: 'follow', syntax: '/follow <player> [bot]', category: 'players', description: 'Escort & follow player', hasArgs: true },
-      { name: 'protect', syntax: '/protect <player> [bot]', category: 'players', description: 'Bodyguard player & kill threats', hasArgs: true },
-      { name: 'surround', syntax: '/surround <player> [bot]', category: 'players', description: '360 knight shield ring around player', hasArgs: true },
-      { name: 'drop', syntax: '/drop <player> [item|all] [bot]', category: 'players', description: 'Walk to player and drop loot', hasArgs: true },
-      { name: 'hunt', syntax: '/hunt [bot]', category: 'pvp', description: 'Hunt nearby hostile mobs', hasArgs: true },
-      { name: 'ally', syntax: '/ally <player>', category: 'players', description: 'Mark player as trusted ally', hasArgs: true },
-      { name: 'kos', syntax: '/kos <player>', category: 'pvp', description: 'Mark player Kill-On-Sight', hasArgs: true },
-      { name: 'explore', syntax: '/explore <sector>', category: 'exploration', description: 'Scout & map sectors in parallel', hasArgs: true },
-      { name: 'guard', syntax: '/guard <perimeter>', category: 'defense', description: 'Patrol & defend perimeter', hasArgs: true },
-      { name: 'deposit', syntax: '/deposit <item> [count]', category: 'logistics', description: 'Deposit items into storage chest', hasArgs: true },
-      { name: 'skin', syntax: '/skin sync [bot]', category: 'skins', description: 'Sync Crimson Shadow Knight skin', hasArgs: true },
-      { name: 'mode', syntax: '/mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>', category: 'swarm', description: 'Switch swarm operating mode', hasArgs: true },
-      { name: 'profile', syntax: '/profile <BALANCED|PERFORMANCE|MAXIMUM_THROUGHPUT|LOW|ULTRA_LOW>', category: 'swarm', description: 'Switch performance profile', hasArgs: true },
-      { name: 'botcap', syntax: '/botcap <1..20>', category: 'swarm', description: 'Set active swarm bot cap', hasArgs: true },
-      { name: 'stop', syntax: '/stop', category: 'swarm', description: 'Emergency stop & ceasefire all bots', hasArgs: false }
+      { name: 'mine', syntax: 'mine <ore_or_block> [count]', category: 'mining', description: 'Mine ores or stone across swarm', hasArgs: true },
+      { name: 'collect', syntax: 'collect <resource> [count]', category: 'gathering', description: 'Gather logs, crops or drops', hasArgs: true },
+      { name: 'craft', syntax: 'craft <item> [count]', category: 'crafting', description: 'Auto-craft tools, mace, spears & armor', hasArgs: true },
+      { name: 'smelt', syntax: 'smelt <item> [count]', category: 'smelting', description: 'Smelt ores or cook food in furnace', hasArgs: true },
+      { name: 'kit', syntax: 'kit <progression_kit>', category: 'progression', description: 'Run full DAG kit (stone_tools, full_iron_kit, mace_pvp_kit...)', hasArgs: true },
+      { name: 'build', syntax: 'build <schematic> [bot]', category: 'schematics', description: 'Construct 3D schematic blueprint', hasArgs: true },
+      { name: 'kill', syntax: 'kill <player> [weapon] [bot]', category: 'pvp', description: 'Elite PvP attack on player', hasArgs: true },
+      { name: 'follow', syntax: 'follow <player> [bot]', category: 'players', description: 'Escort & follow player', hasArgs: true },
+      { name: 'protect', syntax: 'protect <player> [bot]', category: 'players', description: 'Bodyguard player & kill threats', hasArgs: true },
+      { name: 'surround', syntax: 'surround <player> [bot]', category: 'players', description: '360 knight shield ring around player', hasArgs: true },
+      { name: 'drop', syntax: 'drop <player> [item|all] [bot]', category: 'players', description: 'Walk to player and drop loot', hasArgs: true },
+      { name: 'hunt', syntax: 'hunt [bot]', category: 'pvp', description: 'Hunt nearby hostile mobs', hasArgs: true },
+      { name: 'ally', syntax: 'ally <player>', category: 'players', description: 'Mark player as trusted ally', hasArgs: true },
+      { name: 'kos', syntax: 'kos <player>', category: 'pvp', description: 'Mark player Kill-On-Sight', hasArgs: true },
+      { name: 'explore', syntax: 'explore <sector>', category: 'exploration', description: 'Scout & map sectors in parallel', hasArgs: true },
+      { name: 'guard', syntax: 'guard <perimeter>', category: 'defense', description: 'Patrol & defend perimeter', hasArgs: true },
+      { name: 'deposit', syntax: 'deposit <item> [count]', category: 'logistics', description: 'Deposit items into storage chest', hasArgs: true },
+      { name: 'skin', syntax: 'skin sync [bot]', category: 'skins', description: 'Sync Crimson Shadow Knight skin', hasArgs: true },
+      { name: 'mode', syntax: 'mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>', category: 'swarm', description: 'Switch swarm operating mode', hasArgs: true },
+      { name: 'profile', syntax: 'profile <BALANCED|PERFORMANCE|MAXIMUM_THROUGHPUT|LOW|ULTRA_LOW>', category: 'swarm', description: 'Switch performance profile', hasArgs: true },
+      { name: 'botcap', syntax: 'botcap <1..20>', category: 'swarm', description: 'Set active swarm bot cap', hasArgs: true },
+      { name: 'stop', syntax: 'stop', category: 'swarm', description: 'Emergency stop & ceasefire all bots', hasArgs: false }
     ],
     mineTargets: ['diamond', 'raw_iron', 'cobblestone', 'coal', 'raw_gold', 'ancient_debris', 'obsidian', 'redstone', 'emerald', 'raw_copper', 'lapis_lazuli', 'quartz'],
     collectTargets: ['oak_log', 'spruce_log', 'birch_log', 'dark_oak_log', 'cobblestone', 'sand', 'gravel', 'flint', 'wheat', 'carrot', 'potato', 'leather', 'blaze_rod', 'ender_pearl'],
@@ -1570,7 +1570,7 @@
         entry(c.name, c.syntax + ' — ' + c.description, c.category, c.hasArgs)
       );
       return {
-        syntaxHint: '/<command> <args...>  (Press Tab to auto-fill next word)',
+        syntaxHint: '<command> <args...>  (Press Tab to auto-fill next word)',
         activeToken,
         suggestions: rankMatches(roots, activeToken, limit)
       };
@@ -1578,7 +1578,7 @@
 
     const verb = (priorTokens[0] || '').toLowerCase();
     const rootMeta = (dict.rootCommands || []).find((c) => c.name === verb);
-    const syntaxHint = rootMeta ? rootMeta.syntax : ('/' + verb + ' ...');
+    const syntaxHint = rootMeta ? rootMeta.syntax : (verb + ' ...');
 
     const botPool = [entry('*', 'Entire Swarm (All Bots)', 'bots', false)].concat(
       (dict.bots || []).map((b) => entry(b, 'Target swarm bot', 'bots', false))
@@ -1856,6 +1856,8 @@
     let selectedIndex = 0;
     let isPopupOpen = false;
     let tabCycleSnapshot = null;
+    let suggestionRequestId = 0;
+    let suggestionRequestTimer = null;
 
     function updateGhost() {
       if (!ghostTypedEl || !ghostRestEl) return;
@@ -1880,6 +1882,8 @@
     }
 
     function closePopup() {
+      suggestionRequestId += 1;
+      clearTimeout(suggestionRequestTimer);
       isPopupOpen = false;
       tabCycleSnapshot = null;
       popupEl.classList.add('hidden');
@@ -1944,12 +1948,57 @@
     }
 
     function recomputeAndOpen() {
-      const res = computeBrigadierSuggestions(inputEl.value, 10);
+      let res;
+      if (options.playerOnly) {
+        const q = inputEl.value.trim().toLowerCase();
+        const livePlayers = state.autocompleteDict?.players;
+        const players = Array.isArray(livePlayers) && livePlayers.length > 0
+          ? livePlayers
+          : ['Steve', 'Alex'];
+        res = {
+          syntaxHint: 'Online players',
+          suggestions: players
+            .filter((name) => !q || name.toLowerCase().startsWith(q))
+            .slice(0, 10)
+            .map((name) => ({
+              token: name,
+              applyValue: name,
+              cycleValue: name,
+              description: 'Online Minecraft player',
+              category: 'players',
+              hasNextArg: false
+            }))
+        };
+      } else {
+        res = computeBrigadierSuggestions(inputEl.value, 10);
+      }
       currentSuggestions = res.suggestions || [];
       currentSyntaxHint = res.syntaxHint || '';
       selectedIndex = 0;
       isPopupOpen = currentSuggestions.length > 0;
       renderPopup();
+
+      // Freeform Zero-AI / AI Brain phrases are indexed on the Master (1,370+
+      // catalog entries). Query the same completion API when the fast local
+      // Brigadier tree has no match, and ignore stale responses while typing.
+      const requestId = ++suggestionRequestId;
+      clearTimeout(suggestionRequestTimer);
+      const query = inputEl.value.trim();
+      if (!options.playerOnly && currentSuggestions.length === 0 && query.length > 1) {
+        suggestionRequestTimer = setTimeout(() => {
+          suggestionRequestTimer = null;
+          api('/api/v1/commands/autocomplete?q=' + encodeURIComponent(query) + '&limit=10')
+            .then((remote) => {
+              if (requestId !== suggestionRequestId || inputEl.value.trim() !== query) return;
+              currentSuggestions = Array.isArray(remote.suggestions) ? remote.suggestions : [];
+              currentSyntaxHint = remote.syntaxHint || currentSyntaxHint;
+              selectedIndex = 0;
+              isPopupOpen = currentSuggestions.length > 0;
+              renderPopup();
+            })
+            .catch(() => {});
+        }, 100);
+      }
     }
 
     function applyTabCompletion(reverse) {
@@ -2103,22 +2152,6 @@
       await executeUnifiedCommand(val);
     });
   }
-
-  // Minecraft-style "/" hotkey anywhere in the Control Centre opens the command bar immediately
-  document.addEventListener('keydown', (ev) => {
-    if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-    const tag = (document.activeElement && document.activeElement.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    const shell = el('app-shell');
-    if (!shell || shell.classList.contains('hidden')) return;
-    const cmdInput = el('mc-cmd-input');
-    if (cmdInput) {
-      ev.preventDefault();
-      cmdInput.value = '/';
-      cmdInput.focus();
-      cmdInput.dispatchEvent(new Event('input'));
-    }
-  });
 
   // Page Visibility API integration for SSE background throttling
   document.addEventListener('visibilitychange', () => {

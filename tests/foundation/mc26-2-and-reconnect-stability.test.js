@@ -277,57 +277,75 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     await runner.stop();
   });
 
-  it('MC26-05: Minecraft Brigadier Tab autocomplete & slash commands work end-to-end across Web UI, API & CLI', async () => {
+  it('MC26-05: Minecraft Brigadier Tab autocomplete & slash-free commands work end-to-end across Web UI, API & CLI', async () => {
     const ctx = {
       players: ['DragonSlayer', 'Alex'],
       bots: ['bot-01', 'bot-02']
     };
 
-    // 1. Step-by-step Brigadier Tab progression: `/mi` -> `/mine ` -> `/mine di` -> `/mine diamond ` -> `64`
-    const step1 = getBrigadierCompletions('/mi', ctx);
+    // 1. Step-by-step Brigadier Tab progression: `mi` -> `mine ` -> `mine di` -> `mine diamond ` -> `64`
+    const step1 = getBrigadierCompletions('mi', ctx);
     assert.equal(step1.suggestions[0].token, 'mine');
-    assert.equal(step1.suggestions[0].applyValue, '/mine ');
+    assert.equal(step1.suggestions[0].applyValue, 'mine ');
 
-    const step2 = getBrigadierCompletions('/mine di', ctx);
+    const slashCompat = getBrigadierCompletions('/mine di', ctx);
+    assert.equal(slashCompat.suggestions[0].applyValue, '/mine diamond ');
+
+    const step2 = getBrigadierCompletions('mine di', ctx);
     assert.equal(step2.suggestions[0].token, 'diamond');
-    assert.equal(step2.suggestions[0].applyValue, '/mine diamond ');
+    assert.equal(step2.suggestions[0].applyValue, 'mine diamond ');
 
-    const step3 = getBrigadierCompletions('/mine diamond ', ctx);
+    const step3 = getBrigadierCompletions('mine diamond ', ctx);
     assert.equal(step3.suggestions[0].token, '64');
-    assert.equal(step3.suggestions[0].applyValue, '/mine diamond 64');
+    assert.equal(step3.suggestions[0].applyValue, 'mine diamond 64');
 
     // 2. PvP & Schematic & Kit Brigadier suggestions
-    const pvp1 = getBrigadierCompletions('/kill ', ctx);
+    const pvp1 = getBrigadierCompletions('kill ', ctx);
     assert.equal(pvp1.suggestions[0].token, 'DragonSlayer');
-    const pvp2 = getBrigadierCompletions('/kill DragonSlayer ma', ctx);
+    const pvp2 = getBrigadierCompletions('kill DragonSlayer ma', ctx);
     assert.equal(pvp2.suggestions[0].token, 'mace');
-    assert.equal(pvp2.suggestions[0].applyValue, '/kill DragonSlayer mace ');
+    assert.equal(pvp2.suggestions[0].applyValue, 'kill DragonSlayer mace ');
 
-    const build1 = getBrigadierCompletions('/build wa', ctx);
+    const build1 = getBrigadierCompletions('build wa', ctx);
     assert.equal(build1.suggestions[0].token, 'watchtower');
 
-    const kit1 = getBrigadierCompletions('/kit full', ctx);
+    const kit1 = getBrigadierCompletions('kit full', ctx);
     assert.equal(kit1.suggestions[0].token, 'full_iron_kit');
 
     // 3. Readline completer for Termux / Linux terminal
     const rlCompleter = createReadlineCompleter(() => ctx);
-    const [hits] = rlCompleter('/mi');
-    assert.deepEqual(hits, ['/mine ']);
+    const [hits] = rlCompleter('mi');
+    assert.deepEqual(hits, ['mine ']);
+
+    const cycleCompleter = createReadlineCompleter(() => ctx);
+    const [cycleOne] = cycleCompleter('k');
+    const [cycleTwo] = cycleCompleter(cycleOne[0]);
+    const [cycleThree] = cycleCompleter(cycleTwo[0]);
+    assert.deepEqual([cycleOne[0], cycleTwo[0], cycleThree[0]], ['kit', 'kill', 'kos']);
 
     // 4. Unified command execution & Minecraft `<verb> <item> <count>` Zero-AI parsing
-    const killExec = resolveUnifiedCommandExecution('/kill DragonSlayer mace bot-01');
+    const killExec = resolveUnifiedCommandExecution('kill DragonSlayer mace bot-01');
     assert.equal(killExec.type, 'player_action');
     assert.equal(killExec.payload.mode, 'attack_player');
     assert.equal(killExec.payload.targetPlayer, 'DragonSlayer');
     assert.equal(killExec.payload.preferredWeaponStyle, 'mace');
     assert.equal(killExec.payload.botId, 'bot-01');
 
-    const minePlan = parseExtendedZeroAiIntent('/mine diamond 64');
-    assert.ok(minePlan && minePlan.objectives.length === 1);
-    assert.equal(minePlan.objectives[0].target.resourceId, 'minecraft:diamond');
-    assert.equal(minePlan.objectives[0].target.quantity, 64);
+    const slashFreePlans = [
+      ['mine diamond 64', 'minecraft:diamond', 64],
+      ['collect oak_log 64', 'minecraft:oak_log', 64],
+      ['craft diamond_pickaxe 1', 'minecraft:diamond_pickaxe', 1],
+      ['smelt iron_ingot 32', 'minecraft:iron_ingot', 32],
+      ['deposit cobblestone 64', 'minecraft:cobblestone', 64]
+    ];
+    for (const [text, resourceId, quantity] of slashFreePlans) {
+      const plan = parseExtendedZeroAiIntent(text);
+      assert.ok(plan && plan.objectives.length === 1, `${text} should parse as one deterministic objective`);
+      assert.equal(plan.objectives[0].target.resourceId, resourceId, `${text} resource`);
+      assert.equal(plan.objectives[0].target.quantity, quantity, `${text} quantity`);
+    }
 
-    const kitPlan = parseExtendedZeroAiIntent('/kit full_iron_kit');
+    const kitPlan = parseExtendedZeroAiIntent('kit full_iron_kit');
     assert.ok(kitPlan && kitPlan.objectives.length >= 10);
 
     // 5. Live HTTP `/api/v1/commands/autocomplete` endpoint
@@ -356,13 +374,27 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
       const bodyDict = await resDict.json();
       assert.ok(Array.isArray(bodyDict.dictionary.rootCommands) && bodyDict.dictionary.rootCommands.length >= 20);
 
+      const resRoot = await fetch(
+        `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('mi')}`,
+        { headers: { Authorization: `Bearer ${cliToken}` } }
+      );
+      const bodyRoot = await resRoot.json();
+      assert.equal(bodyRoot.suggestions[0].applyValue, 'mine ');
+
+      const resCatalog = await fetch(
+        `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('wooden')}`,
+        { headers: { Authorization: `Bearer ${cliToken}` } }
+      );
+      const bodyCatalog = await resCatalog.json();
+      assert.equal(bodyCatalog.suggestions[0].applyValue, 'get wooden tools');
+
       const resQuery = await fetch(
-        `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('/mine di')}`,
+        `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('mine di')}`,
         { headers: { Authorization: `Bearer ${cliToken}` } }
       );
       assert.equal(resQuery.status, 200);
       const bodyQuery = await resQuery.json();
-      assert.equal(bodyQuery.suggestions[0].applyValue, '/mine diamond ');
+      assert.equal(bodyQuery.suggestions[0].applyValue, 'mine diamond ');
     } finally {
       await master.stop();
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -11,7 +11,7 @@ const {
  * NEXUS-20 Minecraft Brigadier-Style Command Tree & Tab-Autocomplete Engine (`src/commands/CommandCompleter.js`).
  *
  * Provides instant Minecraft-style token-by-token `Tab` suggestions for:
- *  - Web Control Centre Command Bars (Global `/command` bar, Zero-AI bar, Intent Brain bar, PvP player bar)
+ *  - Web Control Centre Command Bars (Global command bar, Zero-AI bar, Intent Brain bar, PvP player bar)
  *  - Interactive Termux / Linux CLI Console (`readline` `completer`)
  *  - HTTP Endpoint (`GET /api/v1/commands/autocomplete`)
  */
@@ -19,154 +19,154 @@ const {
 const ROOT_COMMANDS = Object.freeze([
   {
     name: 'mine',
-    syntax: '/mine <ore_or_block> [count]',
+    syntax: 'mine <ore_or_block> [count]',
     category: 'mining',
-    description: 'Mine ores or stone across the swarm (e.g. /mine diamond 64)',
+    description: 'Mine ores or stone across the swarm (e.g. mine diamond 64)',
     hasArgs: true
   },
   {
     name: 'collect',
-    syntax: '/collect <resource> [count]',
+    syntax: 'collect <resource> [count]',
     category: 'gathering',
-    description: 'Gather logs, blocks, crops or drops (e.g. /collect oak_log 64)',
+    description: 'Gather logs, blocks, crops or drops (e.g. collect oak_log 64)',
     hasArgs: true
   },
   {
     name: 'craft',
-    syntax: '/craft <item> [count]',
+    syntax: 'craft <item> [count]',
     category: 'crafting',
-    description: 'Auto-craft tools, weapons, mace, spears & armor (e.g. /craft diamond_pickaxe 1)',
+    description: 'Auto-craft tools, weapons, mace, spears & armor (e.g. craft diamond_pickaxe 1)',
     hasArgs: true
   },
   {
     name: 'smelt',
-    syntax: '/smelt <item> [count]',
+    syntax: 'smelt <item> [count]',
     category: 'smelting',
-    description: 'Smelt ores or cook food in nearby furnace (e.g. /smelt iron_ingot 32)',
+    description: 'Smelt ores or cook food in nearby furnace (e.g. smelt iron_ingot 32)',
     hasArgs: true
   },
   {
     name: 'kit',
-    syntax: '/kit <progression_kit>',
+    syntax: 'kit <progression_kit>',
     category: 'progression',
     description: 'Run full multi-step progression DAG (stone_tools, full_iron_kit, mace_pvp_kit...)',
     hasArgs: true
   },
   {
     name: 'build',
-    syntax: '/build <schematic> [bot]',
+    syntax: 'build <schematic> [bot]',
     category: 'schematics',
     description: 'Construct any 3D schematic blueprint bottom-up (watchtower, castle_keep...)',
     hasArgs: true
   },
   {
     name: 'kill',
-    syntax: '/kill <player> [weapon] [bot]',
+    syntax: 'kill <player> [weapon] [bot]',
     category: 'pvp',
     description: 'Elite PvP attack on player (auto, mace, spear, axe, sword, bow)',
     hasArgs: true
   },
   {
     name: 'follow',
-    syntax: '/follow <player> [bot]',
+    syntax: 'follow <player> [bot]',
     category: 'players',
     description: 'Escort & follow target player on the server',
     hasArgs: true
   },
   {
     name: 'protect',
-    syntax: '/protect <player> [bot]',
+    syntax: 'protect <player> [bot]',
     category: 'players',
     description: 'Bodyguard player & eliminate nearby hostile threats',
     hasArgs: true
   },
   {
     name: 'surround',
-    syntax: '/surround <player> [bot]',
+    syntax: 'surround <player> [bot]',
     category: 'players',
     description: 'Form 360° defensive knight shield ring around player',
     hasArgs: true
   },
   {
     name: 'drop',
-    syntax: '/drop <player> [item|all] [bot]',
+    syntax: 'drop <player> [item|all] [bot]',
     category: 'players',
     description: 'Walk to player and toss inventory loot',
     hasArgs: true
   },
   {
     name: 'hunt',
-    syntax: '/hunt [bot]',
+    syntax: 'hunt [bot]',
     category: 'pvp',
     description: 'Hunt & clear nearby hostile mobs autonomously',
     hasArgs: true
   },
   {
     name: 'ally',
-    syntax: '/ally <player>',
+    syntax: 'ally <player>',
     category: 'players',
     description: 'Mark player as trusted swarm ally (never targeted)',
     hasArgs: true
   },
   {
     name: 'kos',
-    syntax: '/kos <player>',
+    syntax: 'kos <player>',
     category: 'pvp',
     description: 'Mark player Kill-On-Sight for all bots',
     hasArgs: true
   },
   {
     name: 'explore',
-    syntax: '/explore <sector>',
+    syntax: 'explore <sector>',
     category: 'exploration',
     description: 'Scout & map sectors in parallel across bots',
     hasArgs: true
   },
   {
     name: 'guard',
-    syntax: '/guard <perimeter>',
+    syntax: 'guard <perimeter>',
     category: 'defense',
     description: 'Patrol & defend base or mining perimeter',
     hasArgs: true
   },
   {
     name: 'deposit',
-    syntax: '/deposit <item> [count]',
+    syntax: 'deposit <item> [count]',
     category: 'logistics',
     description: 'Deposit collected resources into storage chests',
     hasArgs: true
   },
   {
     name: 'skin',
-    syntax: '/skin sync [bot]',
+    syntax: 'skin sync [bot]',
     category: 'skins',
     description: 'Sync Crimson Shadow Knight skin across all bots',
     hasArgs: true
   },
   {
     name: 'mode',
-    syntax: '/mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>',
+    syntax: 'mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>',
     category: 'swarm',
     description: 'Switch swarm coordination operating mode',
     hasArgs: true
   },
   {
     name: 'profile',
-    syntax: '/profile <BALANCED|PERFORMANCE|MAXIMUM_THROUGHPUT|LOW|ULTRA_LOW>',
+    syntax: 'profile <BALANCED|PERFORMANCE|MAXIMUM_THROUGHPUT|LOW|ULTRA_LOW>',
     category: 'swarm',
     description: 'Switch performance governor profile',
     hasArgs: true
   },
   {
     name: 'botcap',
-    syntax: '/botcap <1..20>',
+    syntax: 'botcap <1..20>',
     category: 'swarm',
     description: 'Set active swarm bot cap (1..20)',
     hasArgs: true
   },
   {
     name: 'stop',
-    syntax: '/stop',
+    syntax: 'stop',
     category: 'swarm',
     description: 'Emergency stop & ceasefire across all bots immediately',
     hasArgs: false
@@ -439,18 +439,47 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
       makeEntry(cmd.name, `${cmd.syntax} — ${cmd.description}`, cmd.category, cmd.hasArgs)
     );
     const ranked = rankPrefixAndSubstring(rootCandidates, activeToken, maxSuggestions);
+    if (ranked.length > 0 || !body.trim()) {
+      return {
+        prefixBeforeToken,
+        activeToken,
+        argIndex,
+        syntaxHint: '<command> <args...>  (Press Tab to auto-fill)',
+        suggestions: ranked
+      };
+    }
+
+    // Let single-word natural-language searches reach the 1,370+ Zero-AI catalog
+    // too (e.g. `wooden` -> `get wooden tools`), not only multi-token phrases.
+    const searchText = body.trim().toLowerCase();
+    const phraseMatches = MASTER_ZERO_AI_CATALOG
+      .filter((item) =>
+        item.commandText.toLowerCase().includes(searchText) || item.label.toLowerCase().includes(searchText)
+      )
+      .slice(0, maxSuggestions)
+      .map((item) => ({
+        token: item.commandText,
+        applyValue: `${leadingPrefix}${item.commandText}`,
+        cycleValue: `${leadingPrefix}${item.commandText}`,
+        ghostSuffix: item.commandText.toLowerCase().startsWith(searchText)
+          ? item.commandText.slice(searchText.length)
+          : '',
+        description: item.label,
+        category: item.category,
+        hasNextArg: false
+      }));
     return {
-      prefixBeforeToken,
-      activeToken,
+      prefixBeforeToken: leadingPrefix,
+      activeToken: body.trim(),
       argIndex,
-      syntaxHint: '/<command> <args...>  (Press Tab to auto-fill)',
-      suggestions: ranked
+      syntaxHint: '<zero-ai command>',
+      suggestions: phraseMatches
     };
   }
 
   const verb = (priorTokens[0] || '').toLowerCase();
   const rootMeta = dict.rootCommands.find((c) => c.name === verb);
-  const syntaxHint = rootMeta ? rootMeta.syntax : `/${verb} ...`;
+  const syntaxHint = rootMeta ? rootMeta.syntax : `${verb} ...`;
 
   const botChoices = [
     makeEntry('*', 'Entire Swarm (All Bots)', 'bots', false),
@@ -780,16 +809,38 @@ function resolveUnifiedCommandExecution(rawText, knownSchematicIds = null) {
  * Create a Node `readline` `completer(line)` function for Termux & Linux terminals.
  */
 function createReadlineCompleter(getContextFn) {
+  let cycleState = null;
   return function brigadierReadlineCompleter(line) {
+    const currentLine = String(line || '');
     const ctx = typeof getContextFn === 'function' ? getContextFn() : {};
-    const res = getBrigadierCompletions(line, ctx, 24);
-    if (!res.suggestions || res.suggestions.length === 0) {
-      return [[], line];
+
+    // Node readline normally prints multiple candidates instead of advancing through
+    // them. Preserve the original partial line and return exactly one candidate per
+    // Tab, so repeated Tab presses cycle like the Web Control Centre. Typing or
+    // accepting a delimiter changes the line and naturally resets the cycle.
+    if (cycleState && currentLine === cycleState.lastApplied) {
+      const nextIndex = (cycleState.index + 1) % cycleState.suggestions.length;
+      const selected = cycleState.suggestions[nextIndex];
+      cycleState = { ...cycleState, index: nextIndex, lastApplied: selected.cycleValue };
+      return [[selected.cycleValue], currentLine];
     }
-    const hits = res.suggestions.map((s) =>
-      res.suggestions.length === 1 ? s.applyValue : s.cycleValue
-    );
-    return [hits, line];
+
+    cycleState = null;
+    const res = getBrigadierCompletions(currentLine, ctx, 24);
+    const suggestions = res.suggestions || [];
+    if (suggestions.length === 0) return [[], currentLine];
+
+    if (suggestions.length === 1) {
+      return [[suggestions[0].applyValue], currentLine];
+    }
+
+    const selected = suggestions[0];
+    cycleState = {
+      suggestions,
+      index: 0,
+      lastApplied: selected.cycleValue
+    };
+    return [[selected.cycleValue], currentLine];
   };
 }
 

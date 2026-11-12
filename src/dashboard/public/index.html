@@ -85,7 +85,6 @@
     <!-- Global Minecraft Brigadier-Style Command Bar (Press Tab to Autocomplete) -->
     <section class="mc-command-dock" aria-label="Minecraft Command Console">
       <form id="mc-command-form" class="mc-command-form" autocomplete="off">
-        <span class="mc-slash-badge" title="Minecraft Brigadier Command Prompt">/</span>
         <div class="mc-cmd-field" id="mc-global-field">
           <div class="mc-ghost-mirror" aria-hidden="true"><span id="mc-ghost-typed" class="mc-ghost-typed"></span><span id="mc-ghost-rest" class="mc-ghost-rest"></span></div>
           <input
@@ -96,7 +95,7 @@
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"
-            placeholder="Type / + press [Tab] like Minecraft (e.g. /mine diamond 64, /kill Steve mace, /build watchtower, /kit full_iron_kit)"
+            placeholder="Type a command and press [Tab] (e.g. mine diamond 64, kill Steve mace, build watchtower, kit full_iron_kit)"
           />
           <div id="mc-cmd-popup" class="mc-suggest-popup hidden" role="listbox" aria-label="Command Suggestions"></div>
         </div>

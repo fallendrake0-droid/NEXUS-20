@@ -196,8 +196,16 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
   // Verify strict zero inline styles in dashboard HTML & JS
   const html = fs.readFileSync(path.join(__dirname, '../../src/dashboard/public/index.html'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, '../../src/dashboard/public/app.js'), 'utf8');
+  const cli = fs.readFileSync(path.join(__dirname, '../../index.js'), 'utf8');
   assert.equal(/\sstyle\s*=/.test(html), false, 'index.html must contain zero inline style="" attributes');
   assert.equal(/\.style\./.test(js), false, 'app.js must contain zero element.style.* mutations');
+  assert.match(html, /placeholder="Type a command and press \[Tab\].*mine diamond 64/);
+  assert.doesNotMatch(html, /mc-slash-badge/);
+  assert.match(cli, /prompt: 'nexus> '/);
+  assert.match(cli, /principalId: 'cli:tty'/);
+  assert.match(cli, /createReadlineCompleter\(\(\) => autocompleteContext\)/);
+  assert.match(js, /api\('\/api\/v1\/commands\/autocomplete\?q='/);
+  assert.match(js, /options\.playerOnly/);
 
   // Verify SchematicRegistry custom ASCII-layer schematic parsing
   const schReg = new SchematicRegistry();
