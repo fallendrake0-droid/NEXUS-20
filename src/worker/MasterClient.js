@@ -127,10 +127,17 @@ class MasterClient {
   /**
    * Send periodic worker heartbeat + compact bot snapshots + world observations (`POST /worker/v1/heartbeat`).
    */
-  async heartbeat({ botSnapshots = [], worldObservations = [] } = {}) {
+  async heartbeat({
+    botSnapshots = [],
+    worldObservations = [],
+    observedPlayers = [],
+    botTacticalStates = {}
+  } = {}) {
     const ack = await this._request('POST', '/worker/v1/heartbeat', {
       botSnapshots,
-      worldObservations
+      worldObservations,
+      observedPlayers,
+      botTacticalStates
     });
     this.syncSequence(ack.lastAckedWorkerSequence);
     return ack;

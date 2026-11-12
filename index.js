@@ -593,6 +593,12 @@ if (require.main === module) {
   );
 }
 
+const { SkinManager } = require('./src/skins/SkinGenerator');
+const { SchematicRegistry } = require('./src/schematics/SchematicBuilder');
+const { listZeroAiCommands, MASTER_ZERO_AI_CATALOG } = require('./src/commands/ZeroAiCommandDeck');
+const { AI_PROVIDER_CATALOG } = require('./src/ai/AiProviderRegistry');
+const { CombatAndSurvivalEngine } = require('./src/combat/CombatAndSurvivalEngine');
+
 module.exports = {
   createMaster,
   createWorker,
@@ -624,5 +630,11 @@ module.exports = {
   performance,
   parseCliArgs,
   runCli,
-  runCliEntry
+  runCliEntry,
+  SkinManager,
+  SchematicRegistry,
+  listZeroAiCommands,
+  MASTER_ZERO_AI_CATALOG,
+  AI_PROVIDER_CATALOG,
+  CombatAndSurvivalEngine
 };

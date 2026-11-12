@@ -347,6 +347,7 @@ class SkillExecutor {
         const buildRes = await driver.performBlockTask({
           actionType: action,
           resourceId: targetKey,
+          partitionId: assignment.partitionId || null,
           regionBounds: assignment.regionBounds || null,
           checkAbort: checkAbortOrWaitPause
         });

@@ -115,7 +115,9 @@ function createMaster(rawOrFrozenConfig = {}, dependencies = {}) {
   const aiController =
     dependencies.aiController ||
     new AiEfficiencyController({
-      provider: config.ai.provider || 'ollama',
+      provider: config.ai.enabled ? (config.ai.provider || 'ollama') : 'none',
+      apiKey: config.ai.apiKey || null,
+      providerBaseUrl: config.ai.providerBaseUrl || null,
       ollamaBaseUrl: config.ai.enabled ? config.ai.ollamaBaseUrl : null,
       model: config.ai.model,
       enforceRemoteOnController: config.role === 'master',

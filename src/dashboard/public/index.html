@@ -71,12 +71,15 @@
     <div id="toast-banner" class="toast hidden"></div>
 
     <nav class="tabbar" role="tablist">
-      <button class="tab active" data-tab="overview">1. Overview &amp; Modes</button>
-      <button class="tab" data-tab="tasks">2. Tasks &amp; Intent Brain</button>
-      <button class="tab" data-tab="bots">3. Bots &amp; Workers</button>
-      <button class="tab" data-tab="resources">4. Resources &amp; Storage</button>
-      <button class="tab" data-tab="knowledge">5. World Knowledge</button>
-      <button class="tab" data-tab="system">6. AI, Perf, Logs &amp; Security</button>
+      <button class="tab active" data-tab="overview">1. Overview</button>
+      <button class="tab" data-tab="noai">2. No-AI Deck (1,370+)</button>
+      <button class="tab" data-tab="players">3. Players &amp; Elite PvP</button>
+      <button class="tab" data-tab="skins">4. Knight Skins &amp; Schematics</button>
+      <button class="tab" data-tab="tasks">5. Tasks &amp; Intent Brain</button>
+      <button class="tab" data-tab="bots">6. Bots &amp; Workers</button>
+      <button class="tab" data-tab="resources">7. Resources &amp; Storage</button>
+      <button class="tab" data-tab="knowledge">8. World Knowledge</button>
+      <button class="tab" data-tab="system">9. AI APIs (16+), Perf &amp; Security</button>
     </nav>
 
     <main class="main-grid">
@@ -145,7 +148,217 @@
         </div>
       </section>
 
-      <!-- TAB 2: TASKS & CENTRAL INTENT BRAIN -->
+      <!-- TAB 2: ZERO-AI COMMAND DECK (1,370+ INSTANT COMMANDS, £0, 0 LLM CALLS) -->
+      <section id="tab-noai" class="tab-panel hidden">
+        <div class="panel crimson-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Zero-AI Instant Command Deck (<span id="noai-total-badge">1,370+</span> Built-in Commands — 0 AI Needed)</h2>
+              <p class="muted compact-sub">Every command below dispatches deterministically in &lt;5ms with zero AI API calls, automatic multi-bot quota splitting, auto-crafting-table &amp; furnace smelting.</p>
+            </div>
+            <div class="inline-controls">
+              <label for="noai-qty-override" class="muted small-label">Qty Override:</label>
+              <select id="noai-qty-override">
+                <option value="default">Preset Default</option>
+                <option value="1">1x</option>
+                <option value="4">4x</option>
+                <option value="8">8x</option>
+                <option value="16">16x</option>
+                <option value="32">32x</option>
+                <option value="64">64x (1 Stack)</option>
+                <option value="128">128x (2 Stacks)</option>
+                <option value="256">256x (4 Stacks)</option>
+                <option value="512">512x (8 Stacks)</option>
+              </select>
+              <select id="noai-priority">
+                <option value="normal">Priority: Normal</option>
+                <option value="high">Priority: High</option>
+                <option value="survival">Priority: Survival</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="hero-quick-grid">
+            <button type="button" class="btn primary quick-noai-btn" data-cmd="collect 64 logs">Collect 64 Logs</button>
+            <button type="button" class="btn primary quick-noai-btn" data-cmd="collect stone">Collect Stone (64)</button>
+            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get stone tools">Get Stone Tools (Full DAG)</button>
+            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get iron tools">Get Iron Tools + Shield</button>
+            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get full iron kit">Get Full Iron Knight Kit</button>
+            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond tools">Get Diamond Tools</button>
+            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond armor">Get Full Diamond Armor</button>
+            <button type="button" class="btn primary quick-noai-btn" data-cmd="mine iron, gold, diamonds">Mine Iron, Gold &amp; Diamonds</button>
+            <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get mace kit">1.21 Mace Smash PvP Kit</button>
+            <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get spear kit">Spear &amp; Shield Phalanx Kit</button>
+            <button type="button" class="btn quick-noai-btn" data-cmd="starter kit">Day-1 Starter Base + Shelter</button>
+            <button type="button" class="btn quick-noai-btn" data-cmd="get netherite">Forge Netherite Ingots</button>
+          </div>
+
+          <div class="inline-form top-gap">
+            <input id="noai-search-input" type="text" placeholder="Search 1,370+ commands (e.g. diamond, log, smelt, mace, spear, obsidian, bed, redstone, watchtower)..." />
+            <input id="noai-freeform-input" type="text" placeholder="Or type any No-AI command (e.g. mine iron, gold, diamonds / get stone tools / collect 64 logs)" />
+            <button id="noai-freeform-btn" type="button" class="btn primary">Run Instant No-AI</button>
+          </div>
+
+          <div id="noai-category-bar" class="chip-bar"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Command Library (<span id="noai-matched-count">0</span> matching)</h2>
+            <div class="action-group">
+              <button id="noai-prev-btn" type="button" class="btn small ghost">Prev Page</button>
+              <span id="noai-page-label" class="muted small-label">Page 1</span>
+              <button id="noai-next-btn" type="button" class="btn small ghost">Next Page</button>
+            </div>
+          </div>
+          <div id="noai-grid" class="command-card-grid"></div>
+        </div>
+      </section>
+
+      <!-- TAB 3: PLAYERS & ELITE PVP ARENA (MACE, SPEAR, AXE SHIELD-BREAK, AUTO-FEED & BEST ARMOR) -->
+      <section id="tab-players" class="tab-panel hidden">
+        <div class="two-col">
+          <div class="panel crimson-panel">
+            <h2>Player &amp; Elite PvP Command Console</h2>
+            <p class="muted compact-sub">Autonomous 1.9+/1.21+ PvP engine: Wind-Charge + Mace Aerial Smash, Spear/Trident Reach, Axe Shield-Break, Jump-Crits, W-Tap, Offhand Totem/Shield, Auto-Feed &amp; Enchant-Scored Best Armor.</p>
+
+            <form id="player-tactical-form" class="stack-form">
+              <div class="form-row">
+                <div class="field-col">
+                  <label for="pvp-target-player">Target Server Player</label>
+                  <input id="pvp-target-player" type="text" maxlength="32" placeholder="e.g. Steve (or click a player on the right)" />
+                </div>
+                <div class="field-col">
+                  <label for="pvp-bot-select">Assigned Bot / Unit</label>
+                  <select id="pvp-bot-select">
+                    <option value="*">Entire Swarm (All Bots)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="field-col">
+                  <label for="pvp-weapon-style">Combat Weapon Mastery Style</label>
+                  <select id="pvp-weapon-style">
+                    <option value="auto">Auto Mastery (Mace Fall-Smash + Axe Shield-Break + Spear Reach + Sword Crits + Bow)</option>
+                    <option value="mace">1.21 Heavy Mace + Wind Charge Aerial Smash</option>
+                    <option value="spear">Spear / Trident Reach Phalanx (3.4m Jab Spacing)</option>
+                    <option value="sword">Enchanted Sword Jump-Crits + W-Tap Combo</option>
+                    <option value="axe">Heavy Axe Shield-Breaker Alpha</option>
+                    <option value="bow">Ranged Bow / Crossbow Ballistic Sniper</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <label for="pvp-loot-filter">Drop-Loot Item Filter (optional)</label>
+                  <input id="pvp-loot-filter" type="text" placeholder="all (or diamond, iron_ingot, logs...)" />
+                </div>
+              </div>
+
+              <div class="toggle-strip">
+                <label class="check-pill"><input id="pvp-autoeat" type="checkbox" checked /> Auto-Feed Best Food &amp; Gapples</label>
+                <label class="check-pill"><input id="pvp-autoarmor" type="checkbox" checked /> Auto-Equip Best Enchanted Armor &amp; Totem</label>
+                <label class="check-pill"><input id="pvp-preempt" type="checkbox" checked /> Preempt Current Mining Lease</label>
+              </div>
+
+              <div class="hero-quick-grid">
+                <button type="button" class="btn primary pvp-order-btn" data-mode="follow">Follow Player</button>
+                <button type="button" class="btn accent-gold pvp-order-btn" data-mode="protect">Protect / Bodyguard</button>
+                <button type="button" class="btn danger pvp-order-btn" data-mode="attack_player">Kill / PvP Attack</button>
+                <button type="button" class="btn pvp-order-btn" data-mode="surround">Surround Shield Ring</button>
+                <button type="button" class="btn pvp-order-btn" data-mode="drop_loot">Drop Loot To Player</button>
+                <button type="button" class="btn pvp-order-btn" data-mode="hunt_mobs">Hunt Nearby Hostile Mobs</button>
+                <button type="button" class="btn ghost pvp-order-btn" data-mode="idle">Ceasefire / Idle All</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Online Players Detected on Server</h2>
+              <button id="refresh-players-btn" type="button" class="btn small ghost">Refresh Players</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Player</th>
+                    <th>Standing</th>
+                    <th>Pos / Dist</th>
+                    <th>HP / Ping</th>
+                    <th>Instant Swarm Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="players-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: CRIMSON KNIGHT & COMMANDER ROBE SKINS + SCHEMATIC BUILDER -->
+      <section id="tab-skins" class="tab-panel hidden">
+        <div class="panel crimson-panel">
+          <div class="panel-header">
+            <div>
+              <h2>NEXUS-20 Crimson Shadow Knight &amp; Commander Robe Armory</h2>
+              <p class="muted compact-sub">Standard soldiers wear the Black &amp; Crimson Armored Knight skin; Swarm Leaders wear multi-colour Hooded Shadow Robes. Download 64x64 Minecraft PNGs or push live via SkinsRestorer.</p>
+            </div>
+            <div class="action-group">
+              <button type="button" class="btn accent-gold small skin-preset-btn" data-preset="leaders_robe_soldiers_knight">Leaders = Robes + Soldiers = Knights</button>
+              <button type="button" class="btn accent-red small skin-preset-btn" data-preset="crimson_leader_and_knights">Crimson Robe Leader + Crimson Knights</button>
+              <button type="button" class="btn small skin-preset-btn" data-preset="all_crimson_knights">All Crimson Knights</button>
+              <button type="button" class="btn small skin-preset-btn" data-preset="rainbow_commanders">Multi-Colour Leader Council</button>
+            </div>
+          </div>
+
+          <div id="skin-gallery-grid" class="skin-gallery-grid"></div>
+
+          <h3 class="sub-heading">Active Bot Skin Roster</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Avatar</th>
+                  <th>Bot / Username</th>
+                  <th>Rank</th>
+                  <th>Assigned Skin</th>
+                  <th>Change Skin</th>
+                </tr>
+              </thead>
+              <tbody id="bot-skins-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <h2>Built-in Architectural Schematics (16 Blueprints)</h2>
+            <div id="schematics-grid" class="command-card-grid"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Custom JSON / Layer Schematic Builder</h2>
+            <p class="muted compact-sub">Paste a JSON block array or ASCII layer-palette blueprint to register and construct with topological bottom-up pathfinding.</p>
+            <form id="custom-schematic-form" class="stack-form">
+              <input id="custom-sch-name" type="text" required placeholder="Schematic Name (e.g. Crimson Outpost)" />
+              <textarea id="custom-sch-json" rows="8" class="code-textarea">{
+  "palette": { "#": "stone_bricks", "R": "redstone_block", "O": "obsidian" },
+  "layers": [
+    ["#####", "#OOO#", "#ORO#", "#OOO#", "#####"],
+    ["#...#", ".....", ".....", ".....", "#...#"],
+    ["#...#", ".....", ".....", ".....", "#...#"]
+  ]
+}</textarea>
+              <div class="action-group">
+                <button type="submit" class="btn primary small">Save &amp; Register Schematic</button>
+                <button id="build-custom-sch-btn" type="button" class="btn accent-red small">Save &amp; Build Immediately</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: TASKS & CENTRAL INTENT BRAIN -->
       <section id="tab-tasks" class="tab-panel hidden">
         <div class="panel">
           <h2>Submit Global Swarm Objective</h2>
@@ -327,8 +540,22 @@
         </div>
       </section>
 
-      <!-- TAB 6: AI BRAIN, PERFORMANCE, LOGS, CONFIG & SECURITY -->
+      <!-- TAB 9: AI BRAIN (16+ PROVIDERS), PERFORMANCE, LOGS, CONFIG & SECURITY -->
       <section id="tab-system" class="tab-panel hidden">
+        <div class="panel crimson-panel">
+          <h2>Multi-Provider AI API Hub (Gemini, ChatGPT, Claude, Groq, OpenRouter, DeepSeek, Grok, Mistral, Ollama &amp; Zero-AI)</h2>
+          <p class="muted compact-sub">Switch AI planning providers live at any time — or select Zero-AI Offline Mode to run 100% deterministically with £0 cost.</p>
+          <form id="ai-provider-form" class="inline-form">
+            <select id="ai-provider-select"></select>
+            <input id="ai-model-input" type="text" list="ai-model-suggestions" placeholder="Model ID (e.g. gemini-2.5-flash / gpt-4o-mini / claude-sonnet-4-20250514)" />
+            <datalist id="ai-model-suggestions"></datalist>
+            <input id="ai-apikey-input" type="password" placeholder="API Key (leave blank to keep existing)" />
+            <input id="ai-baseurl-input" type="text" placeholder="Base URL (optional / Ollama URL)" />
+            <button type="submit" class="btn primary">Save &amp; Activate Provider</button>
+          </form>
+          <div id="ai-provider-status" class="muted small-label"></div>
+        </div>
+
         <div class="two-col">
           <div class="panel">
             <h2>Central AI Brain &amp; Provider Telemetry</h2>

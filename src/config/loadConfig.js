@@ -227,8 +227,12 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       provider: String(env.SWARM_AI_PROVIDER ?? fileConfig.ai?.provider ?? 'ollama')
         .trim()
         .toLowerCase(),
+      apiKey: env.SWARM_AI_API_KEY ?? fileConfig.ai?.apiKey ?? null,
+      providerBaseUrl: env.SWARM_AI_BASE_URL ?? fileConfig.ai?.providerBaseUrl ?? null,
       ollamaBaseUrl: env.SWARM_OLLAMA_URL ?? fileConfig.ai?.ollamaBaseUrl ?? null,
-      model: String(env.SWARM_OLLAMA_MODEL ?? fileConfig.ai?.model ?? 'unresolved').trim(),
+      model: String(
+        env.SWARM_AI_MODEL ?? env.SWARM_OLLAMA_MODEL ?? fileConfig.ai?.model ?? 'unresolved'
+      ).trim(),
       maxConcurrent: parseIntOr(env.SWARM_AI_MAX_CONCURRENT ?? fileConfig.ai?.maxConcurrent, 1),
       maxQueue: parseIntOr(env.SWARM_AI_MAX_QUEUE ?? fileConfig.ai?.maxQueue, 3),
       connectTimeoutMs: parseIntOr(

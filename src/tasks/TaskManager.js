@@ -729,7 +729,7 @@ class TaskManager extends EventEmitter {
           actionType: obj.kind,
           resourceId: obj.resource_id,
           quotaQuantity: obj.target_quantity !== null ? q.quantity : null,
-          partitionId: q.partitionId || null,
+          partitionId: q.partitionId || obj.region_label || null,
           regionBounds: q.regionBounds || null,
           verificationPolicy: obj.verification_policy,
           safetyPolicy: {

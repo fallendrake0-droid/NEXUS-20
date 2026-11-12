@@ -8,7 +8,14 @@
     envProfile: 'private_offline_test',
     sseClientId: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
     sse: null,
-    pollTimer: null
+    pollTimer: null,
+    noaiCategory: 'all',
+    noaiSearch: '',
+    noaiOffset: 0,
+    noaiLimit: 96,
+    skinsById: {},
+    providersCache: [],
+    aiFormInitialized: false
   };
 
   const el = (id) => document.getElementById(id);
@@ -16,10 +23,53 @@
   function showToast(msg, isError) {
     const t = el('toast-banner');
     t.textContent = msg;
-    t.style.borderColor = isError ? '#ef4444' : '#38bdf8';
+    t.classList.toggle('toast-error', Boolean(isError));
     t.classList.remove('hidden');
     clearTimeout(showToast._timer);
     showToast._timer = setTimeout(() => t.classList.add('hidden'), 4500);
+  }
+
+  function paintMatrixOnCanvas(ctx, matrix, offsetX, offsetY, scale) {
+    if (!Array.isArray(matrix)) return;
+    for (let y = 0; y < matrix.length; y += 1) {
+      const row = matrix[y];
+      for (let x = 0; x < row.length; x += 1) {
+        if (!row[x]) continue;
+        ctx.fillStyle = row[x];
+        ctx.fillRect((offsetX + x) * scale, (offsetY + y) * scale, scale, scale);
+      }
+    }
+  }
+
+  function createSkinFullCanvas(preview, scale) {
+    const s = scale || 4;
+    const canvas = document.createElement('canvas');
+    canvas.width = 20 * s;
+    canvas.height = 36 * s;
+    canvas.className = 'skin-canvas';
+    const ctx = canvas.getContext('2d');
+    if (preview && ctx) {
+      paintMatrixOnCanvas(ctx, preview.head, 6, 2, s);
+      paintMatrixOnCanvas(ctx, preview.rightArm, 2, 10, s);
+      paintMatrixOnCanvas(ctx, preview.body, 6, 10, s);
+      paintMatrixOnCanvas(ctx, preview.leftArm, 14, 10, s);
+      paintMatrixOnCanvas(ctx, preview.rightLeg, 6, 22, s);
+      paintMatrixOnCanvas(ctx, preview.leftLeg, 10, 22, s);
+    }
+    return canvas;
+  }
+
+  function createSkinHeadCanvas(preview, scale) {
+    const s = scale || 3;
+    const canvas = document.createElement('canvas');
+    canvas.width = 8 * s;
+    canvas.height = 8 * s;
+    canvas.className = 'bot-head-canvas';
+    const ctx = canvas.getContext('2d');
+    if (preview && preview.head && ctx) {
+      paintMatrixOnCanvas(ctx, preview.head, 0, 0, s);
+    }
+    return canvas;
   }
 
   async function api(path, options) {
@@ -266,9 +316,41 @@
     // Bots
     const bBody = el('bots-tbody');
     clearChildren(bBody);
+    const pvpBotSel = el('pvp-bot-select');
+    const prevPvpBot = pvpBotSel ? pvpBotSel.value : '*';
+    if (pvpBotSel) {
+      clearChildren(pvpBotSel);
+      const allOpt = document.createElement('option');
+      allOpt.value = '*';
+      allOpt.textContent = 'Entire Swarm (All Bots)';
+      pvpBotSel.appendChild(allOpt);
+    }
+
     for (const b of st.bots || []) {
+      if (pvpBotSel) {
+        const opt = document.createElement('option');
+        opt.value = b.botId;
+        opt.textContent = b.username + ' (' + b.botId + ')';
+        if (b.botId === prevPvpBot) opt.selected = true;
+        pvpBotSel.appendChild(opt);
+      }
+
       const tr = document.createElement('tr');
-      tr.appendChild(tdText(b.botId + ' (' + b.username + ')'));
+      const botTd = document.createElement('td');
+      const skinId = (b.skin && b.skin.skinId) || 'knight_crimson';
+      const skinObj = state.skinsById[skinId];
+      if (skinObj && skinObj.preview) {
+        botTd.appendChild(createSkinHeadCanvas(skinObj.preview, 3));
+      }
+      const nameSpan = document.createElement('span');
+      const tacLabel =
+        b.tacticalState && b.tacticalState.mode && b.tacticalState.mode !== 'idle'
+          ? ' [' + b.tacticalState.mode + (b.tacticalState.targetPlayer ? ':' + b.tacticalState.targetPlayer : '') + ']'
+          : '';
+      nameSpan.textContent = b.botId + ' (' + b.username + ')' + tacLabel;
+      botTd.appendChild(nameSpan);
+      tr.appendChild(botTd);
+
       tr.appendChild(tdText(b.workerId));
       tr.appendChild(tdText(b.connectionState));
       const snap = b.snapshot || {};
@@ -364,6 +446,8 @@
 
     // AI Brain & Perf boxes
     el('ai-brain-box').textContent = JSON.stringify(st.aiBrain || {}, null, 2);
+    renderAiProviderControls(st.aiBrain);
+    renderPlayersTable(st.players || []);
     el('perf-box').textContent = JSON.stringify(
       {
         governorState: st.governorState,
@@ -551,8 +635,429 @@
     }
   }
 
+  function applyQuantityOverride(rawCmdText) {
+    const qtySel = el('noai-qty-override');
+    if (!qtySel || qtySel.value === 'default') return rawCmdText;
+    const n = Number(qtySel.value);
+    if (!Number.isFinite(n) || n < 1) return rawCmdText;
+    if (/^(mine|collect|craft|deposit)\s+\d+\s+/i.test(rawCmdText)) {
+      return rawCmdText.replace(/^(mine|collect|craft|deposit)\s+\d+\s+/i, '$1 ' + n + ' ');
+    }
+    return rawCmdText;
+  }
+
+  async function dispatchNoAiCommandText(rawCmdText) {
+    const text = applyQuantityOverride(String(rawCmdText || '').trim());
+    if (!text) return;
+    const prio = el('noai-priority') ? el('noai-priority').value : 'normal';
+    try {
+      const created = await api('/api/v1/tasks', {
+        method: 'POST',
+        body: { text, priority: prio }
+      });
+      showToast('Instant No-AI Dispatched: ' + (created.intentSummary || text) + ' [' + created.state + ']');
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function refreshZeroAiDeck() {
+    try {
+      const q =
+        '/api/v1/commands?category=' +
+        encodeURIComponent(state.noaiCategory || 'all') +
+        '&search=' +
+        encodeURIComponent(state.noaiSearch || '') +
+        '&limit=' +
+        state.noaiLimit +
+        '&offset=' +
+        state.noaiOffset;
+      const deck = await api(q);
+      el('noai-total-badge').textContent = String(deck.totalCatalogCommands || 1370);
+      el('noai-matched-count').textContent = String(deck.matchedCount || 0);
+      const pageNum = Math.floor((deck.offset || 0) / state.noaiLimit) + 1;
+      const totalPages = Math.max(1, Math.ceil((deck.matchedCount || 1) / state.noaiLimit));
+      el('noai-page-label').textContent = 'Page ' + pageNum + ' / ' + totalPages;
+
+      // Category chips
+      const catBar = el('noai-category-bar');
+      clearChildren(catBar);
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.className = 'btn ghost small cat-chip' + (state.noaiCategory === 'all' ? ' active' : '');
+      allBtn.textContent = 'All (' + deck.totalCatalogCommands + ')';
+      allBtn.onclick = () => {
+        state.noaiCategory = 'all';
+        state.noaiOffset = 0;
+        refreshZeroAiDeck();
+      };
+      catBar.appendChild(allBtn);
+
+      for (const cat of deck.categories || []) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn ghost small cat-chip' + (state.noaiCategory === cat.category ? ' active' : '');
+        b.textContent = cat.category.replace(/_/g, ' ') + ' (' + cat.count + ')';
+        b.onclick = () => {
+          state.noaiCategory = cat.category;
+          state.noaiOffset = 0;
+          refreshZeroAiDeck();
+        };
+        catBar.appendChild(b);
+      }
+
+      // Command cards
+      const grid = el('noai-grid');
+      clearChildren(grid);
+      for (const item of deck.commands || []) {
+        const card = document.createElement('div');
+        card.className = 'command-card';
+        const top = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'command-card-title';
+        title.textContent = item.label;
+        const code = document.createElement('div');
+        code.className = 'command-card-code';
+        code.textContent = item.commandText;
+        top.appendChild(title);
+        top.appendChild(code);
+
+        const foot = document.createElement('div');
+        foot.className = 'command-card-footer';
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = item.category.replace(/_/g, ' ');
+        const runBtn = document.createElement('button');
+        runBtn.type = 'button';
+        runBtn.className = 'btn primary small';
+        runBtn.textContent = 'Run (0 AI)';
+        runBtn.onclick = () => dispatchNoAiCommandText(item.commandText);
+        foot.appendChild(badge);
+        foot.appendChild(runBtn);
+
+        card.appendChild(top);
+        card.appendChild(foot);
+        grid.appendChild(card);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function sendPlayerTacticalOrder(payload) {
+    try {
+      const res = await api('/api/v1/players/action', {
+        method: 'POST',
+        body: payload
+      });
+      showToast('Swarm Tactical Order: ' + res.mode + (res.targetPlayer ? ' -> ' + res.targetPlayer : ''));
+      renderPlayersTable(res.players || []);
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function renderPlayersTable(players) {
+    const tbody = el('players-tbody');
+    if (!tbody) return;
+    clearChildren(tbody);
+    const nonBots = (players || []).filter((p) => !p.isSwarmBot);
+    if (nonBots.length === 0) {
+      const tr = document.createElement('tr');
+      const td = tdText('No non-swarm players detected yet. Type any player name on the left to queue Follow / Protect / Kill / Drop-Loot.');
+      td.colSpan = 5;
+      td.className = 'muted';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (const p of nonBots) {
+      const tr = document.createElement('tr');
+      const nameTd = document.createElement('td');
+      const nameBtn = document.createElement('button');
+      nameBtn.type = 'button';
+      nameBtn.className = 'btn ghost small';
+      nameBtn.textContent = p.username;
+      nameBtn.onclick = () => {
+        el('pvp-target-player').value = p.username;
+      };
+      nameTd.appendChild(nameBtn);
+      tr.appendChild(nameTd);
+
+      const relTd = document.createElement('td');
+      const relBadge = document.createElement('span');
+      relBadge.className =
+        'badge ' + (p.relation === 'ally' ? 'badge-ally' : p.relation === 'kos' ? 'badge-kos' : '');
+      relBadge.textContent = (p.relation || 'neutral').toUpperCase();
+      relTd.appendChild(relBadge);
+      tr.appendChild(relTd);
+
+      const posStr = p.position ? (p.position.x + ',' + p.position.y + ',' + p.position.z) : 'out of view';
+      const distStr = p.distance !== null && p.distance !== undefined ? ' (' + p.distance + 'm)' : '';
+      tr.appendChild(tdText(posStr + distStr));
+      tr.appendChild(tdText('HP:' + (p.health ?? '?') + ' | ' + (p.ping ?? '?') + 'ms'));
+
+      const actTd = document.createElement('td');
+      const grp = document.createElement('div');
+      grp.className = 'action-group';
+      const quickActs = [
+        ['Follow', 'follow', 'btn small'],
+        ['Protect', 'protect', 'btn accent-gold small'],
+        ['Kill PvP', 'attack_player', 'btn danger small'],
+        ['Drop Loot', 'drop_loot', 'btn small'],
+        ['Ally', 'idle', 'btn ghost small', 'ally'],
+        ['KOS', 'attack_player', 'btn danger small', 'kos']
+      ];
+      for (const [lbl, mode, cls, rel] of quickActs) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.textContent = lbl;
+        b.onclick = () => {
+          el('pvp-target-player').value = p.username;
+          sendPlayerTacticalOrder({
+            mode,
+            targetPlayer: p.username,
+            botId: el('pvp-bot-select') ? el('pvp-bot-select').value : '*',
+            preferredWeaponStyle: el('pvp-weapon-style') ? el('pvp-weapon-style').value : 'auto',
+            itemFilter: el('pvp-loot-filter') ? el('pvp-loot-filter').value : null,
+            relation: rel || null,
+            preemptTask: true
+          });
+        };
+        grp.appendChild(b);
+      }
+      actTd.appendChild(grp);
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    }
+  }
+
+  function renderAiProviderControls(aiBrain) {
+    if (!aiBrain || !Array.isArray(aiBrain.providers)) return;
+    state.providersCache = aiBrain.providers;
+    const sel = el('ai-provider-select');
+    const statusLine = el('ai-provider-status');
+    if (!sel) return;
+
+    const currentFocus = document.activeElement === sel;
+    if (!currentFocus) {
+      const prevSelected = state.aiFormInitialized ? sel.value : aiBrain.activeProvider;
+      clearChildren(sel);
+      for (const p of aiBrain.providers) {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = (p.label || p.name) + (p.active ? ' [ACTIVE]' : '');
+        if (p.name === prevSelected) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      if (!state.aiFormInitialized) {
+        state.aiFormInitialized = true;
+        syncAiProviderFields(aiBrain.activeProvider);
+      }
+    }
+
+    const activeMeta = aiBrain.providers.find((p) => p.name === aiBrain.activeProvider);
+    if (statusLine && activeMeta) {
+      statusLine.textContent =
+        'Active Brain: ' +
+        (activeMeta.label || activeMeta.name) +
+        ' | Model: ' +
+        (activeMeta.model || 'n/a') +
+        ' | Key: ' +
+        (activeMeta.hasApiKey ? activeMeta.maskedApiKey : activeMeta.requiresApiKey ? 'Not set (falls back to 1,370+ Zero-AI)' : 'Not required');
+    }
+  }
+
+  function syncAiProviderFields(providerName) {
+    const p = state.providersCache.find((x) => x.name === providerName);
+    if (!p) return;
+    const modelIn = el('ai-model-input');
+    const baseIn = el('ai-baseurl-input');
+    const dl = el('ai-model-suggestions');
+    if (modelIn) modelIn.value = p.model || '';
+    if (baseIn) baseIn.value = p.baseUrl || '';
+    if (dl) {
+      clearChildren(dl);
+      for (const m of p.suggestedModels || []) {
+        const o = document.createElement('option');
+        o.value = m;
+        dl.appendChild(o);
+      }
+    }
+  }
+
+  async function refreshSkinsAndSchematics() {
+    try {
+      const [skinsRes, schRes] = await Promise.all([
+        api('/api/v1/skins'),
+        api('/api/v1/schematics')
+      ]);
+
+      // Cache skins for head avatars
+      const gallery = el('skin-gallery-grid');
+      clearChildren(gallery);
+      for (const sk of skinsRes.skins || []) {
+        state.skinsById[sk.skinId] = sk;
+        const card = document.createElement('div');
+        card.className = 'skin-card ' + (sk.archetype === 'robe' ? 'skin-card-leader' : 'skin-card-knight');
+
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + (sk.archetype === 'robe' ? 'badge-leader' : 'badge-knight');
+        badge.textContent = sk.badge;
+        card.appendChild(badge);
+
+        card.appendChild(createSkinFullCanvas(sk.preview, 4));
+
+        const title = document.createElement('div');
+        title.className = 'command-card-title';
+        title.textContent = sk.name;
+        card.appendChild(title);
+
+        const desc = document.createElement('div');
+        desc.className = 'muted compact-sub';
+        desc.textContent = sk.description;
+        card.appendChild(desc);
+
+        const actions = document.createElement('div');
+        actions.className = 'action-group';
+        const dlLink = document.createElement('a');
+        dlLink.href = sk.pngUrl;
+        dlLink.download = sk.skinId + '.png';
+        dlLink.className = 'btn ghost small';
+        dlLink.textContent = 'Download PNG';
+
+        const applyAllBtn = document.createElement('button');
+        applyAllBtn.type = 'button';
+        applyAllBtn.className = 'btn small primary';
+        applyAllBtn.textContent = 'Set All Bots';
+        applyAllBtn.onclick = async () => {
+          await api('/api/v1/skins/assign', { method: 'POST', body: { botId: '*', skinId: sk.skinId } });
+          showToast('Assigned ' + sk.name + ' across swarm');
+          refreshSkinsAndSchematics();
+          refreshStatusAndTasks();
+        };
+
+        actions.appendChild(dlLink);
+        actions.appendChild(applyAllBtn);
+        card.appendChild(actions);
+        gallery.appendChild(card);
+      }
+
+      // Active Bot Skin Roster
+      const bsBody = el('bot-skins-tbody');
+      clearChildren(bsBody);
+      const botSkins = skinsRes.botSkins || [];
+      if (botSkins.length === 0) {
+        const tr = document.createElement('tr');
+        const td = tdText('Enroll a WorkerHost to customize individual bot Knight / Leader Robe skins.');
+        td.colSpan = 5;
+        td.className = 'muted';
+        tr.appendChild(td);
+        bsBody.appendChild(tr);
+      } else {
+        for (const bs of botSkins) {
+          const tr = document.createElement('tr');
+          const avTd = document.createElement('td');
+          const fullMeta = state.skinsById[bs.skin.skinId];
+          if (fullMeta && fullMeta.preview) {
+            avTd.appendChild(createSkinHeadCanvas(fullMeta.preview, 4));
+          }
+          tr.appendChild(avTd);
+          tr.appendChild(tdText(bs.username + ' (' + bs.botId + ')'));
+
+          const rankTd = document.createElement('td');
+          const rb = document.createElement('span');
+          rb.className = 'badge ' + (bs.skin.isLeader ? 'badge-leader' : 'badge-knight');
+          rb.textContent = bs.skin.isLeader ? 'LEADER ROBE' : 'SHADOW KNIGHT';
+          rankTd.appendChild(rb);
+          tr.appendChild(rankTd);
+
+          tr.appendChild(tdText(bs.skin.name));
+
+          const selTd = document.createElement('td');
+          const sel = document.createElement('select');
+          for (const sk of skinsRes.skins || []) {
+            const opt = document.createElement('option');
+            opt.value = sk.skinId;
+            opt.textContent = sk.name;
+            if (sk.skinId === bs.skin.skinId) opt.selected = true;
+            sel.appendChild(opt);
+          }
+          sel.onchange = async () => {
+            await api('/api/v1/skins/assign', {
+              method: 'POST',
+              body: { botId: bs.botId, skinId: sel.value }
+            });
+            showToast('Updated ' + bs.username + ' skin -> ' + sel.value);
+            refreshSkinsAndSchematics();
+            refreshStatusAndTasks();
+          };
+          selTd.appendChild(sel);
+          tr.appendChild(selTd);
+          bsBody.appendChild(tr);
+        }
+      }
+
+      // Schematics grid
+      const schGrid = el('schematics-grid');
+      clearChildren(schGrid);
+      for (const sch of schRes.schematics || []) {
+        const card = document.createElement('div');
+        card.className = 'command-card';
+        const top = document.createElement('div');
+        const t = document.createElement('div');
+        t.className = 'command-card-title';
+        t.textContent = sch.name + ' [' + sch.dimensions + ']';
+        const d = document.createElement('div');
+        d.className = 'command-card-code';
+        d.textContent = sch.description + ' (' + sch.blockCount + ' blocks)';
+        top.appendChild(t);
+        top.appendChild(d);
+
+        const foot = document.createElement('div');
+        foot.className = 'command-card-footer';
+        const bdg = document.createElement('span');
+        bdg.className = 'badge';
+        bdg.textContent = sch.category;
+        const buildBtn = document.createElement('button');
+        buildBtn.type = 'button';
+        buildBtn.className = 'btn accent-red small';
+        buildBtn.textContent = 'Build Blueprint';
+        buildBtn.onclick = async () => {
+          try {
+            await api('/api/v1/schematics/build', {
+              method: 'POST',
+              body: { schematicId: sch.schematicId }
+            });
+            showToast('Building Schematic: ' + sch.name);
+            refreshStatusAndTasks();
+          } catch (err) {
+            showToast(err.message, true);
+          }
+        };
+        foot.appendChild(bdg);
+        foot.appendChild(buildBtn);
+        card.appendChild(top);
+        card.appendChild(foot);
+        schGrid.appendChild(card);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   async function refreshAll() {
-    await Promise.all([refreshStatusAndTasks(), refreshKnowledge(), refreshLogs()]);
+    await Promise.all([
+      refreshSkinsAndSchematics(),
+      refreshStatusAndTasks(),
+      refreshZeroAiDeck(),
+      refreshKnowledge(),
+      refreshLogs()
+    ]);
   }
 
   // Event listeners
@@ -766,6 +1271,154 @@
   });
 
   el('refresh-logs-btn').addEventListener('click', refreshLogs);
+
+  // Zero-AI Deck Listeners
+  document.querySelectorAll('.quick-noai-btn').forEach((btn) => {
+    btn.addEventListener('click', () => dispatchNoAiCommandText(btn.dataset.cmd));
+  });
+
+  let searchTimer = null;
+  el('noai-search-input').addEventListener('input', (ev) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.noaiSearch = ev.target.value.trim();
+      state.noaiOffset = 0;
+      refreshZeroAiDeck();
+    }, 180);
+  });
+
+  el('noai-freeform-btn').addEventListener('click', () => {
+    const val = el('noai-freeform-input').value.trim();
+    if (val) {
+      dispatchNoAiCommandText(val);
+      el('noai-freeform-input').value = '';
+    }
+  });
+  el('noai-freeform-input').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      el('noai-freeform-btn').click();
+    }
+  });
+
+  el('noai-prev-btn').addEventListener('click', () => {
+    state.noaiOffset = Math.max(0, state.noaiOffset - state.noaiLimit);
+    refreshZeroAiDeck();
+  });
+  el('noai-next-btn').addEventListener('click', () => {
+    state.noaiOffset += state.noaiLimit;
+    refreshZeroAiDeck();
+  });
+
+  // Players & Elite PvP Listeners
+  document.querySelectorAll('.pvp-order-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      const targetPlayer = el('pvp-target-player').value.trim();
+      if (['follow', 'protect', 'attack_player', 'surround', 'drop_loot'].includes(mode) && !targetPlayer) {
+        showToast('Enter or select a target player name first!', true);
+        return;
+      }
+      sendPlayerTacticalOrder({
+        mode,
+        targetPlayer: targetPlayer || null,
+        botId: el('pvp-bot-select').value,
+        preferredWeaponStyle: el('pvp-weapon-style').value,
+        itemFilter: el('pvp-loot-filter').value.trim() || null,
+        autoEat: el('pvp-autoeat').checked,
+        autoArmor: el('pvp-autoarmor').checked,
+        preemptTask: el('pvp-preempt').checked
+      });
+    });
+  });
+
+  el('refresh-players-btn').addEventListener('click', async () => {
+    try {
+      const out = await api('/api/v1/players');
+      renderPlayersTable(out.players || []);
+      showToast('Refreshed server player roster');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  // Skin Presets & Custom Schematics
+  document.querySelectorAll('.skin-preset-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('/api/v1/skins/assign', {
+          method: 'POST',
+          body: { preset: btn.dataset.preset }
+        });
+        showToast('Applied Swarm Skin Formation: ' + btn.dataset.preset);
+        refreshSkinsAndSchematics();
+        refreshStatusAndTasks();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+  });
+
+  async function saveCustomSchematic(andBuild) {
+    const name = el('custom-sch-name').value.trim() || 'custom_structure';
+    let parsed;
+    try {
+      parsed = JSON.parse(el('custom-sch-json').value);
+    } catch (e) {
+      showToast('Invalid Schematic JSON: ' + e.message, true);
+      return;
+    }
+    parsed.name = name;
+    try {
+      const created = await api('/api/v1/schematics/custom', { method: 'POST', body: parsed });
+      showToast('Registered Schematic: ' + created.schematic.name + ' (' + created.schematic.blockCount + ' blocks)');
+      await refreshSkinsAndSchematics();
+      if (andBuild) {
+        await api('/api/v1/schematics/build', {
+          method: 'POST',
+          body: { schematicId: created.schematic.schematicId }
+        });
+        showToast('Dispatched Bot to Build ' + created.schematic.name);
+        refreshStatusAndTasks();
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  el('custom-schematic-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    saveCustomSchematic(false);
+  });
+  el('build-custom-sch-btn').addEventListener('click', () => saveCustomSchematic(true));
+
+  // Multi-Provider AI Switcher
+  el('ai-provider-select').addEventListener('change', (ev) => {
+    syncAiProviderFields(ev.target.value);
+  });
+  el('ai-provider-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      const provider = el('ai-provider-select').value;
+      const model = el('ai-model-input').value.trim();
+      const apiKey = el('ai-apikey-input').value.trim();
+      const baseUrl = el('ai-baseurl-input').value.trim();
+      const out = await api('/api/v1/ai/config', {
+        method: 'POST',
+        body: {
+          provider,
+          model: model || undefined,
+          apiKey: apiKey || undefined,
+          baseUrl: baseUrl || undefined
+        }
+      });
+      el('ai-apikey-input').value = '';
+      showToast('Switched Active AI Brain -> ' + out.activeProvider + ' (' + (out.updated?.model || 'default') + ')');
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
 
   // Tab switching
   document.querySelectorAll('.tab').forEach((btn) => {

@@ -5,6 +5,15 @@ const http = require('node:http');
 const https = require('node:https');
 const { BoundedCache } = require('./BoundedCache');
 const { sanitizeValue } = require('./BoundedLogger');
+const {
+  PROGRESSION_KITS,
+  resolveSmartResourceId,
+  parseExtendedZeroAiIntent
+} = require('../commands/ZeroAiCommandDeck');
+const {
+  AI_PROVIDER_CATALOG,
+  createCloudProviderAdapter
+} = require('../ai/AiProviderRegistry');
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -106,14 +115,20 @@ function normalizeIntentText(text) {
 }
 
 function canonicalizeResourceName(rawName) {
-  const cleaned = String(rawName || '')
-    .trim()
+  const rawStr = String(rawName || '').trim();
+  if (!rawStr) return null;
+  if (rawStr.includes(':')) {
+    const cleanedNs = rawStr.toLowerCase().replace(/[^a-z0-9_:/.-]/g, '');
+    return cleanedNs || null;
+  }
+  const smart = resolveSmartResourceId(rawStr);
+  if (smart) return smart;
+  const cleaned = rawStr
     .toLowerCase()
     .replace(/[^a-z0-9_: ]/g, '')
     .trim()
     .replace(/\s+/g, '_');
   if (!cleaned) return null;
-  // Common natural-language singular/alias normalization
   const aliases = {
     cobble: 'minecraft:cobblestone',
     cobblestones: 'minecraft:cobblestone',
@@ -700,6 +715,15 @@ function buildDeterministicPlan(requestId, rawUserText) {
     }
   }
 
+  // Pattern E: Extended 1,370+ Zero-AI Command & Natural Alias Parser
+  const extendedPlan = parseExtendedZeroAiIntent(text, reqId);
+  if (extendedPlan) {
+    return {
+      matched: true,
+      plan: extendedPlan
+    };
+  }
+
   return {
     matched: false,
     clarificationPlan: {
@@ -881,6 +905,23 @@ class AiEfficiencyController {
       typeof options.transportOverride === 'function' ? options.transportOverride : null;
     this._now = options.now || Date.now;
 
+    /** @type {Map<string, { apiKey: string|null, baseUrl: string|null, model: string|null }>} */
+    this._providerSettings = new Map();
+    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
+      const envKey = meta.envKeyName ? process.env[meta.envKeyName] || null : null;
+      this._providerSettings.set(meta.id, {
+        apiKey: (options.provider === meta.id && options.apiKey) ? String(options.apiKey) : envKey,
+        baseUrl:
+          options.provider === meta.id && options.providerBaseUrl
+            ? String(options.providerBaseUrl)
+            : meta.defaultBaseUrl,
+        model:
+          options.provider === meta.id && options.model && options.model !== 'unresolved'
+            ? String(options.model)
+            : meta.defaultModel
+      });
+    }
+
     /** @type {Map<string, { name: string, invoke: Function, isAvailable: () => boolean }>} */
     this._providers = new Map();
     this.registerProvider('ollama', {
@@ -890,7 +931,16 @@ class AiEfficiencyController {
           ? this._transportOverride({ body, requestBytes, signal })
           : this._httpPostOllama(requestBytes, signal)
     });
-    this._activeProvider = String(options.provider || 'ollama').trim().toLowerCase();
+    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
+      if (meta.id === 'ollama') continue;
+      this.registerProvider(
+        meta.id,
+        createCloudProviderAdapter(meta, (pid) => this._providerSettings.get(pid) || {})
+      );
+    }
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const requestedProvider = String(options.provider || 'ollama').trim().toLowerCase();
+    this._activeProvider = providerAliases[requestedProvider] || requestedProvider;
     if (!this._providers.has(this._activeProvider)) {
       this._activeProvider = 'ollama';
     }
@@ -965,7 +1015,9 @@ class AiEfficiencyController {
   }
 
   setProvider(name) {
-    const key = String(name || '').trim().toLowerCase();
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const raw = String(name || '').trim().toLowerCase();
+    const key = providerAliases[raw] || raw;
     if (!this._providers.has(key)) {
       throw new RangeError(`AI provider "${key}" is not registered`);
     }
@@ -973,13 +1025,75 @@ class AiEfficiencyController {
     return this._activeProvider;
   }
 
+  /**
+   * Runtime hot-reconfiguration of any AI provider (Gemini, ChatGPT/OpenAI, Claude/Anthropic,
+   * Groq, OpenRouter, DeepSeek, xAI Grok, Mistral, Together, Cerebras, Fireworks, Perplexity,
+   * Cohere, LM Studio, Ollama, or `none` Zero-AI).
+   */
+  configureProvider({ provider, apiKey, model, baseUrl } = {}) {
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const raw = String(provider || this._activeProvider || 'ollama').trim().toLowerCase();
+    const key = providerAliases[raw] || raw;
+    if (!this._providers.has(key)) {
+      throw new RangeError(`Unsupported AI provider "${key}"`);
+    }
+
+    if (key === 'ollama') {
+      if (baseUrl !== undefined && baseUrl !== null && String(baseUrl).trim() !== '') {
+        this._endpoint = validateOllamaEndpointPolicy(String(baseUrl).trim(), {
+          enforceRemoteOnController: false
+        });
+      }
+      if (model && String(model).trim()) {
+        this._model = String(model).trim();
+      }
+    } else {
+      const prev = this._providerSettings.get(key) || {};
+      const meta = AI_PROVIDER_CATALOG[key] || {};
+      this._providerSettings.set(key, {
+        apiKey:
+          apiKey !== undefined && apiKey !== null && String(apiKey).trim() !== ''
+            ? String(apiKey).trim()
+            : prev.apiKey || null,
+        baseUrl:
+          baseUrl !== undefined && baseUrl !== null && String(baseUrl).trim() !== ''
+            ? String(baseUrl).trim()
+            : prev.baseUrl || meta.defaultBaseUrl || null,
+        model:
+          model !== undefined && model !== null && String(model).trim() !== ''
+            ? String(model).trim()
+            : prev.model || meta.defaultModel || 'default'
+      });
+    }
+
+    this._activeProvider = key;
+    this._planCache.clear();
+    return this.listProviders().find((p) => p.name === key);
+  }
+
   listProviders() {
     const out = [];
     for (const [name, p] of this._providers.entries()) {
+      const meta = AI_PROVIDER_CATALOG[name] || null;
+      const cfg = this._providerSettings.get(name) || {};
+      const hasKey = Boolean(cfg.apiKey && String(cfg.apiKey).length >= 4);
+      const maskedKey = hasKey
+        ? `••••${String(cfg.apiKey).slice(-4)}`
+        : null;
       out.push({
         name,
+        label: meta ? meta.label : name,
         active: name === this._activeProvider,
-        available: Boolean(p.isAvailable())
+        available: Boolean(p.isAvailable()),
+        requiresApiKey: Boolean(meta?.requiresApiKey),
+        hasApiKey: hasKey,
+        maskedApiKey: maskedKey,
+        model: name === 'ollama' ? this._model : (cfg.model || meta?.defaultModel || null),
+        suggestedModels: meta?.models || [],
+        baseUrl:
+          name === 'ollama'
+            ? (this._endpoint ? this._endpoint.toString() : null)
+            : (cfg.baseUrl || meta?.defaultBaseUrl || null)
       });
     }
     return out;

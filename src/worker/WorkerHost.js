@@ -284,10 +284,21 @@ class WorkerHost {
   async tickHeartbeat() {
     const botSnapshots = [];
     const worldObservations = [];
+    const playerMap = new Map();
+    const botTacticalStates = {};
 
     for (const runner of this.bots.values()) {
       await runner.checkSurvivalReflexes();
       botSnapshots.push(await runner.getHeartbeatSnapshot());
+      botTacticalStates[runner.botId] = runner.getTacticalState();
+      const players = await runner.listOnlinePlayers();
+      for (const p of players) {
+        if (!p || !p.username) continue;
+        const prev = playerMap.get(p.username);
+        if (!prev || (!prev.visible && p.visible) || (p.distance !== null && (prev.distance === null || p.distance < prev.distance))) {
+          playerMap.set(p.username, { ...p, seenByBotId: runner.botId });
+        }
+      }
       const obs = runner.drainWorldObservations(5);
       for (const item of obs) worldObservations.push(item);
     }
@@ -298,7 +309,12 @@ class WorkerHost {
         this._needsReconcile = false;
       }
 
-      const ack = await this.client.heartbeat({ botSnapshots, worldObservations });
+      const ack = await this.client.heartbeat({
+        botSnapshots,
+        worldObservations,
+        observedPlayers: Array.from(playerMap.values()),
+        botTacticalStates
+      });
 
       // Extend monotonic lease deadlines for renewed leases
       if (Array.isArray(ack.renewedLeases)) {
@@ -443,6 +459,49 @@ class WorkerHost {
 
     if (commandType === 'request_snapshot') {
       await this.tickHeartbeat();
+      await this.client.ackCommand(commandId, {});
+      return;
+    }
+
+    if (commandType === 'tactical_order') {
+      const targets =
+        payload.botId && payload.botId !== '*'
+          ? [this.bots.get(payload.botId)].filter(Boolean)
+          : Array.from(this.bots.values());
+      targets.forEach((runner, idx) => {
+        runner
+          .executeTacticalOrder({
+            ...payload,
+            slotIndex: payload.slotIndex ?? idx,
+            slotTotal: payload.slotTotal ?? Math.max(1, targets.length)
+          })
+          .catch(() => {});
+      });
+      await this.client.ackCommand(commandId, {});
+      return;
+    }
+
+    if (commandType === 'apply_skin') {
+      const targets =
+        payload.botId && payload.botId !== '*'
+          ? [this.bots.get(payload.botId)].filter(Boolean)
+          : Array.from(this.bots.values());
+      for (const runner of targets) {
+        await runner.applySkin(payload).catch(() => {});
+      }
+      await this.client.ackCommand(commandId, {});
+      return;
+    }
+
+    if (commandType === 'build_schematic') {
+      const runner =
+        (payload.botId && payload.botId !== '*' ? this.bots.get(payload.botId) : null) ||
+        Array.from(this.bots.values())[0];
+      if (runner && payload.schematic) {
+        setImmediate(() => {
+          runner.executeDirectSchematic(payload.schematic).catch(() => {});
+        });
+      }
       await this.client.ackCommand(commandId, {});
       return;
     }

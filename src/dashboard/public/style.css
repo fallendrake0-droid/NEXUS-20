@@ -421,6 +421,10 @@ th {
   font-size: 13px;
 }
 
+.toast.toast-error {
+  border-color: var(--danger);
+}
+
 .badge {
   display: inline-block;
   padding: 2px 7px;
@@ -430,3 +434,236 @@ th {
   background: var(--surface-alt);
   border: 1px solid var(--border);
 }
+
+.badge-leader {
+  background: rgba(245, 183, 0, 0.16);
+  border-color: #f5b700;
+  color: #ffe875;
+}
+
+.badge-knight {
+  background: rgba(225, 18, 26, 0.18);
+  border-color: #e1121a;
+  color: #fca5a5;
+}
+
+.badge-ally {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: #10b981;
+  color: #6ee7b7;
+}
+
+.badge-kos {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+  color: #fecaca;
+}
+
+.crimson-panel {
+  border-color: rgba(225, 18, 26, 0.45);
+  box-shadow: 0 0 0 1px rgba(225, 18, 26, 0.12);
+}
+
+.compact-sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+}
+
+.inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.top-gap {
+  margin-top: 12px;
+}
+
+.sub-heading {
+  margin: 16px 0 8px;
+  font-size: 13.5px;
+}
+
+.btn.accent-red {
+  background: #c81018;
+  border-color: #ef232b;
+  color: #fff;
+}
+
+.btn.accent-red:hover {
+  background: #e1121a;
+}
+
+.btn.accent-gold {
+  background: #b77900;
+  border-color: #f5b700;
+  color: #fff;
+}
+
+.btn.accent-gold:hover {
+  background: #d48d00;
+}
+
+.hero-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chip-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cat-chip {
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.cat-chip.active {
+  background: #c81018;
+  border-color: #ff3b3b;
+  color: #fff;
+}
+
+.command-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 9px;
+}
+
+.command-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.command-card:hover {
+  border-color: #e1121a;
+}
+
+.command-card-title {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.command-card-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.command-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.skin-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.skin-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 7px;
+}
+
+.skin-card.skin-card-leader {
+  border-color: rgba(245, 183, 0, 0.55);
+}
+
+.skin-card.skin-card-knight {
+  border-color: rgba(225, 18, 26, 0.55);
+}
+
+.skin-canvas {
+  image-rendering: pixelated;
+  background: radial-gradient(circle, rgba(225, 18, 26, 0.14) 0%, rgba(9, 12, 18, 0.95) 75%);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.bot-head-canvas {
+  image-rendering: pixelated;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.stack-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.field-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-col label {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.toggle-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 4px 0;
+}
+
+.check-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.code-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+

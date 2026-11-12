@@ -3,6 +3,9 @@
 const crypto = require('node:crypto');
 const { DomainError, isDomainError } = require('../errors/DomainError');
 const { splitQuota, partitionRegion } = require('../scheduler/quotaMath');
+const { SkinManager } = require('../skins/SkinGenerator');
+const { SchematicRegistry } = require('../schematics/SchematicBuilder');
+const { listZeroAiCommands } = require('../commands/ZeroAiCommandDeck');
 
 const ROLE_RANK = Object.freeze({
   viewer: 1,
@@ -120,6 +123,11 @@ class Coordinator {
     this._safeMode = false;
     this._safeModeReason = null;
     this._inFlightIdempotency = new Map();
+    this.skinManager = new SkinManager();
+    this.schematicRegistry = new SchematicRegistry();
+    this._observedPlayers = new Map();
+    this._playerRelations = new Map(); // lowerUsername -> 'ally' | 'kos' | 'neutral'
+    this._botTacticalStates = new Map();
   }
 
   get safeMode() {
@@ -808,7 +816,12 @@ class Coordinator {
       recentDecisions,
       recentAudit,
       workers: this._registry.listWorkers(),
-      bots: this._registry.listBots(),
+      bots: this._registry.listBots().map((b, idx) => ({
+        ...b,
+        skin: this.skinManager.resolveBotSkin(b.botId, idx),
+        tacticalState: this._botTacticalStates.get(b.botId) || { mode: 'idle', targetPlayer: null }
+      })),
+      players: this._listServerPlayersInternal(),
       persistence: this._store.health(),
       resources: sample
     };
@@ -968,6 +981,34 @@ class Coordinator {
     const pinnedItemKeys = activeResRows.map((r) => r.resource_id);
 
     const ack = this._registry.heartbeat(authWorker.workerId, heartbeatDto, { pinnedItemKeys });
+
+    if (Array.isArray(heartbeatDto.observedPlayers)) {
+      const nowIso = new Date().toISOString();
+      for (const p of heartbeatDto.observedPlayers.slice(0, 64)) {
+        if (!p || typeof p.username !== 'string' || !p.username.trim()) continue;
+        const uname = p.username.trim().slice(0, 32);
+        this._observedPlayers.set(uname.toLowerCase(), {
+          username: uname,
+          uuid: p.uuid || null,
+          ping: p.ping ?? null,
+          visible: Boolean(p.visible),
+          isSwarmBot: Boolean(p.isSwarmBot),
+          position: p.position || null,
+          distance: p.distance ?? null,
+          health: p.health ?? null,
+          seenByBotId: p.seenByBotId || null,
+          lastSeenAt: nowIso
+        });
+      }
+    }
+
+    if (heartbeatDto.botTacticalStates && typeof heartbeatDto.botTacticalStates === 'object') {
+      for (const [bId, tState] of Object.entries(heartbeatDto.botTacticalStates)) {
+        if (tState && typeof tState === 'object') {
+          this._botTacticalStates.set(String(bId), tState);
+        }
+      }
+    }
 
     // Optional piggybacked world observations from bots (`ADR-005`)
     if (this._knowledge && Array.isArray(heartbeatDto.worldObservations)) {
@@ -1138,6 +1179,285 @@ class Coordinator {
     this._logger?.info('Coordinator startup recovery completed', report);
     this._bus.publish('master.recovered', report);
     return report;
+  }
+
+  _listServerPlayersInternal() {
+    const out = [];
+    for (const [lowName, info] of this._observedPlayers.entries()) {
+      out.push({
+        ...info,
+        relation: this._playerRelations.get(lowName) || (info.isSwarmBot ? 'ally' : 'neutral')
+      });
+    }
+    for (const [lowName, rel] of this._playerRelations.entries()) {
+      if (!this._observedPlayers.has(lowName)) {
+        out.push({
+          username: lowName,
+          uuid: null,
+          ping: null,
+          visible: false,
+          isSwarmBot: false,
+          position: null,
+          distance: null,
+          health: null,
+          seenByBotId: null,
+          lastSeenAt: null,
+          relation: rel
+        });
+      }
+    }
+    return out.sort((a, b) => Number(b.visible) - Number(a.visible) || a.username.localeCompare(b.username));
+  }
+
+  async listServerPlayers({ actor }) {
+    authorizeRole(actor, 'viewer');
+    return {
+      players: this._listServerPlayersInternal(),
+      tacticalByBot: Object.fromEntries(this._botTacticalStates)
+    };
+  }
+
+  async dispatchPlayerTacticalAction({
+    actor,
+    mode,
+    targetPlayer = null,
+    botId = '*',
+    preferredWeaponStyle = 'auto',
+    itemFilter = null,
+    relation = null,
+    autoEat = undefined,
+    autoArmor = undefined,
+    preemptTask = false
+  }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+
+    if (targetPlayer && relation && ['ally', 'kos', 'neutral'].includes(relation)) {
+      const low = String(targetPlayer).trim().toLowerCase();
+      if (relation === 'neutral') this._playerRelations.delete(low);
+      else this._playerRelations.set(low, relation);
+    }
+
+    const allies = [];
+    const kosPlayers = [];
+    for (const [low, rel] of this._playerRelations.entries()) {
+      if (rel === 'ally') allies.push(low);
+      if (rel === 'kos') kosPlayers.push(low);
+    }
+
+    const cleanMode = String(mode || 'idle').trim().toLowerCase();
+    const workers = this._registry.listWorkers();
+    const enqueued = [];
+
+    this._store.transaction(() => {
+      if (botId && botId !== '*') {
+        const botRow = this._store.get('SELECT * FROM bots WHERE bot_id = ?', String(botId));
+        if (!botRow) throw new DomainError('NOT_FOUND', `Bot ${botId} not found`);
+        const env = this._tasks._enqueueWorkerCommand(botRow.worker_id, 'tactical_order', {
+          botId: botRow.bot_id,
+          mode: cleanMode,
+          targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
+          preferredWeaponStyle,
+          itemFilter,
+          allies,
+          kosPlayers,
+          autoEat,
+          autoArmor,
+          preemptTask: Boolean(preemptTask)
+        });
+        this._botTacticalStates.set(botRow.bot_id, {
+          mode: cleanMode,
+          targetPlayer: targetPlayer || null,
+          preferredWeaponStyle
+        });
+        enqueued.push(env.commandId);
+      } else {
+        for (const w of workers) {
+          const env = this._tasks._enqueueWorkerCommand(w.workerId, 'tactical_order', {
+            botId: '*',
+            mode: cleanMode,
+            targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
+            preferredWeaponStyle,
+            itemFilter,
+            allies,
+            kosPlayers,
+            autoEat,
+            autoArmor,
+            preemptTask: Boolean(preemptTask)
+          });
+          enqueued.push(env.commandId);
+        }
+        for (const b of this._registry.listBots()) {
+          this._botTacticalStates.set(b.botId, {
+            mode: cleanMode,
+            targetPlayer: targetPlayer || null,
+            preferredWeaponStyle
+          });
+        }
+      }
+    });
+
+    this._publishPostCommit('players.tactical_updated', targetPlayer || 'swarm', {
+      mode: cleanMode,
+      targetPlayer,
+      botId,
+      preferredWeaponStyle,
+      enqueuedCount: enqueued.length
+    });
+
+    return {
+      ok: true,
+      mode: cleanMode,
+      targetPlayer,
+      botId,
+      preferredWeaponStyle,
+      enqueuedCommandIds: enqueued,
+      players: this._listServerPlayersInternal()
+    };
+  }
+
+  async updateAiProviderConfig({ actor, provider, apiKey, model, baseUrl }) {
+    authorizeRole(actor, 'admin');
+    if (typeof this._ai.configureProvider !== 'function') {
+      throw new DomainError('NOT_IMPLEMENTED', 'AI runtime provider configuration is unavailable');
+    }
+    let updated;
+    try {
+      updated = this._ai.configureProvider({ provider, apiKey, model, baseUrl });
+    } catch (err) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', err.message || 'Invalid AI provider settings');
+    }
+    this._publishPostCommit('system.ai_provider_changed', updated.name, {
+      activeProvider: updated.name,
+      model: updated.model
+    });
+    return {
+      activeProvider: this._ai.activeProvider,
+      updated,
+      providers: this._ai.listProviders()
+    };
+  }
+
+  async listZeroAiDeck({ actor, category, search, limit, offset }) {
+    authorizeRole(actor, 'viewer');
+    return listZeroAiCommands({ category, search, limit, offset });
+  }
+
+  async listSkins({ actor }) {
+    authorizeRole(actor, 'viewer');
+    const bots = this._registry.listBots().map((b, idx) => ({
+      botId: b.botId,
+      username: b.username,
+      skin: this.skinManager.resolveBotSkin(b.botId, idx)
+    }));
+    return {
+      skins: this.skinManager.listSkins(),
+      botSkins: bots
+    };
+  }
+
+  async assignSkin({ actor, botId, skinId, preset, publicBaseUrl }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const allBots = this._registry.listBots();
+
+    if (preset) {
+      this.skinManager.applySwarmPreset(
+        preset,
+        allBots.map((b) => b.botId)
+      );
+    } else if (botId && skinId) {
+      if (!this.skinManager.isValidSkinId(skinId)) {
+        throw new DomainError('SCHEMA_VALIDATION_FAILED', `Unknown skinId: ${skinId}`);
+      }
+      if (botId === '*') {
+        for (const b of allBots) this.skinManager.assignBotSkin(b.botId, skinId);
+      } else {
+        this.skinManager.assignBotSkin(botId, skinId);
+      }
+    }
+
+    // Push live `apply_skin` command to online worker bots (applies via SkinsRestorer when present)
+    this._store.transaction(() => {
+      const targetBots = botId && botId !== '*' && !preset
+        ? allBots.filter((b) => b.botId === botId)
+        : allBots;
+      for (const [idx, b] of targetBots.entries()) {
+        const resolved = this.skinManager.resolveBotSkin(b.botId, idx);
+        const pngUrl = publicBaseUrl
+          ? `${String(publicBaseUrl).replace(/\/+$/, '')}${resolved.pngUrl}`
+          : null;
+        try {
+          this._tasks._enqueueWorkerCommand(b.workerId, 'apply_skin', {
+            botId: b.botId,
+            skinId: resolved.skinId,
+            publicPngUrl: pngUrl
+          });
+        } catch {
+          // Ignore if worker row not present
+        }
+      }
+    });
+
+    this._publishPostCommit('skins.updated', botId || preset || 'swarm', {});
+    return this.listSkins({ actor });
+  }
+
+  async listSchematics({ actor }) {
+    authorizeRole(actor, 'viewer');
+    return { schematics: this.schematicRegistry.listSchematics() };
+  }
+
+  async registerCustomSchematic({ actor, spec }) {
+    authorizeRole(actor, 'operator');
+    try {
+      const entry = this.schematicRegistry.registerCustomSchematic(spec);
+      return { schematic: entry, schematics: this.schematicRegistry.listSchematics() };
+    } catch (err) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', err.message || 'Invalid custom schematic');
+    }
+  }
+
+  async buildSchematicNow({ actor, schematicId, botId = null }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const sch = this.schematicRegistry.getSchematic(schematicId);
+    if (!sch) {
+      throw new DomainError('NOT_FOUND', `Unknown schematic: ${schematicId}`);
+    }
+
+    if (!sch.builtin) {
+      // Custom runtime schematic: push full block array directly to target bot or first ready bot
+      const bots = this._registry.listBots();
+      const chosen =
+        (botId && botId !== '*' ? bots.find((b) => b.botId === botId) : null) ||
+        bots.find((b) => b.status === 'ready') ||
+        bots[0];
+      if (!chosen) {
+        throw new DomainError('NOT_FOUND', 'No enrolled bot available to build custom schematic');
+      }
+      const env = this._store.transaction(() =>
+        this._tasks._enqueueWorkerCommand(chosen.workerId, 'build_schematic', {
+          botId: chosen.botId,
+          schematic: sch
+        })
+      );
+      return {
+        mode: 'direct_custom_schematic',
+        botId: chosen.botId,
+        commandId: env.commandId,
+        schematicId: sch.schematicId,
+        blockCount: sch.blockCount
+      };
+    }
+
+    // Built-in schematic: submit as tracked Zero-AI Swarm Task so progress & leases appear in Task Queue!
+    return this.submitIntent({
+      actor,
+      source: 'dashboard',
+      text: `build schematic ${sch.schematicId}`,
+      priority: 'normal'
+    });
   }
 }
 

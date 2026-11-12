@@ -404,16 +404,64 @@ async function runSetupWizard({
       prevPerf
     );
 
-    // 9. AI BRAIN
-    const prevAiBool = existing.SWARM_AI_ENABLED === 'true';
-    const aiRaw = await ask(
-      '\n9. ai (Use a remote Ollama AI server on another PC? yes/no — "no" uses built-in £0 planner)',
-      prevAiBool ? 'yes' : 'no'
-    );
-    const aiEnabled = isYes(aiRaw, prevAiBool);
+    // 9. AI BRAIN (Zero-AI / Gemini / ChatGPT / Claude / Groq / OpenRouter / DeepSeek / Grok / Ollama)
+    const prevProvider = existing.SWARM_AI_PROVIDER || (existing.SWARM_AI_ENABLED === 'true' ? 'ollama' : 'no');
+    const aiRaw = (
+      await ask(
+        '\n9. ai (no = 1,370+ No-AI commands, or: gemini / chatgpt / claude / groq / openrouter / deepseek / grok / ollama)',
+        prevProvider
+      )
+    )
+      .trim()
+      .toLowerCase();
+
+    const cloudAliases = {
+      chatgpt: 'openai',
+      openai: 'openai',
+      gemini: 'gemini',
+      claude: 'anthropic',
+      anthropic: 'anthropic',
+      groq: 'groq',
+      openrouter: 'openrouter',
+      deepseek: 'deepseek',
+      grok: 'xai',
+      xai: 'xai',
+      mistral: 'mistral',
+      together: 'together',
+      cerebras: 'cerebras',
+      cohere: 'cohere',
+      perplexity: 'perplexity'
+    };
+
+    let aiEnabled = false;
+    let aiProvider = 'none';
+    let aiApiKey = existing.SWARM_AI_API_KEY || '';
+    let aiModel = existing.SWARM_AI_MODEL || '';
     let ollamaUrl = existing.SWARM_OLLAMA_URL || '';
     let ollamaModel = existing.SWARM_OLLAMA_MODEL || 'qwen2.5:3b';
-    if (aiEnabled) {
+
+    if (cloudAliases[aiRaw]) {
+      aiEnabled = true;
+      aiProvider = cloudAliases[aiRaw];
+      aiApiKey = await ask(`   9a. api_key (${aiProvider.toUpperCase()} API Key)`, aiApiKey);
+      const defaultCloudModel =
+        aiProvider === 'gemini'
+          ? 'gemini-2.5-flash'
+          : aiProvider === 'openai'
+            ? 'gpt-4o-mini'
+            : aiProvider === 'anthropic'
+              ? 'claude-sonnet-4-20250514'
+              : aiProvider === 'groq'
+                ? 'llama-3.3-70b-versatile'
+                : aiProvider === 'openrouter'
+                  ? 'meta-llama/llama-3.3-70b-instruct:free'
+                  : aiProvider === 'deepseek'
+                    ? 'deepseek-chat'
+                    : 'grok-3-mini';
+      aiModel = await ask('   9b. ai_model (Model ID)', aiModel || defaultCloudModel);
+    } else if (aiRaw === 'ollama' || isYes(aiRaw, false)) {
+      aiEnabled = true;
+      aiProvider = 'ollama';
       ollamaUrl = await ask(
         '   9a. ollama_url (Remote PC Ollama URL, e.g. http://192.168.1.50:11434)',
         ollamaUrl || 'http://192.168.1.50:11434'
@@ -443,7 +491,13 @@ async function runSetupWizard({
       SWARM_WORKER_BOT_COUNT: String(initialBots),
       SWARM_BOT_NAME_PREFIX: safePrefix,
       SWARM_AI_ENABLED: aiEnabled ? 'true' : 'false',
-      ...(aiEnabled && ollamaUrl ? { SWARM_OLLAMA_URL: ollamaUrl, SWARM_OLLAMA_MODEL: ollamaModel } : {}),
+      SWARM_AI_PROVIDER: aiProvider,
+      ...(aiEnabled && aiProvider === 'ollama' && ollamaUrl
+        ? { SWARM_OLLAMA_URL: ollamaUrl, SWARM_OLLAMA_MODEL: ollamaModel }
+        : {}),
+      ...(aiEnabled && aiProvider !== 'ollama' && aiApiKey
+        ? { SWARM_AI_API_KEY: aiApiKey, SWARM_AI_MODEL: aiModel }
+        : {}),
       SWARM_DB_PATH: existing.SWARM_DB_PATH || defaultDbPath,
       SWARM_BACKUP_DIR: existing.SWARM_BACKUP_DIR || defaultBackupDir,
       SWARM_CLI_TOKEN: existing.SWARM_CLI_TOKEN || crypto.randomBytes(32).toString('hex')

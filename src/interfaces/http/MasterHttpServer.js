@@ -447,6 +447,22 @@ class MasterHttpServer {
       return;
     }
 
+    // 2.5 Public 64x64 Minecraft Skin PNGs (`/skins/:skinId.png` for browser downloads & SkinsRestorer)
+    const skinPngMatch = /^\/skins\/([a-z0-9_-]{3,40})\.png$/i.exec(pathname);
+    if ((method === 'GET' || method === 'HEAD') && skinPngMatch && this._coordinator?.skinManager) {
+      const skinId = skinPngMatch[1].toLowerCase();
+      if (!this._coordinator.skinManager.isValidSkinId(skinId)) {
+        throw new DomainError('NOT_FOUND', `Skin not found: ${skinId}`);
+      }
+      const pngBuf = this._coordinator.skinManager.getPngBuffer(skinId);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Length', pngBuf.byteLength);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.end(method === 'HEAD' ? undefined : pngBuf);
+      return;
+    }
+
     // 3. Distributed Worker Gateway (`/worker/v1/*`)
     if (pathname.startsWith('/worker/v1/')) {
       await this._handleWorkerRoutes(req, res, method, pathname, parsedUrl, clientIp);
@@ -622,7 +638,7 @@ class MasterHttpServer {
     }
 
     if (method === 'POST' && pathname === '/api/v1/tasks') {
-      this._auth.checkRateLimit(`tasks:${clientIp}`, 30, 60_000);
+      this._auth.checkRateLimit(`tasks:${clientIp}`, 120, 60_000);
       const body = await this._readJsonBody(req, 65_536);
       const created = await this._coordinator.submitIntent({
         actor,
@@ -807,6 +823,109 @@ class MasterHttpServer {
     if (method === 'POST' && pathname === '/api/v1/system/exit-safe-mode') {
       const resSafe = await this._coordinator.exitSafeMode({ actor });
       this._sendJson(res, 200, resSafe);
+      return;
+    }
+
+    // Zero-AI 1,370+ Command Catalog (`/api/v1/commands`)
+    if (method === 'GET' && pathname === '/api/v1/commands') {
+      const category = parsedUrl.searchParams.get('category') || null;
+      const search = parsedUrl.searchParams.get('search') || null;
+      const limit = Number(parsedUrl.searchParams.get('limit') || 120);
+      const offset = Number(parsedUrl.searchParams.get('offset') || 0);
+      const deck = await this._coordinator.listZeroAiDeck({
+        actor,
+        category,
+        search,
+        limit,
+        offset
+      });
+      this._sendJson(res, 200, deck);
+      return;
+    }
+
+    // Custom Knight & Commander Robe Skins (`/api/v1/skins`)
+    if (method === 'GET' && pathname === '/api/v1/skins') {
+      const skins = await this._coordinator.listSkins({ actor });
+      this._sendJson(res, 200, skins);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/skins/assign') {
+      const body = await this._readJsonBody(req, 16_384);
+      const proto = this._config.tls?.enabled ? 'https' : 'http';
+      const hostHdr = req.headers.host || `${this._config.http.host}:${this._boundPort}`;
+      const assigned = await this._coordinator.assignSkin({
+        actor,
+        botId: body.botId || null,
+        skinId: body.skinId || null,
+        preset: body.preset || null,
+        publicBaseUrl: body.publicBaseUrl || `${proto}://${hostHdr}`
+      });
+      this._sendJson(res, 200, assigned);
+      return;
+    }
+
+    // Live Server Players & PvP / Escort / Drop-Loot Operations (`/api/v1/players`)
+    if (method === 'GET' && pathname === '/api/v1/players') {
+      const playersRes = await this._coordinator.listServerPlayers({ actor });
+      this._sendJson(res, 200, playersRes);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/players/action') {
+      const body = await this._readJsonBody(req, 16_384);
+      const actRes = await this._coordinator.dispatchPlayerTacticalAction({
+        actor,
+        mode: body.mode,
+        targetPlayer: body.targetPlayer || null,
+        botId: body.botId || '*',
+        preferredWeaponStyle: body.preferredWeaponStyle || 'auto',
+        itemFilter: body.itemFilter || null,
+        relation: body.relation || null,
+        autoEat: body.autoEat,
+        autoArmor: body.autoArmor,
+        preemptTask: Boolean(body.preemptTask)
+      });
+      this._sendJson(res, 200, actRes);
+      return;
+    }
+
+    // Schematics & Blueprint Builder (`/api/v1/schematics`)
+    if (method === 'GET' && pathname === '/api/v1/schematics') {
+      const schRes = await this._coordinator.listSchematics({ actor });
+      this._sendJson(res, 200, schRes);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/schematics/custom') {
+      const body = await this._readJsonBody(req, 65_536);
+      const createdSch = await this._coordinator.registerCustomSchematic({ actor, spec: body });
+      this._sendJson(res, 201, createdSch);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/schematics/build') {
+      const body = await this._readJsonBody(req, 16_384);
+      const built = await this._coordinator.buildSchematicNow({
+        actor,
+        schematicId: body.schematicId,
+        botId: body.botId || null
+      });
+      this._sendJson(res, 200, built);
+      return;
+    }
+
+    // Multi-Provider AI Brain Switcher (`/api/v1/ai/config` — Gemini, ChatGPT, Claude, Groq, OpenRouter, etc.)
+    if (method === 'POST' && pathname === '/api/v1/ai/config') {
+      const body = await this._readJsonBody(req, 16_384);
+      const aiRes = await this._coordinator.updateAiProviderConfig({
+        actor,
+        provider: body.provider,
+        apiKey: body.apiKey,
+        model: body.model,
+        baseUrl: body.baseUrl
+      });
+      this._sendJson(res, 200, aiRes);
       return;
     }
 
