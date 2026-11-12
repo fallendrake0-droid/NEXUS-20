@@ -173,6 +173,41 @@ function cliHttpRequest(
   });
 }
 
+function ensureModernMineflayerOnDisk(cwd, stdout) {
+  let needsUpgrade = false;
+  try {
+    const mfPkg = require.resolve('mineflayer/package.json', { paths: [cwd, __dirname] });
+    const mfDir = path.dirname(mfPkg);
+    const mcDataPkg = require.resolve('minecraft-data/package.json', { paths: [mfDir, cwd, __dirname] });
+    const pc261Dir = path.join(path.dirname(mcDataPkg), 'minecraft-data', 'data', 'pc', '26.1');
+    if (!fs.existsSync(pc261Dir)) {
+      needsUpgrade = true;
+    }
+  } catch {
+    needsUpgrade = true;
+  }
+  if (!needsUpgrade) return;
+  try {
+    // eslint-disable-next-line global-require
+    const { execFileSync } = require('node:child_process');
+    stdout.write('Updating mineflayer + protocol packages for Minecraft 26.2 support...\n');
+    execFileSync(
+      'npm',
+      [
+        'install',
+        '--no-save',
+        'mineflayer@latest',
+        'mineflayer-pathfinder@latest',
+        'minecraft-data@latest',
+        'minecraft-protocol@latest'
+      ],
+      { cwd, stdio: 'inherit' }
+    );
+  } catch {
+    // Non-fatal: BotRunner will report a clear actionable error if mineflayer is absent
+  }
+}
+
 function defaultMasterUrlFromConfig(config, explicitUrl) {
   if (explicitUrl) return String(explicitUrl);
   const scheme = config.tls.enabled ? 'https' : 'http';
@@ -444,6 +479,10 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
       }
     }
 
+    if (!config.worker?.simulationMode && io.autoInstallDeps !== false && isInteractive) {
+      ensureModernMineflayerOnDisk(path.dirname(envFilePath), stdout);
+    }
+
     const worker = createWorker(config);
     const started = await worker.start();
     let shuttingDown = false;
@@ -466,7 +505,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
           '============================================================',
           '  NEXUS-20 Worker is LIVE & Enrolled!',
           `  Master Link   : ${config.worker.masterUrl} (${config.worker.workerId})`,
-          `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort}`,
+          `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (MC ${config.worker.minecraftVersion})`,
           `  Active Bots   : ${botNames || started.botCount}`,
           ...(pendingErr
             ? [
@@ -491,6 +530,9 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
   // Optional all-in-one local mode (`SWARM_LOCAL_SIM=true` or `SWARM_LOCAL_STANDALONE=true`)
   if (env.SWARM_LOCAL_SIM === 'true' || env.SWARM_LOCAL_STANDALONE === 'true') {
     const isRealStandalone = env.SWARM_LOCAL_STANDALONE === 'true';
+    if (isRealStandalone && io.autoInstallDeps !== false && isInteractive) {
+      ensureModernMineflayerOnDisk(path.dirname(envFilePath), stdout);
+    }
     try {
       const simToken = master.botRegistry.createBootstrapToken({
         createdBy: isRealStandalone ? 'local_standalone' : 'local_sim'
@@ -512,7 +554,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
         SWARM_BOOTSTRAP_TOKEN: simToken.bootstrapToken,
         SWARM_WORKER_SIMULATION: isRealStandalone ? 'false' : 'true',
         SWARM_SPAWN_STAGGER_MS: isRealStandalone
-          ? String(env.SWARM_SPAWN_STAGGER_MS || '4000')
+          ? String(env.SWARM_SPAWN_STAGGER_MS || '4500')
           : '150'
       });
       embeddedSimWorker = createWorker(simWorkerCfg);
@@ -557,7 +599,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
         '============================================================',
         '  NEXUS-20 Master Controller is LIVE!',
         `  Control Centre: ${uiUrl}`,
-        `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (${config.envProfile === 'private_offline_test' ? 'Cracked/Offline' : 'Microsoft Online'})`,
+        `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (MC ${config.worker.minecraftVersion}, ${config.envProfile === 'private_offline_test' ? 'Cracked/Offline' : 'Microsoft Online'})`,
         tokenLine,
         '  (Press Ctrl+C to stop cleanly)',
         '============================================================',

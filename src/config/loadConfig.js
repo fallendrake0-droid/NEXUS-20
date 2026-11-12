@@ -307,7 +307,7 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       ),
       spawnStaggerMs: parseIntOr(
         env.SWARM_SPAWN_STAGGER_MS ?? fileConfig.worker?.spawnStaggerMs,
-        2_500
+        4_500
       ),
       commandPollIntervalMs: parseIntOr(
         env.SWARM_WORKER_POLL_MS ?? fileConfig.worker?.commandPollIntervalMs,
@@ -315,7 +315,9 @@ function buildRawConfig(env = {}, fileConfig = {}) {
       ),
       minecraftHost: mcEndpoint.host,
       minecraftPort: mcEndpoint.port,
-      minecraftVersion: env.SWARM_MC_VERSION ?? fileConfig.worker?.minecraftVersion ?? null,
+      minecraftVersion:
+        String(env.SWARM_MC_VERSION ?? fileConfig.worker?.minecraftVersion ?? '26.2').trim() ||
+        '26.2',
       serverId: String(
         env.SWARM_MC_SERVER_ID ?? fileConfig.worker?.serverId ?? 'survival-main'
       ).trim(),

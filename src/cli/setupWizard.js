@@ -183,12 +183,13 @@ function formatSavedConfigBanner(values = {}) {
         ? 'local_sim (Master + Simulated Bots)'
         : values.SWARM_ROLE || 'master';
   const server = `${values.SWARM_MC_HOST || 'thebasement-wUr4.aternos.me'}:${values.SWARM_MC_PORT || '25565'}`;
+  const mcVer = values.SWARM_MC_VERSION || '26.2';
   const cracked = (values.SWARM_ENV_PROFILE || 'private_offline_test') === 'private_offline_test' ? 'yes (cracked/offline)' : 'no (Microsoft online)';
   const bots = values.SWARM_ENABLED_BOTS || values.SWARM_WORKER_BOT_COUNT || '2';
   const prefix = values.SWARM_BOT_NAME_PREFIX || 'Nexus';
   const ai = values.SWARM_AI_ENABLED === 'true'
-    ? `enabled (${values.SWARM_OLLAMA_URL || 'remote'} / ${values.SWARM_OLLAMA_MODEL || 'qwen2.5:3b'})`
-    : 'built-in offline planner (£0)';
+    ? `enabled (${values.SWARM_AI_PROVIDER || 'ollama'})`
+    : 'built-in 1,370+ No-AI commands (£0)';
   const endpoint = (values.SWARM_ROLE || 'master') === 'worker'
     ? `Master -> ${values.SWARM_MASTER_URL || 'http://192.168.1.168:8443'}`
     : `Control Centre -> http://${values.SWARM_BIND_HOST || '127.0.0.1'}:${values.SWARM_PORT || '8443'}`;
@@ -199,7 +200,7 @@ function formatSavedConfigBanner(values = {}) {
     '  NEXUS-20 — Saved Configuration (.env)',
     '============================================================',
     `  role          : ${role}`,
-    `  server        : ${server}`,
+    `  server        : ${server} (MC ${mcVer})`,
     `  cracked       : ${cracked}`,
     `  initial_bots  : ${bots} (${prefix}_01 .. ${prefix}_${String(Number(bots) || 2).padStart(2, '0')})`,
     `  mode/profile  : ${values.SWARM_OPERATING_MODE || 'HYBRID'} / ${values.SWARM_PERFORMANCE_PROFILE || 'BALANCED'}`,
@@ -486,6 +487,7 @@ async function runSetupWizard({
       SWARM_PERFORMANCE_PROFILE: performanceProfile,
       SWARM_MC_HOST: parsedMc.host,
       SWARM_MC_PORT: String(mcPort),
+      SWARM_MC_VERSION: existing.SWARM_MC_VERSION || '26.2',
       SWARM_MC_SERVER_ID: parsedMc.host.split('.')[0] || 'survival-main',
       SWARM_ENABLED_BOTS: String(initialBots),
       SWARM_WORKER_BOT_COUNT: String(initialBots),
@@ -569,11 +571,11 @@ async function runSetupWizard({
         const staggerMs = clampInt(
           await ask(
             '14. spawn_stagger_ms (Delay in ms between bots joining Aternos)',
-            existing.SWARM_SPAWN_STAGGER_MS || '4000'
+            existing.SWARM_SPAWN_STAGGER_MS || '4500'
           ),
           0,
           60_000,
-          4000
+          4500
         );
         envOut.SWARM_SPAWN_STAGGER_MS = String(staggerMs);
         if (autoInstallDeps) {
@@ -590,8 +592,8 @@ async function runSetupWizard({
               'yes'
             );
             if (isYes(instRaw, true)) {
-              output.write('Installing mineflayer + mineflayer-pathfinder...\n');
-              execFileSync('npm', ['install', '--no-save', 'mineflayer', 'mineflayer-pathfinder'], {
+              output.write('Installing mineflayer@latest + mineflayer-pathfinder@latest...\n');
+              execFileSync('npm', ['install', '--no-save', 'mineflayer@latest', 'mineflayer-pathfinder@latest'], {
                 cwd: path.dirname(envFilePath),
                 stdio: 'inherit'
               });
@@ -623,10 +625,10 @@ async function runSetupWizard({
         : '12. bootstrap_token (Paste "Worker Token" from your Phone Master terminal)';
       const bootToken = await ask(tokenPrompt, existing.SWARM_BOOTSTRAP_TOKEN || '');
       const staggerMs = clampInt(
-        await ask('13. spawn_stagger_ms (Delay in ms between bots joining Aternos)', existing.SWARM_SPAWN_STAGGER_MS || '4000'),
+        await ask('13. spawn_stagger_ms (Delay in ms between bots joining Aternos)', existing.SWARM_SPAWN_STAGGER_MS || '4500'),
         0,
         60_000,
-        4000
+        4500
       );
       const simRaw = await ask(
         '14. simulation (Dry-run simulation mode without connecting to Minecraft? yes/no)',
@@ -657,8 +659,8 @@ async function runSetupWizard({
             'yes'
           );
           if (isYes(instRaw, true)) {
-            output.write('Installing mineflayer + mineflayer-pathfinder on Worker...\n');
-            execFileSync('npm', ['install', '--no-save', 'mineflayer', 'mineflayer-pathfinder'], {
+            output.write('Installing mineflayer@latest + mineflayer-pathfinder@latest on Worker...\n');
+            execFileSync('npm', ['install', '--no-save', 'mineflayer@latest', 'mineflayer-pathfinder@latest'], {
               cwd: path.dirname(envFilePath),
               stdio: 'inherit'
             });

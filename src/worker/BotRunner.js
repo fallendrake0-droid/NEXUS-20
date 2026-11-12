@@ -18,6 +18,100 @@ const {
   FALLBACK_BUILDING_MATERIALS,
   sortBlocksForSafePlacement
 } = require('../schematics/SchematicBuilder');
+const {
+  DEFAULT_MINECRAFT_VERSION,
+  ensureMinecraft26_2Bootstrap,
+  installBotProtocolStabilizer
+} = require('./mc26_2Compat');
+
+/**
+ * Per-target login gate so multiple bots connecting/reconnecting from the same IP
+ * never trip Paper / Spigot / Aternos `connection-throttle: 4000` (`4.0s`).
+ */
+const REAL_LOGIN_GATE_CHAIN = new Map();
+const REAL_LOGIN_LAST_MS = new Map();
+
+async function waitRealLoginSlot(host, port, minSpacingMs) {
+  const spacing = Number(minSpacingMs || 0);
+  if (spacing <= 0) return;
+  const key = `${String(host || '').toLowerCase()}:${Number(port || 25565)}`;
+  const prev = REAL_LOGIN_GATE_CHAIN.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise((r) => {
+    release = r;
+  });
+  REAL_LOGIN_GATE_CHAIN.set(key, prev.then(() => next));
+  await prev;
+  try {
+    const last = REAL_LOGIN_LAST_MS.get(key) || 0;
+    const waitMs = Math.max(0, last + spacing - Date.now());
+    if (waitMs > 0) {
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+    REAL_LOGIN_LAST_MS.set(key, Date.now());
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Extract readable disconnect/kick text from plain strings, JSON chat, or
+ * 1.20.3+ / 26.2 Prismarine NBT chat compounds (`{ type: 'compound', value: ... }`).
+ */
+function formatDisconnectReason(reason, depth = 0) {
+  if (reason == null) return '';
+  if (depth > 6) return '';
+  if (typeof reason === 'string') {
+    const trimmed = reason.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const extracted = formatDisconnectReason(parsed, depth + 1);
+        if (extracted) return extracted;
+      } catch {
+        // plain string
+      }
+    }
+    return trimmed.replace(/§[0-9a-fk-or]/gi, '').replace(/\s+/g, ' ').trim();
+  }
+  if (reason instanceof Error) {
+    return String(reason.message || reason).replace(/\s+/g, ' ').trim();
+  }
+  if (Array.isArray(reason)) {
+    return reason
+      .map((item) => formatDisconnectReason(item, depth + 1))
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (typeof reason === 'object') {
+    // Prismarine NBT wrapper `{ type: 'string' | 'compound' | 'list', value: ... }`
+    if (typeof reason.type === 'string' && 'value' in reason) {
+      if (reason.type === 'list' && reason.value && Array.isArray(reason.value.value)) {
+        return formatDisconnectReason(reason.value.value, depth + 1);
+      }
+      return formatDisconnectReason(reason.value, depth + 1);
+    }
+    const parts = [];
+    if (reason.text !== undefined) parts.push(formatDisconnectReason(reason.text, depth + 1));
+    if (reason[''] !== undefined) parts.push(formatDisconnectReason(reason[''], depth + 1));
+    if (reason.translate !== undefined) {
+      const tr = formatDisconnectReason(reason.translate, depth + 1);
+      const withArgs = reason.with !== undefined ? formatDisconnectReason(reason.with, depth + 1) : '';
+      parts.push(withArgs ? `${tr} (${withArgs})` : tr);
+    }
+    if (reason.extra !== undefined) parts.push(formatDisconnectReason(reason.extra, depth + 1));
+    const joined = parts.filter(Boolean).join(' ').replace(/§[0-9a-fk-or]/gi, '').replace(/\s+/g, ' ').trim();
+    if (joined) return joined;
+    try {
+      return JSON.stringify(reason).slice(0, 180);
+    } catch {
+      return 'disconnected';
+    }
+  }
+  return String(reason);
+}
 
 /**
  * Deterministic Simulated BotDriver for dry-run / CI / multi-process verification
@@ -480,16 +574,25 @@ function flattenMotd(desc) {
 async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, requestedVersion }) {
   const cleanHost = String(host || '127.0.0.1').trim();
   const cleanPort = Number(port || 25565);
+  const explicitVersion =
+    requestedVersion && requestedVersion !== 'auto'
+      ? String(requestedVersion).trim()
+      : requestedVersion === 'auto'
+        ? null
+        : DEFAULT_MINECRAFT_VERSION;
 
-  if (requestedVersion && requestedVersion !== 'auto') {
-    return { host: cleanHost, port: cleanPort, version: String(requestedVersion) };
+  const isLoopback = cleanHost === '127.0.0.1' || cleanHost === 'localhost' || cleanHost === '::1';
+
+  // Fast path when explicit version is configured (default `26.2`) and either `mp.ping` is absent or host is loopback
+  if (explicitVersion && (!mp || typeof mp.ping !== 'function' || isLoopback)) {
+    return { host: cleanHost, port: cleanPort, version: explicitVersion };
   }
 
   if (!mp || typeof mp.ping !== 'function') {
-    return { host: cleanHost, port: cleanPort, version: false };
+    return { host: cleanHost, port: cleanPort, version: explicitVersion || DEFAULT_MINECRAFT_VERSION };
   }
 
-  let pingRes;
+  let pingRes = null;
   try {
     pingRes = await new Promise((resolve, reject) => {
       let done = false;
@@ -512,7 +615,14 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
     if (code === 'ENOTFOUND') {
       throw new Error(`Server address "${cleanHost}" was not found in DNS — check spelling in Step 2`);
     }
-    if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE') {
+    if (code === 'ECONNREFUSED') {
+      throw new Error(`Server "${cleanHost}" is currently offline or starting up (${code})`);
+    }
+    // Some servers/proxies drop status pings while accepting play logins: if an explicit version (e.g. `26.2`) is set, proceed!
+    if (explicitVersion) {
+      return { host: cleanHost, port: cleanPort, version: explicitVersion };
+    }
+    if (code === 'ECONNRESET' || code === 'EPIPE') {
       throw new Error(`Server "${cleanHost}" is currently offline or starting up (${code})`);
     }
     throw new Error(`Server "${cleanHost}" is unreachable (${err?.message || 'offline'})`);
@@ -536,7 +646,12 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
     );
   }
 
-  // Resolve exact version string supported by installed minecraft-data / mineflayer
+  // When an explicit version (such as the default `26.2`) is configured, honor it directly once server is confirmed online!
+  if (explicitVersion) {
+    return { host: cleanHost, port: cleanPort, version: explicitVersion };
+  }
+
+  // `auto` mode: resolve exact version string supported by hydrated `minecraft-data` (up to `26.2` / protocol 776)
   const tested = Array.isArray(mineflayerMod?.testedVersions) ? mineflayerMod.testedVersions : [];
   let resolvedVersion = null;
 
@@ -550,7 +665,7 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
       }
     }
     if (!resolvedVersion) {
-      const m = verName.match(/\b(1\.\d+(?:\.\d+)?)\b/);
+      const m = verName.match(/\b((?:1|2[6-9])\.\d+(?:\.\d+)?)\b/);
       if (m && mcDataMod(m[1])) {
         resolvedVersion = m[1];
       }
@@ -558,7 +673,7 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
   }
 
   if (!resolvedVersion) {
-    const latestTested = tested.length > 0 ? tested[tested.length - 1] : '1.21.4';
+    const latestTested = tested.length > 0 ? tested[tested.length - 1] : DEFAULT_MINECRAFT_VERSION;
     throw new Error(
       `Server "${cleanHost}" is running "${verName}" (protocol ${proto}); Mineflayer supports up to ${latestTested}. Switch server version to ${latestTested} or add ViaVersion+ViaBackwards on Aternos`
     );
@@ -572,6 +687,9 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
  * Never required on the Master Controller (`G-01`).
  */
 function createMineflayerDriver(options = {}) {
+  // Hydrate `minecraft-data` 26.2 (`protocol 776`), `minecraft-protocol`, `prismarine-chunk`, and `mineflayer` BEFORE loading `mineflayer`!
+  ensureMinecraft26_2Bootstrap();
+
   let mineflayer;
   try {
     // eslint-disable-next-line global-require, import/no-unresolved
@@ -624,8 +742,10 @@ function createMineflayerDriver(options = {}) {
 
   function startAutonomyLoop() {
     stopAutonomyLoop();
+    const spawnedAt = Date.now();
     autonomyTimer = setInterval(() => {
-      if (!bot || !bot.entity || busyWorkSection) return;
+      // Allow a 1,500ms post-spawn grace window so initial chunk streaming & teleports settle cleanly
+      if (!bot || !bot.entity || busyWorkSection || Date.now() - spawnedAt < 1_500) return;
       combatEngine.tick(bot, moveNearPosition).catch(() => {});
     }, 500);
     autonomyTimer.unref?.();
@@ -979,8 +1099,18 @@ function createMineflayerDriver(options = {}) {
       const target = await probeMinecraftServer(mpMod, mcDataMod, mineflayer, {
         host: options.minecraftHost,
         port: options.minecraftPort ?? 25565,
-        requestedVersion: options.minecraftVersion || null
+        requestedVersion: options.minecraftVersion || DEFAULT_MINECRAFT_VERSION
       });
+
+      const isLoopback =
+        target.host === '127.0.0.1' || target.host === 'localhost' || target.host === '::1';
+      const loginGateMs =
+        options.loginGateMs !== undefined
+          ? Number(options.loginGateMs)
+          : isLoopback
+            ? 0
+            : 4_500;
+      await waitRealLoginSlot(target.host, target.port, loginGateMs);
 
       const currentBot = mineflayer.createBot({
         host: target.host,
@@ -992,7 +1122,15 @@ function createMineflayerDriver(options = {}) {
         hideErrors: true
       });
       bot = currentBot;
-      currentBot.on('error', () => {});
+
+      // Install 26.2 + 1.21.2+ `tick_end` & packet mapper stabilizer immediately!
+      installBotProtocolStabilizer(currentBot);
+
+      let lastKickReason = '';
+      let lastProtocolError = '';
+      currentBot.on('error', (err) => {
+        lastProtocolError = formatDisconnectReason(err);
+      });
 
       if (pathfinderMod && typeof currentBot.loadPlugin === 'function') {
         try {
@@ -1040,17 +1178,24 @@ function createMineflayerDriver(options = {}) {
           finishReject(err);
         });
         listeners.on(currentBot, 'kicked', (reason) => {
-          const cleanReason = String(reason || 'kicked').replace(/\s+/g, ' ').trim();
+          const cleanReason = formatDisconnectReason(reason) || 'kicked';
+          lastKickReason = cleanReason;
           emitter.emit('kicked', cleanReason);
           finishReject(new Error(`Kicked by server: ${cleanReason}`));
         });
         listeners.on(currentBot, 'end', (reason) => {
-          const cleanReason = String(reason || 'end');
+          const rawReason = formatDisconnectReason(reason) || 'end';
+          const detail =
+            lastKickReason
+              ? `kicked: ${lastKickReason}`
+              : rawReason === 'socketClosed' && lastProtocolError
+                ? `${rawReason} (${lastProtocolError})`
+                : rawReason;
           stopAutonomyLoop();
           listeners.dispose();
           if (bot === currentBot) bot = null;
-          emitter.emit('end', cleanReason);
-          finishReject(new Error(`Connection closed before spawn (${cleanReason})`));
+          emitter.emit('end', detail);
+          finishReject(new Error(`Connection closed before spawn (${detail})`));
         });
         listeners.on(currentBot, 'chat', (username, message) => {
           const player = currentBot.players && currentBot.players[username];
@@ -1567,6 +1712,8 @@ class BotRunner extends EventEmitter {
     this._stopped = false;
     this._connecting = false;
     this._reconnectTimer = null;
+    this._stabilityTimer = null;
+    this._spawnedAtMs = 0;
     this._reconnectAttempt = 0;
     this._lastConnectError = null;
     this._reconnectBaseMs = Math.max(500, Number(options.reconnectBaseMs || 8_000));
@@ -1591,21 +1738,33 @@ class BotRunner extends EventEmitter {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    if (this._stabilityTimer) {
+      clearTimeout(this._stabilityTimer);
+      this._stabilityTimer = null;
+    }
     this._listeners.dispose();
     this._listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
     this._listeners.on(this._driver, 'end', (reason) => {
+      if (this._stabilityTimer) {
+        clearTimeout(this._stabilityTimer);
+        this._stabilityTimer = null;
+      }
+      const cleanReason = formatDisconnectReason(reason) || 'socket_closed';
       this.pathfindingGuard.clearBot(this.botId);
       this.emit('bot_lifecycle', {
         botId: this.botId,
         status: 'disconnected',
-        reason: String(reason || 'socket_closed').slice(0, 120)
+        reason: cleanReason.slice(0, 120)
       });
       if (!this._stopped && !this._kickedOrBanned && !this._connecting) {
-        this._scheduleReconnect();
+        if (!this._simulationMode && process.stdout?.isTTY) {
+          process.stdout.write(`  [MC] ${this.username} disconnected (${cleanReason}); will reconnect cleanly...\n`);
+        }
+        this._scheduleReconnect(cleanReason);
       }
     });
     this._listeners.on(this._driver, 'kicked', (reason) => {
-      const text = String(reason || '');
+      const text = formatDisconnectReason(reason);
       // Only permanent bans / whitelist rejections block auto-reconnect; Aternos "offline"/"starting"/"throttled" kicks retry cleanly
       if (/banned|banhammer|not whitelisted|you are not white-listed/i.test(text)) {
         this._kickedOrBanned = true;
@@ -1638,9 +1797,20 @@ class BotRunner extends EventEmitter {
     const prevErr = this._lastConnectError;
     try {
       await this._driver.connect();
-      this._reconnectAttempt = 0;
+      this._spawnedAtMs = Date.now();
       this._lastConnectError = null;
       this._connecting = false;
+
+      // Only reset reconnect backoff after 15s of stable in-game connection (prevents rapid join-leave flap loops!)
+      if (this._stabilityTimer) clearTimeout(this._stabilityTimer);
+      this._stabilityTimer = setTimeout(() => {
+        this._stabilityTimer = null;
+        if (!this._stopped && this._driver.connected) {
+          this._reconnectAttempt = 0;
+        }
+      }, 15_000);
+      this._stabilityTimer.unref?.();
+
       if (!this._simulationMode && process.stdout?.isTTY) {
         process.stdout.write(`  [MC] ${this.username} connected & spawned in Minecraft!\n`);
       }
@@ -1672,16 +1842,21 @@ class BotRunner extends EventEmitter {
         reason: reason.slice(0, 120)
       });
       if (!this._stopped && !this._kickedOrBanned) {
-        this._scheduleReconnect();
+        this._scheduleReconnect(reason);
       }
       return false;
     }
   }
 
-  _scheduleReconnect() {
+  _scheduleReconnect(reason = '') {
     if (this._stopped || this._kickedOrBanned || this._reconnectTimer) return;
     this._reconnectAttempt += 1;
-    const delayMs = Math.min(30_000, this._reconnectBaseMs * Math.min(4, this._reconnectAttempt));
+    const baseDelay = Math.min(45_000, this._reconnectBaseMs * Math.min(5, this._reconnectAttempt));
+    const needsThrottleCooldown =
+      !this._simulationMode &&
+      /throttled|wait before reconnecting|already connected|another location|duplicate/i.test(String(reason || ''));
+    const jitterMs = this._simulationMode ? 0 : Math.floor(Math.random() * 1_500);
+    const delayMs = Math.max(baseDelay, needsThrottleCooldown ? 9_000 : 0) + jitterMs;
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._stopped && !this._kickedOrBanned) {
@@ -1695,6 +1870,10 @@ class BotRunner extends EventEmitter {
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
+    }
+    if (this._stabilityTimer) {
+      clearTimeout(this._stabilityTimer);
+      this._stabilityTimer = null;
     }
     if (this._activeLease) {
       this._activeLease.cancelled = true;
@@ -1930,5 +2109,7 @@ module.exports = {
   BotRunner,
   SimulatedBotDriver,
   createMineflayerDriver,
+  probeMinecraftServer,
+  formatDisconnectReason,
   resolveMinecraftSrvEndpoint
 };
