@@ -95,6 +95,7 @@ function printHelp(stdout = process.stdout) {
       '  npm start                                                Interactive setup (first run) + start',
       '  npm run setup   (or: node index.js setup)                Configure options one-by-one (.env)',
       '  node --max-old-space-size=256 index.js [--no-wizard]     Start Master Controller & Web UI',
+      '  node index.js console                                     Start Master + interactive Tab-completing prompt',
       '  node index.js --role=worker [--simulation]               Start Distributed WorkerHost',
       '',
       'Diagnostics:',
@@ -208,6 +209,128 @@ function ensureModernMineflayerOnDisk(cwd, stdout) {
   }
 }
 
+function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
+  // eslint-disable-next-line global-require
+  const readline = require('node:readline');
+  // eslint-disable-next-line global-require
+  const {
+    createReadlineCompleter,
+    resolveUnifiedCommandExecution
+  } = require('./src/commands/CommandCompleter');
+
+  const actor = { id: 'cli:tty', username: 'cli-admin', role: 'admin' };
+  const getCtx = () => {
+    try {
+      const snap = master.coordinator.getStatusSnapshot?.() || {};
+      const bots = Array.isArray(snap.bots)
+        ? snap.bots.map((b) => b.botId || b.username).filter(Boolean)
+        : [];
+      const players = Array.isArray(snap.observedPlayers)
+        ? snap.observedPlayers.filter((p) => !p.isSwarmBot && p.username).map((p) => p.username)
+        : [];
+      return { bots, players };
+    } catch {
+      return {};
+    }
+  };
+
+  const rl = readline.createInterface({
+    input: stdin,
+    output: stdout,
+    completer: createReadlineCompleter(getCtx),
+    prompt: 'nexus / > ',
+    historySize: 100
+  });
+
+  rl.on('SIGINT', () => {
+    rl.close();
+    onQuit('SIGINT');
+  });
+
+  rl.on('line', async (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      rl.prompt();
+      return;
+    }
+    if (trimmed === 'exit' || trimmed === 'quit' || trimmed === '/quit') {
+      rl.close();
+      onQuit('SIGINT');
+      return;
+    }
+    if (trimmed === 'help' || trimmed === '/help' || trimmed === '?') {
+      stdout.write(
+        '  Commands (press [Tab] after any word to auto-complete!):\n' +
+          '    /mine <ore_or_block> [count]   /collect <resource> [count]\n' +
+          '    /craft <item> [count]          /smelt <item> [count]\n' +
+          '    /kit <progression_kit>         /build <schematic> [bot]\n' +
+          '    /kill <player> [weapon] [bot]  /follow <player>  /protect <player>\n' +
+          '    /surround <player>             /drop <player> [item]  /hunt\n' +
+          '    /skin sync                     /mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>\n' +
+          '    /botcap <1..20>                /stop             quit\n'
+      );
+      rl.prompt();
+      return;
+    }
+
+    try {
+      const schRes = await master.coordinator.listSchematics({ actor }).catch(() => ({ schematics: [] }));
+      const schIds = new Set((schRes.schematics || []).map((s) => s.schematicId || s.id));
+      const action = resolveUnifiedCommandExecution(trimmed, schIds);
+
+      if (action?.type === 'emergency_stop') {
+        const res = await master.coordinator.emergencyStopAll({ actor });
+        await master.coordinator.dispatchPlayerTacticalAction({ actor, mode: 'idle', botId: '*' }).catch(() => {});
+        stdout.write(`  [OK] Emergency stop & ceasefire sent (${res.stoppedBots || 0} bots)\n`);
+      } else if (action?.type === 'swarm_mode') {
+        await master.coordinator.setOperatingMode({ actor, mode: action.mode });
+        stdout.write(`  [OK] Operating mode -> ${action.mode}\n`);
+      } else if (action?.type === 'swarm_profile') {
+        await master.coordinator.setPerformanceProfile({ actor, profile: action.profile });
+        stdout.write(`  [OK] Performance profile -> ${action.profile}\n`);
+      } else if (action?.type === 'bot_cap') {
+        await master.coordinator.setEnabledBotsCap({ actor, enabledBotsCap: action.enabledBotsCap });
+        stdout.write(`  [OK] Enabled bot cap -> ${action.enabledBotsCap}\n`);
+      } else if (action?.type === 'skin_sync') {
+        await master.coordinator.assignSkin({
+          actor,
+          preset: action.preset,
+          botId: action.botId,
+          publicBaseUrl: uiUrl
+        });
+        stdout.write('  [OK] Crimson Shadow Knight skin synced across swarm\n');
+      } else if (action?.type === 'player_action') {
+        const res = await master.coordinator.dispatchPlayerTacticalAction({
+          actor,
+          ...action.payload
+        });
+        stdout.write(`  [OK] Tactical order: ${res.mode}${res.targetPlayer ? ` -> ${res.targetPlayer}` : ''}\n`);
+      } else if (action?.type === 'build_schematic') {
+        const res = await master.coordinator.buildSchematicNow({
+          actor,
+          schematicId: action.schematicId,
+          botId: action.botId
+        });
+        stdout.write(`  [OK] Building schematic: ${res.schematic?.name || action.schematicId}\n`);
+      } else if (action?.type === 'task_intent') {
+        const created = await master.coordinator.submitIntent({
+          actor,
+          source: 'cli',
+          text: action.text,
+          priority: 'normal'
+        });
+        stdout.write(`  [OK] Dispatched: ${created.intentSummary || action.text} [${created.state}]\n`);
+      }
+    } catch (err) {
+      stdout.write(`  [ERR] ${err?.message || err}\n`);
+    }
+    rl.prompt();
+  });
+
+  rl.prompt();
+  return rl;
+}
+
 function defaultMasterUrlFromConfig(config, explicitUrl) {
   if (explicitUrl) return String(explicitUrl);
   const scheme = config.tls.enabled ? 'https' : 'http';
@@ -234,7 +357,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
     return { exitCode: 0 };
   }
 
-  const subcommand = rawSub === 'start' ? null : rawSub;
+  const subcommand = rawSub === 'start' || rawSub === 'console' ? null : rawSub;
   const envFilePath =
     typeof flags['env-file'] === 'string'
       ? path.resolve(flags['env-file'])
@@ -601,11 +724,15 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
         `  Control Centre: ${uiUrl}`,
         `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort} (MC ${config.worker.minecraftVersion}, ${config.envProfile === 'private_offline_test' ? 'Cracked/Offline' : 'Microsoft Online'})`,
         tokenLine,
+        '  Command Bar   : Type / + press [Tab] below (or in the Web UI) to autocomplete commands!',
         '  (Press Ctrl+C to stop cleanly)',
         '============================================================',
         ''
       ].join('\n')
     );
+    if (stdin.isTTY === true && stdout.isTTY === true) {
+      startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, shutdownMaster);
+    }
   }
 
   master.logger.info('Master ready', {
@@ -638,6 +765,12 @@ if (require.main === module) {
 const { SkinManager } = require('./src/skins/SkinGenerator');
 const { SchematicRegistry } = require('./src/schematics/SchematicBuilder');
 const { listZeroAiCommands, MASTER_ZERO_AI_CATALOG } = require('./src/commands/ZeroAiCommandDeck');
+const {
+  buildAutocompleteDictionary,
+  getBrigadierCompletions,
+  resolveUnifiedCommandExecution,
+  createReadlineCompleter
+} = require('./src/commands/CommandCompleter');
 const { AI_PROVIDER_CATALOG } = require('./src/ai/AiProviderRegistry');
 const { CombatAndSurvivalEngine } = require('./src/combat/CombatAndSurvivalEngine');
 
@@ -677,6 +810,10 @@ module.exports = {
   SchematicRegistry,
   listZeroAiCommands,
   MASTER_ZERO_AI_CATALOG,
+  buildAutocompleteDictionary,
+  getBrigadierCompletions,
+  resolveUnifiedCommandExecution,
+  createReadlineCompleter,
   AI_PROVIDER_CATALOG,
   CombatAndSurvivalEngine
 };

@@ -21,6 +21,13 @@ const {
   probeMinecraftServer,
   formatDisconnectReason
 } = require('../../src/worker/BotRunner');
+const {
+  getBrigadierCompletions,
+  createReadlineCompleter,
+  resolveUnifiedCommandExecution
+} = require('../../src/commands/CommandCompleter');
+const { parseExtendedZeroAiIntent } = require('../../src/commands/ZeroAiCommandDeck');
+const { createMaster } = require('../../index');
 
 describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabilizer', () => {
   it('MC26-01: defaults worker.minecraftVersion to 26.2 and spawnStaggerMs to 4500ms in loadConfig & setupWizard', async () => {
@@ -268,5 +275,97 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     assert.equal(runner._reconnectAttempt, 1);
 
     await runner.stop();
+  });
+
+  it('MC26-05: Minecraft Brigadier Tab autocomplete & slash commands work end-to-end across Web UI, API & CLI', async () => {
+    const ctx = {
+      players: ['DragonSlayer', 'Alex'],
+      bots: ['bot-01', 'bot-02']
+    };
+
+    // 1. Step-by-step Brigadier Tab progression: `/mi` -> `/mine ` -> `/mine di` -> `/mine diamond ` -> `64`
+    const step1 = getBrigadierCompletions('/mi', ctx);
+    assert.equal(step1.suggestions[0].token, 'mine');
+    assert.equal(step1.suggestions[0].applyValue, '/mine ');
+
+    const step2 = getBrigadierCompletions('/mine di', ctx);
+    assert.equal(step2.suggestions[0].token, 'diamond');
+    assert.equal(step2.suggestions[0].applyValue, '/mine diamond ');
+
+    const step3 = getBrigadierCompletions('/mine diamond ', ctx);
+    assert.equal(step3.suggestions[0].token, '64');
+    assert.equal(step3.suggestions[0].applyValue, '/mine diamond 64');
+
+    // 2. PvP & Schematic & Kit Brigadier suggestions
+    const pvp1 = getBrigadierCompletions('/kill ', ctx);
+    assert.equal(pvp1.suggestions[0].token, 'DragonSlayer');
+    const pvp2 = getBrigadierCompletions('/kill DragonSlayer ma', ctx);
+    assert.equal(pvp2.suggestions[0].token, 'mace');
+    assert.equal(pvp2.suggestions[0].applyValue, '/kill DragonSlayer mace ');
+
+    const build1 = getBrigadierCompletions('/build wa', ctx);
+    assert.equal(build1.suggestions[0].token, 'watchtower');
+
+    const kit1 = getBrigadierCompletions('/kit full', ctx);
+    assert.equal(kit1.suggestions[0].token, 'full_iron_kit');
+
+    // 3. Readline completer for Termux / Linux terminal
+    const rlCompleter = createReadlineCompleter(() => ctx);
+    const [hits] = rlCompleter('/mi');
+    assert.deepEqual(hits, ['/mine ']);
+
+    // 4. Unified command execution & Minecraft `<verb> <item> <count>` Zero-AI parsing
+    const killExec = resolveUnifiedCommandExecution('/kill DragonSlayer mace bot-01');
+    assert.equal(killExec.type, 'player_action');
+    assert.equal(killExec.payload.mode, 'attack_player');
+    assert.equal(killExec.payload.targetPlayer, 'DragonSlayer');
+    assert.equal(killExec.payload.preferredWeaponStyle, 'mace');
+    assert.equal(killExec.payload.botId, 'bot-01');
+
+    const minePlan = parseExtendedZeroAiIntent('/mine diamond 64');
+    assert.ok(minePlan && minePlan.objectives.length === 1);
+    assert.equal(minePlan.objectives[0].target.resourceId, 'minecraft:diamond');
+    assert.equal(minePlan.objectives[0].target.quantity, 64);
+
+    const kitPlan = parseExtendedZeroAiIntent('/kit full_iron_kit');
+    assert.ok(kitPlan && kitPlan.objectives.length >= 10);
+
+    // 5. Live HTTP `/api/v1/commands/autocomplete` endpoint
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-mc-auto-'));
+    const cliToken = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const master = createMaster(
+      loadConfig({
+        env: {
+          SWARM_ENV_PROFILE: 'private_offline_test',
+          SWARM_BIND_HOST: '127.0.0.1',
+          SWARM_PORT: '0',
+          SWARM_HTTP_ENABLED: 'true',
+          SWARM_AI_ENABLED: 'false',
+          SWARM_CLI_TOKEN: cliToken,
+          SWARM_DB_PATH: path.join(tmpDir, 'master.db'),
+          SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+        }
+      })
+    );
+    try {
+      const { port } = await master.start({ listenHttp: true });
+      const resDict = await fetch(`http://127.0.0.1:${port}/api/v1/commands/autocomplete?dictionary=1`, {
+        headers: { Authorization: `Bearer ${cliToken}` }
+      });
+      assert.equal(resDict.status, 200);
+      const bodyDict = await resDict.json();
+      assert.ok(Array.isArray(bodyDict.dictionary.rootCommands) && bodyDict.dictionary.rootCommands.length >= 20);
+
+      const resQuery = await fetch(
+        `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('/mine di')}`,
+        { headers: { Authorization: `Bearer ${cliToken}` } }
+      );
+      assert.equal(resQuery.status, 200);
+      const bodyQuery = await resQuery.json();
+      assert.equal(bodyQuery.suggestions[0].applyValue, '/mine diamond ');
+    } finally {
+      await master.stop();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

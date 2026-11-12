@@ -15,7 +15,10 @@
     noaiLimit: 96,
     skinsById: {},
     providersCache: [],
-    aiFormInitialized: false
+    aiFormInitialized: false,
+    autocompleteDict: null,
+    cmdHistory: [],
+    cmdHistoryIndex: -1
   };
 
   const el = (id) => document.getElementById(id);
@@ -1046,8 +1049,20 @@
     }
   }
 
+  async function refreshAutocompleteDictionary() {
+    try {
+      const res = await api('/api/v1/commands/autocomplete?dictionary=1');
+      if (res && res.dictionary) {
+        state.autocompleteDict = res.dictionary;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   async function refreshAll() {
     await Promise.all([
+      refreshAutocompleteDictionary(),
       refreshSkinsAndSchematics(),
       refreshStatusAndTasks(),
       refreshZeroAiDeck(),
@@ -1424,6 +1439,685 @@
       btn.classList.add('active');
       el('tab-' + btn.dataset.tab).classList.remove('hidden');
     });
+  });
+
+  // =========================================================================
+  // Minecraft Brigadier-Style Command Autocomplete (`Tab` / `Shift+Tab` / `/`)
+  // =========================================================================
+  const FALLBACK_AUTOCOMPLETE_DICT = {
+    rootCommands: [
+      { name: 'mine', syntax: '/mine <ore_or_block> [count]', category: 'mining', description: 'Mine ores or stone across swarm', hasArgs: true },
+      { name: 'collect', syntax: '/collect <resource> [count]', category: 'gathering', description: 'Gather logs, crops or drops', hasArgs: true },
+      { name: 'craft', syntax: '/craft <item> [count]', category: 'crafting', description: 'Auto-craft tools, mace, spears & armor', hasArgs: true },
+      { name: 'smelt', syntax: '/smelt <item> [count]', category: 'smelting', description: 'Smelt ores or cook food in furnace', hasArgs: true },
+      { name: 'kit', syntax: '/kit <progression_kit>', category: 'progression', description: 'Run full DAG kit (stone_tools, full_iron_kit, mace_pvp_kit...)', hasArgs: true },
+      { name: 'build', syntax: '/build <schematic> [bot]', category: 'schematics', description: 'Construct 3D schematic blueprint', hasArgs: true },
+      { name: 'kill', syntax: '/kill <player> [weapon] [bot]', category: 'pvp', description: 'Elite PvP attack on player', hasArgs: true },
+      { name: 'follow', syntax: '/follow <player> [bot]', category: 'players', description: 'Escort & follow player', hasArgs: true },
+      { name: 'protect', syntax: '/protect <player> [bot]', category: 'players', description: 'Bodyguard player & kill threats', hasArgs: true },
+      { name: 'surround', syntax: '/surround <player> [bot]', category: 'players', description: '360 knight shield ring around player', hasArgs: true },
+      { name: 'drop', syntax: '/drop <player> [item|all] [bot]', category: 'players', description: 'Walk to player and drop loot', hasArgs: true },
+      { name: 'hunt', syntax: '/hunt [bot]', category: 'pvp', description: 'Hunt nearby hostile mobs', hasArgs: true },
+      { name: 'ally', syntax: '/ally <player>', category: 'players', description: 'Mark player as trusted ally', hasArgs: true },
+      { name: 'kos', syntax: '/kos <player>', category: 'pvp', description: 'Mark player Kill-On-Sight', hasArgs: true },
+      { name: 'explore', syntax: '/explore <sector>', category: 'exploration', description: 'Scout & map sectors in parallel', hasArgs: true },
+      { name: 'guard', syntax: '/guard <perimeter>', category: 'defense', description: 'Patrol & defend perimeter', hasArgs: true },
+      { name: 'deposit', syntax: '/deposit <item> [count]', category: 'logistics', description: 'Deposit items into storage chest', hasArgs: true },
+      { name: 'skin', syntax: '/skin sync [bot]', category: 'skins', description: 'Sync Crimson Shadow Knight skin', hasArgs: true },
+      { name: 'mode', syntax: '/mode <HYBRID|SYNCHRONIZED|DISTRIBUTED>', category: 'swarm', description: 'Switch swarm operating mode', hasArgs: true },
+      { name: 'profile', syntax: '/profile <BALANCED|PERFORMANCE|MAXIMUM_THROUGHPUT|LOW|ULTRA_LOW>', category: 'swarm', description: 'Switch performance profile', hasArgs: true },
+      { name: 'botcap', syntax: '/botcap <1..20>', category: 'swarm', description: 'Set active swarm bot cap', hasArgs: true },
+      { name: 'stop', syntax: '/stop', category: 'swarm', description: 'Emergency stop & ceasefire all bots', hasArgs: false }
+    ],
+    mineTargets: ['diamond', 'raw_iron', 'cobblestone', 'coal', 'raw_gold', 'ancient_debris', 'obsidian', 'redstone', 'emerald', 'raw_copper', 'lapis_lazuli', 'quartz'],
+    collectTargets: ['oak_log', 'spruce_log', 'birch_log', 'dark_oak_log', 'cobblestone', 'sand', 'gravel', 'flint', 'wheat', 'carrot', 'potato', 'leather', 'blaze_rod', 'ender_pearl'],
+    craftTargets: ['diamond_pickaxe', 'diamond_sword', 'diamond_axe', 'diamond_spear', 'mace', 'wind_charge', 'shield', 'iron_pickaxe', 'iron_sword', 'golden_apple', 'crafting_table', 'furnace', 'chest', 'oak_planks', 'stick'],
+    smeltTargets: ['iron_ingot', 'gold_ingot', 'copper_ingot', 'netherite_scrap', 'cooked_beef', 'cooked_porkchop', 'glass', 'smooth_stone', 'charcoal'],
+    allItems: ['diamond', 'iron_ingot', 'gold_ingot', 'oak_log', 'cobblestone', 'obsidian', 'golden_apple', 'mace', 'shield'],
+    kits: [
+      { id: 'stone_tools', title: 'Get Stone Tools & Furnace' },
+      { id: 'full_iron_kit', title: 'Get Complete Iron Knight Kit' },
+      { id: 'iron_tools', title: 'Get Iron Tools & Shield' },
+      { id: 'iron_armor', title: 'Get Full Iron Armor' },
+      { id: 'diamond_tools', title: 'Get Diamond Tools & Sword' },
+      { id: 'diamond_armor', title: 'Get Full Diamond Armor' },
+      { id: 'netherite_kit', title: 'Mine Ancient Debris & Forge Netherite' },
+      { id: 'mace_pvp_kit', title: '1.21 Mace Smash PvP Loadout' },
+      { id: 'spear_pvp_kit', title: 'Spear & Shield Phalanx Loadout' },
+      { id: 'starter_base_kit', title: 'Day-1 Starter Base + Shelter' },
+      { id: 'wooden_tools', title: 'Get Wooden Tools Set' }
+    ],
+    schematics: [
+      { id: 'watchtower', name: 'Watchtower', blocks: 88 },
+      { id: 'castle_keep', name: 'Castle Keep', blocks: 240 },
+      { id: 'obsidian_bunker', name: 'Obsidian Bunker', blocks: 125 },
+      { id: 'starter_shelter', name: 'Starter Shelter', blocks: 64 },
+      { id: 'pvp_arena', name: 'PvP Arena', blocks: 196 },
+      { id: 'crop_farm_9x9', name: '9x9 Crop Farm', blocks: 81 },
+      { id: 'smeltery_array', name: 'Smeltery Array', blocks: 48 },
+      { id: 'nether_portal_frame', name: 'Nether Portal Frame', blocks: 14 }
+    ],
+    exploreSectors: ['spawn_basin', 'north_ridge', 'south_valley', 'east_forest', 'west_canyon', 'deep_caves'],
+    weaponStyles: [
+      { id: 'auto', desc: 'Auto Mastery (Mace + Axe + Spear + Sword + Bow)' },
+      { id: 'mace', desc: '1.21 Mace + Wind Charge Aerial Smash' },
+      { id: 'spear', desc: 'Spear / Trident 3.4m Phalanx Reach' },
+      { id: 'axe', desc: 'Heavy Axe Shield-Breaker' },
+      { id: 'sword', desc: 'Enchanted Sword Jump-Crits' },
+      { id: 'bow', desc: 'Ranged Bow Sniper' }
+    ],
+    stackCounts: ['64', '32', '16', '128', '256', '8', '4', '1'],
+    craftCounts: ['1', '2', '4', '8', '16', '32', '64'],
+    modes: ['HYBRID', 'SYNCHRONIZED', 'DISTRIBUTED'],
+    profiles: ['BALANCED', 'PERFORMANCE', 'MAXIMUM_THROUGHPUT', 'LOW', 'ULTRA_LOW'],
+    players: [],
+    bots: []
+  };
+
+  function rankMatches(candidates, partial, limit) {
+    const q = String(partial || '').toLowerCase();
+    if (!q) return candidates.slice(0, limit);
+    const starts = [];
+    const contains = [];
+    for (let i = 0; i < candidates.length; i += 1) {
+      const c = candidates[i];
+      const low = c.token.toLowerCase();
+      if (low.startsWith(q)) starts.push(c);
+      else if (low.includes(q)) contains.push(c);
+    }
+    return starts.concat(contains).slice(0, limit);
+  }
+
+  function computeBrigadierSuggestions(rawInput, maxItems) {
+    const dict = state.autocompleteDict || FALLBACK_AUTOCOMPLETE_DICT;
+    const limit = maxItems || 12;
+    const input = typeof rawInput === 'string' ? rawInput : '';
+    const leadMatch = /^(\s*(?:\/|!swarm\s+)?)/.exec(input);
+    const leadingPrefix = leadMatch ? leadMatch[1] : '';
+    const body = input.slice(leadingPrefix.length);
+    const endsWithSpace = body.length > 0 && /\s$/.test(body);
+    const trimmed = body.trim();
+    const parts = trimmed.length > 0 ? trimmed.split(/\s+/) : [];
+    const hasTrailingSpace = endsWithSpace && parts.length > 0;
+
+    const argIndex = parts.length === 0 ? 0 : (hasTrailingSpace ? parts.length : parts.length - 1);
+    const activeToken = hasTrailingSpace ? '' : (parts[argIndex] || '');
+    const priorTokens = parts.slice(0, argIndex);
+    const prefixBeforeToken = priorTokens.length === 0 ? leadingPrefix : (leadingPrefix + priorTokens.join(' ') + ' ');
+
+    function entry(token, desc, cat, hasNextArg) {
+      const applyVal = prefixBeforeToken + token + (hasNextArg ? ' ' : '');
+      const cycleVal = prefixBeforeToken + token;
+      let ghost = '';
+      if (activeToken && token.toLowerCase().startsWith(activeToken.toLowerCase())) {
+        ghost = token.slice(activeToken.length);
+      } else if (!activeToken) {
+        ghost = token;
+      }
+      return {
+        token,
+        applyValue: applyVal,
+        cycleValue: cycleVal,
+        ghostSuffix: ghost,
+        description: desc || '',
+        category: cat || 'cmd',
+        hasNextArg: Boolean(hasNextArg)
+      };
+    }
+
+    if (argIndex === 0) {
+      const roots = (dict.rootCommands || []).map((c) =>
+        entry(c.name, c.syntax + ' — ' + c.description, c.category, c.hasArgs)
+      );
+      return {
+        syntaxHint: '/<command> <args...>  (Press Tab to auto-fill next word)',
+        activeToken,
+        suggestions: rankMatches(roots, activeToken, limit)
+      };
+    }
+
+    const verb = (priorTokens[0] || '').toLowerCase();
+    const rootMeta = (dict.rootCommands || []).find((c) => c.name === verb);
+    const syntaxHint = rootMeta ? rootMeta.syntax : ('/' + verb + ' ...');
+
+    const botPool = [entry('*', 'Entire Swarm (All Bots)', 'bots', false)].concat(
+      (dict.bots || []).map((b) => entry(b, 'Target swarm bot', 'bots', false))
+    );
+    const playerPool = (dict.players && dict.players.length > 0 ? dict.players : ['Steve', 'Alex']);
+    let pool = [];
+
+    if (verb === 'mine' || verb === 'dig') {
+      if (argIndex === 1) {
+        pool = (dict.mineTargets || []).map((t) => entry(t, 'Mine ' + t, 'mining', true));
+      } else if (argIndex === 2) {
+        pool = /^\d+$/.test(priorTokens[1])
+          ? (dict.mineTargets || []).map((t) => entry(t, 'Mine ' + priorTokens[1] + ' ' + t, 'mining', false))
+          : (dict.stackCounts || []).map((n) => entry(n, 'Quantity: ' + n, 'count', false));
+      }
+    } else if (verb === 'collect' || verb === 'gather' || verb === 'chop' || verb === 'harvest') {
+      if (argIndex === 1) {
+        pool = (dict.collectTargets || []).map((t) => entry(t, 'Collect ' + t, 'gathering', true));
+      } else if (argIndex === 2) {
+        pool = /^\d+$/.test(priorTokens[1])
+          ? (dict.collectTargets || []).map((t) => entry(t, 'Collect ' + priorTokens[1] + ' ' + t, 'gathering', false))
+          : (dict.stackCounts || []).map((n) => entry(n, 'Quantity: ' + n, 'count', false));
+      }
+    } else if (verb === 'craft' || verb === 'make' || verb === 'forge') {
+      if (argIndex === 1) {
+        pool = (dict.craftTargets || []).map((t) => entry(t, 'Craft ' + t, 'crafting', true));
+      } else if (argIndex === 2) {
+        pool = /^\d+$/.test(priorTokens[1])
+          ? (dict.craftTargets || []).map((t) => entry(t, 'Craft ' + priorTokens[1] + ' ' + t, 'crafting', false))
+          : (dict.craftCounts || []).map((n) => entry(n, 'Quantity: ' + n, 'count', false));
+      }
+    } else if (verb === 'smelt' || verb === 'cook' || verb === 'bake') {
+      if (argIndex === 1) {
+        pool = (dict.smeltTargets || []).map((t) => entry(t, 'Smelt ' + t, 'smelting', true));
+      } else if (argIndex === 2) {
+        pool = /^\d+$/.test(priorTokens[1])
+          ? (dict.smeltTargets || []).map((t) => entry(t, 'Smelt ' + priorTokens[1] + ' ' + t, 'smelting', false))
+          : ['16', '32', '64', '8', '128'].map((n) => entry(n, 'Quantity: ' + n, 'count', false));
+      }
+    } else if (verb === 'kit' || verb === 'get') {
+      if (argIndex === 1) {
+        pool = (dict.kits || []).map((k) => entry(k.id, k.title, 'progression', false));
+      }
+    } else if (verb === 'build' || verb === 'construct') {
+      if (argIndex === 1) {
+        pool = (dict.schematics || []).map((s) =>
+          entry(s.id, s.name + ' (' + (s.blocks || 0) + ' blocks)', 'schematics', true)
+        );
+      } else if (argIndex === 2) {
+        pool = botPool;
+      }
+    } else if (verb === 'kill' || verb === 'attack') {
+      if (argIndex === 1) {
+        pool = playerPool.map((p) => entry(p, 'PvP attack ' + p, 'pvp', true));
+      } else if (argIndex === 2) {
+        pool = (dict.weaponStyles || []).map((w) => entry(w.id, w.desc, 'pvp', true));
+      } else if (argIndex === 3) {
+        pool = botPool;
+      }
+    } else if (verb === 'follow' || verb === 'protect' || verb === 'surround') {
+      if (argIndex === 1) {
+        pool = playerPool.map((p) => entry(p, verb + ' ' + p, 'players', true));
+      } else if (argIndex === 2) {
+        pool = botPool;
+      }
+    } else if (verb === 'ally' || verb === 'kos') {
+      if (argIndex === 1) {
+        pool = playerPool.map((p) => entry(p, 'Mark ' + p + ' as ' + verb.toUpperCase(), 'players', false));
+      }
+    } else if (verb === 'drop') {
+      if (argIndex === 1) {
+        pool = playerPool.map((p) => entry(p, 'Drop loot to ' + p, 'players', true));
+      } else if (argIndex === 2) {
+        pool = [entry('all', 'Drop all non-equipped loot', 'logistics', true)].concat(
+          (dict.allItems || []).slice(0, 24).map((it) => entry(it, 'Drop ' + it, 'logistics', true))
+        );
+      } else if (argIndex === 3) {
+        pool = botPool;
+      }
+    } else if (verb === 'hunt' || verb === 'hunt_mobs') {
+      if (argIndex === 1) pool = botPool;
+    } else if (verb === 'explore' || verb === 'scout') {
+      if (argIndex === 1) {
+        pool = (dict.exploreSectors || []).map((s) => entry(s, 'Explore ' + s, 'exploration', false));
+      }
+    } else if (verb === 'guard' || verb === 'patrol' || verb === 'defend') {
+      if (argIndex === 1) {
+        pool = ['base_perimeter', 'spawn_basin', 'mining_perimeter'].concat(playerPool).map((s) =>
+          entry(s, 'Guard ' + s, 'defense', false)
+        );
+      }
+    } else if (verb === 'deposit' || verb === 'store') {
+      if (argIndex === 1) {
+        pool = (dict.allItems || []).slice(0, 30).map((it) => entry(it, 'Deposit ' + it, 'logistics', true));
+      } else if (argIndex === 2) {
+        pool = (dict.stackCounts || []).map((n) => entry(n, 'Quantity: ' + n, 'count', false));
+      }
+    } else if (verb === 'skin') {
+      if (argIndex === 1) {
+        pool = [
+          entry('sync', 'Sync Crimson Shadow Knight skin across swarm', 'skins', true),
+          entry('knight_crimson', 'Apply 64x64 Crimson Shadow Knight skin', 'skins', true)
+        ];
+      } else if (argIndex === 2) {
+        pool = botPool;
+      }
+    } else if (verb === 'mode') {
+      if (argIndex === 1) pool = (dict.modes || []).map((m) => entry(m, 'Mode: ' + m, 'swarm', false));
+    } else if (verb === 'profile') {
+      if (argIndex === 1) pool = (dict.profiles || []).map((p) => entry(p, 'Profile: ' + p, 'swarm', false));
+    } else if (verb === 'botcap') {
+      if (argIndex === 1) {
+        pool = ['2', '4', '6', '8', '10', '12', '16', '20'].map((n) => entry(n, 'Bot cap: ' + n, 'swarm', false));
+      }
+    }
+
+    return {
+      syntaxHint,
+      activeToken,
+      suggestions: rankMatches(pool, activeToken, limit)
+    };
+  }
+
+  async function executeUnifiedCommand(rawText) {
+    const raw = String(rawText || '').trim();
+    if (!raw) return;
+    if (state.cmdHistory[0] !== raw) {
+      state.cmdHistory.unshift(raw);
+      if (state.cmdHistory.length > 50) state.cmdHistory.pop();
+    }
+    state.cmdHistoryIndex = -1;
+
+    const clean = raw.replace(/^(?:\/|!swarm\s+)/i, '').trim();
+    const parts = clean.split(/\s+/);
+    const verb = (parts[0] || '').toLowerCase();
+
+    try {
+      if (verb === 'stop' || verb === 'ceasefire' || verb === 'emergency_stop') {
+        const out = await api('/api/v1/swarm/emergency-stop', { method: 'POST', body: {} });
+        await api('/api/v1/players/action', { method: 'POST', body: { mode: 'idle', botId: '*' } }).catch(() => {});
+        showToast('Emergency Stop & Ceasefire executed (' + (out.stoppedBots || 0) + ' bots)');
+        refreshStatusAndTasks();
+        return;
+      }
+      if (verb === 'mode' && parts[1]) {
+        const modeVal = parts[1].toUpperCase();
+        await api('/api/v1/swarm/mode', { method: 'POST', body: { mode: modeVal } });
+        showToast('Swarm mode -> ' + modeVal);
+        refreshStatusAndTasks();
+        return;
+      }
+      if (verb === 'profile' && parts[1]) {
+        const profVal = parts[1].toUpperCase();
+        await api('/api/v1/swarm/profile', { method: 'POST', body: { profile: profVal } });
+        showToast('Performance profile -> ' + profVal);
+        refreshStatusAndTasks();
+        return;
+      }
+      if (verb === 'botcap' && parts[1]) {
+        const cap = Number(parts[1]);
+        await api('/api/v1/swarm/bot-cap', { method: 'POST', body: { enabledBotsCap: cap } });
+        showToast('Enabled bot cap -> ' + cap);
+        refreshStatusAndTasks();
+        return;
+      }
+      if (verb === 'skin') {
+        await api('/api/v1/skins/assign', {
+          method: 'POST',
+          body: {
+            preset: 'all_crimson_knights',
+            botId: parts[2] && parts[2] !== '*' ? parts[2] : null
+          }
+        });
+        showToast('Synced Crimson Shadow Knight skin across swarm');
+        refreshSkinsAndSchematics();
+        return;
+      }
+      if ((verb === 'kill' || verb === 'attack') && parts[1]) {
+        await sendPlayerTacticalOrder({
+          mode: 'attack_player',
+          targetPlayer: parts[1],
+          preferredWeaponStyle: (parts[2] || 'auto').toLowerCase(),
+          botId: parts[3] || '*',
+          preemptTask: true
+        });
+        return;
+      }
+      if ((verb === 'follow' || verb === 'protect' || verb === 'surround') && parts[1]) {
+        await sendPlayerTacticalOrder({
+          mode: verb,
+          targetPlayer: parts[1],
+          botId: parts[2] || '*',
+          preemptTask: true
+        });
+        return;
+      }
+      if (verb === 'drop' && parts[1]) {
+        await sendPlayerTacticalOrder({
+          mode: 'drop_loot',
+          targetPlayer: parts[1],
+          itemFilter: parts[2] || 'all',
+          botId: parts[3] || '*',
+          preemptTask: true
+        });
+        return;
+      }
+      if (verb === 'hunt' || verb === 'hunt_mobs') {
+        await sendPlayerTacticalOrder({
+          mode: 'hunt_mobs',
+          botId: parts[1] || '*',
+          preemptTask: true
+        });
+        return;
+      }
+      if ((verb === 'ally' || verb === 'kos') && parts[1]) {
+        await sendPlayerTacticalOrder({
+          mode: verb === 'kos' ? 'attack_player' : 'idle',
+          targetPlayer: parts[1],
+          relation: verb,
+          botId: '*',
+          preemptTask: verb === 'kos'
+        });
+        return;
+      }
+      if ((verb === 'build' || verb === 'construct') && parts[1] && parts.length <= 3) {
+        const dict = state.autocompleteDict || FALLBACK_AUTOCOMPLETE_DICT;
+        const schId = parts[1].toLowerCase();
+        const foundSch = (dict.schematics || []).find((s) => s.id === schId);
+        if (foundSch) {
+          await api('/api/v1/schematics/build', {
+            method: 'POST',
+            body: {
+              schematicId: schId,
+              botId: parts[2] && parts[2] !== '*' ? parts[2] : null
+            }
+          });
+          showToast('Dispatched Schematic Build: ' + foundSch.name);
+          refreshStatusAndTasks();
+          return;
+        }
+      }
+
+      // Default: dispatch to Zero-AI 1,370+ Engine / Central Task Brain
+      const created = await api('/api/v1/tasks', {
+        method: 'POST',
+        body: { text: clean, priority: 'normal' }
+      });
+      showToast('Command Dispatched: ' + (created.intentSummary || clean) + ' [' + created.state + ']');
+      refreshStatusAndTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function attachBrigadierAutocomplete(inputEl, opts) {
+    if (!inputEl) return null;
+    const options = opts || {};
+    let popupEl = options.popupEl || null;
+    if (!popupEl) {
+      const wrap = document.createElement('div');
+      wrap.className = 'mc-inline-wrap';
+      inputEl.parentNode.insertBefore(wrap, inputEl);
+      wrap.appendChild(inputEl);
+      popupEl = document.createElement('div');
+      popupEl.className = 'mc-suggest-popup hidden';
+      popupEl.setAttribute('role', 'listbox');
+      wrap.appendChild(popupEl);
+    }
+
+    const ghostTypedEl = options.ghostTypedEl || null;
+    const ghostRestEl = options.ghostRestEl || null;
+
+    let currentSuggestions = [];
+    let currentSyntaxHint = '';
+    let selectedIndex = 0;
+    let isPopupOpen = false;
+    let tabCycleSnapshot = null;
+
+    function updateGhost() {
+      if (!ghostTypedEl || !ghostRestEl) return;
+      const val = inputEl.value;
+      ghostTypedEl.textContent = val;
+      if (!val && !isPopupOpen) {
+        ghostRestEl.textContent = '';
+        return;
+      }
+      const sel = currentSuggestions[selectedIndex];
+      if (!sel) {
+        ghostRestEl.textContent = '';
+        return;
+      }
+      if (val && sel.applyValue.toLowerCase().startsWith(val.toLowerCase())) {
+        ghostRestEl.textContent = sel.applyValue.slice(val.length);
+      } else if (!val) {
+        ghostRestEl.textContent = sel.applyValue;
+      } else {
+        ghostRestEl.textContent = '';
+      }
+    }
+
+    function closePopup() {
+      isPopupOpen = false;
+      tabCycleSnapshot = null;
+      popupEl.classList.add('hidden');
+      updateGhost();
+    }
+
+    function renderPopup() {
+      clearChildren(popupEl);
+      if (!isPopupOpen || currentSuggestions.length === 0) {
+        popupEl.classList.add('hidden');
+        updateGhost();
+        return;
+      }
+      popupEl.classList.remove('hidden');
+
+      const hdr = document.createElement('div');
+      hdr.className = 'mc-suggest-header';
+      const syn = document.createElement('span');
+      syn.textContent = currentSyntaxHint;
+      const keys = document.createElement('span');
+      keys.className = 'mc-suggest-hint-keys';
+      keys.textContent = 'Tab: Auto-fill  •  ↑/↓: Select  •  Enter: Run';
+      hdr.appendChild(syn);
+      hdr.appendChild(keys);
+      popupEl.appendChild(hdr);
+
+      currentSuggestions.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.className = 'mc-suggest-item' + (idx === selectedIndex ? ' is-selected' : '');
+        row.setAttribute('role', 'option');
+
+        const left = document.createElement('div');
+        left.className = 'mc-suggest-meta';
+        const tok = document.createElement('span');
+        tok.className = 'mc-suggest-token';
+        tok.textContent = item.token;
+        const cat = document.createElement('span');
+        cat.className = 'badge';
+        cat.textContent = item.category;
+        left.appendChild(tok);
+        left.appendChild(cat);
+
+        const desc = document.createElement('span');
+        desc.className = 'mc-suggest-desc';
+        desc.textContent = item.description;
+
+        row.appendChild(left);
+        row.appendChild(desc);
+
+        row.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          inputEl.value = item.applyValue;
+          tabCycleSnapshot = null;
+          recomputeAndOpen();
+          inputEl.focus();
+        });
+
+        popupEl.appendChild(row);
+      });
+
+      updateGhost();
+    }
+
+    function recomputeAndOpen() {
+      const res = computeBrigadierSuggestions(inputEl.value, 10);
+      currentSuggestions = res.suggestions || [];
+      currentSyntaxHint = res.syntaxHint || '';
+      selectedIndex = 0;
+      isPopupOpen = currentSuggestions.length > 0;
+      renderPopup();
+    }
+
+    function applyTabCompletion(reverse) {
+      if (!isPopupOpen || currentSuggestions.length === 0) {
+        recomputeAndOpen();
+      }
+      if (currentSuggestions.length === 0) return;
+
+      // Single unambiguous match (or user navigated with arrows): insert with trailing space & advance immediately!
+      if (currentSuggestions.length === 1) {
+        const only = currentSuggestions[0];
+        if (inputEl.value !== only.applyValue) {
+          inputEl.value = only.applyValue;
+          tabCycleSnapshot = null;
+          recomputeAndOpen();
+          return;
+        }
+      }
+
+      // Multi-match Brigadier Tab cycling:
+      // 1st Tab inserts highlighted suggestion; subsequent Tabs cycle through sibling matches;
+      // pressing Space or typing locks it and advances to the next argument!
+      if (!tabCycleSnapshot) {
+        const chosen = currentSuggestions[selectedIndex] || currentSuggestions[0];
+        // If user already moved selection with Up/Down, commit & advance directly
+        if (selectedIndex > 0) {
+          inputEl.value = chosen.applyValue;
+          tabCycleSnapshot = null;
+          recomputeAndOpen();
+          return;
+        }
+        tabCycleSnapshot = {
+          list: currentSuggestions.slice(),
+          index: 0
+        };
+        inputEl.value = chosen.cycleValue;
+        renderPopup();
+        return;
+      }
+
+      const len = tabCycleSnapshot.list.length;
+      tabCycleSnapshot.index = (tabCycleSnapshot.index + (reverse ? -1 : 1) + len) % len;
+      selectedIndex = tabCycleSnapshot.index;
+      currentSuggestions = tabCycleSnapshot.list;
+      inputEl.value = currentSuggestions[selectedIndex].cycleValue;
+      renderPopup();
+    }
+
+    inputEl.addEventListener('input', () => {
+      tabCycleSnapshot = null;
+      recomputeAndOpen();
+    });
+
+    inputEl.addEventListener('focus', () => {
+      if (inputEl.value.trim().length > 0 || options.openOnFocus) {
+        recomputeAndOpen();
+      } else {
+        updateGhost();
+      }
+    });
+
+    inputEl.addEventListener('blur', () => {
+      setTimeout(closePopup, 140);
+    });
+
+    inputEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        applyTabCompletion(ev.shiftKey);
+        return;
+      }
+      if (ev.key === 'ArrowDown') {
+        if (isPopupOpen && currentSuggestions.length > 0) {
+          ev.preventDefault();
+          tabCycleSnapshot = null;
+          selectedIndex = (selectedIndex + 1) % currentSuggestions.length;
+          renderPopup();
+        } else if (options.enableHistory && state.cmdHistory.length > 0 && state.cmdHistoryIndex > 0) {
+          ev.preventDefault();
+          state.cmdHistoryIndex -= 1;
+          inputEl.value = state.cmdHistory[state.cmdHistoryIndex] || '';
+          updateGhost();
+        }
+        return;
+      }
+      if (ev.key === 'ArrowUp') {
+        if (isPopupOpen && currentSuggestions.length > 0) {
+          ev.preventDefault();
+          tabCycleSnapshot = null;
+          selectedIndex = (selectedIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+          renderPopup();
+        } else if (options.enableHistory && state.cmdHistory.length > 0) {
+          ev.preventDefault();
+          state.cmdHistoryIndex = Math.min(state.cmdHistory.length - 1, state.cmdHistoryIndex + 1);
+          inputEl.value = state.cmdHistory[state.cmdHistoryIndex] || '';
+          updateGhost();
+        }
+        return;
+      }
+      if (ev.key === 'ArrowRight' && inputEl.selectionStart === inputEl.value.length && currentSuggestions[selectedIndex]) {
+        const sel = currentSuggestions[selectedIndex];
+        if (inputEl.value && sel.applyValue.toLowerCase().startsWith(inputEl.value.toLowerCase()) && sel.applyValue !== inputEl.value) {
+          ev.preventDefault();
+          inputEl.value = sel.applyValue;
+          tabCycleSnapshot = null;
+          recomputeAndOpen();
+        }
+        return;
+      }
+      if (ev.key === 'Escape') {
+        closePopup();
+      }
+    });
+
+    return {
+      triggerTab: () => {
+        inputEl.focus();
+        applyTabCompletion(false);
+      },
+      closePopup,
+      updateGhost
+    };
+  }
+
+  const globalAutocomplete = attachBrigadierAutocomplete(el('mc-cmd-input'), {
+    popupEl: el('mc-cmd-popup'),
+    ghostTypedEl: el('mc-ghost-typed'),
+    ghostRestEl: el('mc-ghost-rest'),
+    openOnFocus: true,
+    enableHistory: true
+  });
+
+  attachBrigadierAutocomplete(el('noai-freeform-input'), { openOnFocus: false });
+  attachBrigadierAutocomplete(el('intent-text'), { openOnFocus: false });
+  attachBrigadierAutocomplete(el('pvp-target-player'), { openOnFocus: false, playerOnly: true });
+
+  if (el('mc-cmd-tab-btn') && globalAutocomplete) {
+    el('mc-cmd-tab-btn').addEventListener('click', () => {
+      globalAutocomplete.triggerTab();
+    });
+  }
+
+  if (el('mc-command-form')) {
+    el('mc-command-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const input = el('mc-cmd-input');
+      const val = input.value.trim();
+      if (!val) return;
+      input.value = '';
+      if (globalAutocomplete) globalAutocomplete.closePopup();
+      await executeUnifiedCommand(val);
+    });
+  }
+
+  // Minecraft-style "/" hotkey anywhere in the Control Centre opens the command bar immediately
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const shell = el('app-shell');
+    if (!shell || shell.classList.contains('hidden')) return;
+    const cmdInput = el('mc-cmd-input');
+    if (cmdInput) {
+      ev.preventDefault();
+      cmdInput.value = '/';
+      cmdInput.focus();
+      cmdInput.dispatchEvent(new Event('input'));
+    }
   });
 
   // Page Visibility API integration for SSE background throttling

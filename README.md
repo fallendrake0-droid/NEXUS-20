@@ -2,6 +2,8 @@
 
 Distributed Mineflayer AI Swarm. The root [MASTER_PROJECT_CONTEXT.md](./MASTER_PROJECT_CONTEXT.md) is the project brief.
 
+> **Termux / Linux quick start:** See [`docs/TERMUX_LINUX_QUICKSTART.md`](docs/TERMUX_LINUX_QUICKSTART.md) for installation, Master/Worker setup, Control Centre access, and the Tab-autocomplete command console.
+
 ## Coding agent entry point
 
 All repository coding agents must follow [AGENTS.md](./AGENTS.md). For agents that do not automatically read repository instructions, provide [CODING_AGENT_BOOTSTRAP.md](./docs/spec/CODING_AGENT_BOOTSTRAP.md) as their first prompt. These instructions require reading the master specification, module contracts and AI protocol before implementation.

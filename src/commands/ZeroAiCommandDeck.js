@@ -771,7 +771,12 @@ function getCategorySummary() {
 function parseExtendedZeroAiIntent(userText, requestId) {
   const reqId = requestId || crypto.randomUUID();
   const raw = typeof userText === 'string' ? userText.trim() : '';
-  const norm = raw.toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '').trim();
+  const norm = raw
+    .toLowerCase()
+    .replace(/^(?:\/|!swarm\s+)/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.!]+$/, '')
+    .trim();
   if (!norm) return null;
 
   // Preserve complex conditional / strategy prompts for remote AI brain
@@ -785,9 +790,11 @@ function parseExtendedZeroAiIntent(userText, requestId) {
     return null;
   }
 
-  // 1. Multi-step Progression Kits ("get stone tools", "get iron armor", "full iron kit", etc.)
+  // 1. Multi-step Progression Kits ("get stone tools", "/kit full_iron_kit", etc.)
+  const explicitKitMatch = /^kit\s+([a-z0-9_ -]+)$/i.exec(norm);
+  const kitLookup = explicitKitMatch ? explicitKitMatch[1].trim().replace(/\s+/g, '_') : null;
   for (const [kitId, kit] of Object.entries(PROGRESSION_KITS)) {
-    if (kit.aliases.includes(norm)) {
+    if (kitId === norm || kitId === kitLookup || kit.aliases.includes(norm) || (kitLookup && kit.aliases.includes(kitLookup.replace(/_/g, ' ')))) {
       return {
         schemaVersion: 1,
         requestId: reqId,
@@ -879,11 +886,11 @@ function parseExtendedZeroAiIntent(userText, requestId) {
     }
   }
 
-  // 3. Smelt / Cook / Bake / Forge / Craft ("smelt 32 iron", "smelt iron", "cook 16 beef", "make 4 chests")
-  const craftOrSmelt = /^(craft|make|forge|smelt|cook|bake|burn)\s+(?:(a|an|\d+)\s+)?([a-z0-9_: ]{2,48})$/i.exec(norm);
+  // 3. Smelt / Cook / Bake / Forge / Craft ("smelt 32 iron", "/smelt iron_ingot 32", "craft diamond_pickaxe 1")
+  const craftOrSmelt = /^(craft|make|forge|smelt|cook|bake|burn)\s+(?:(a|an|\d+)\s+)?([a-z0-9_: ]{2,48}?)(?:\s+(\d+))?$/i.exec(norm);
   if (craftOrSmelt) {
     const verb = craftOrSmelt[1].toLowerCase();
-    const qtyRaw = craftOrSmelt[2];
+    const qtyRaw = craftOrSmelt[2] || craftOrSmelt[4];
     let itemPhrase = craftOrSmelt[3].trim();
     if ((verb === 'smelt' || verb === 'forge') && (itemPhrase === 'iron' || itemPhrase === 'raw iron')) {
       itemPhrase = 'iron ingot';
@@ -945,10 +952,11 @@ function parseExtendedZeroAiIntent(userText, requestId) {
     };
   }
 
-  const depositMatch = /^(?:deposit|store|transfer|stash)\s+(?:(\d+)\s+)?([a-z0-9_: ]{2,48})(?:\s+(?:in|into|to)\s+(?:chest|storage|vault))?$/i.exec(norm);
+  const depositMatch = /^(?:deposit|store|transfer|stash)\s+(?:(\d+)\s+)?([a-z0-9_: ]{2,48}?)(?:\s+(\d+))?(?:\s+(?:in|into|to)\s+(?:chest|storage|vault))?$/i.exec(norm);
   if (depositMatch) {
     const resourceId = resolveSmartResourceId(depositMatch[2]);
-    const qty = depositMatch[1] ? Number(depositMatch[1]) : 64;
+    const qtyStr = depositMatch[1] || depositMatch[3];
+    const qty = qtyStr ? Number(qtyStr) : 64;
     if (resourceId && Number.isSafeInteger(qty) && qty >= 1 && qty <= 100_000) {
       return {
         schemaVersion: 1,
@@ -983,7 +991,7 @@ function parseExtendedZeroAiIntent(userText, requestId) {
       let ok = true;
 
       for (const part of parts) {
-        const m = /^(?:(mine|collect|gather|chop|harvest|dig|farm|get)\s+)?(?:(\d+)\s+)?([a-z0-9_: ]{2,48})$/i.exec(part);
+        const m = /^(?:(mine|collect|gather|chop|harvest|dig|farm|get)\s+)?(?:(\d+)\s+)?([a-z0-9_: ]{2,48}?)(?:\s+(\d+))?$/i.exec(part);
         if (!m) {
           ok = false;
           break;
@@ -995,7 +1003,8 @@ function parseExtendedZeroAiIntent(userText, requestId) {
           ok = false;
           break;
         }
-        const qty = m[2] ? Number(m[2]) : (DEFAULT_SMART_QUANTITIES[resourceId] || 32);
+        const qtyToken = m[2] || m[4];
+        const qty = qtyToken ? Number(qtyToken) : (DEFAULT_SMART_QUANTITIES[resourceId] || 32);
         if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1_000_000) {
           ok = false;
           break;

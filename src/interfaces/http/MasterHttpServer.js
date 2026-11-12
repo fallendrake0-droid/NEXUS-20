@@ -8,6 +8,10 @@ const crypto = require('node:crypto');
 const { DomainError, toErrorEnvelope } = require('../../errors/DomainError');
 const { redactConfig } = require('../../config/loadConfig');
 const { authorizeRole } = require('../../coordinator/Coordinator');
+const {
+  buildAutocompleteDictionary,
+  getBrigadierCompletions
+} = require('../../commands/CommandCompleter');
 
 const DASHBOARD_PUBLIC_DIR = path.join(__dirname, '..', '..', 'dashboard', 'public');
 
@@ -823,6 +827,36 @@ class MasterHttpServer {
     if (method === 'POST' && pathname === '/api/v1/system/exit-safe-mode') {
       const resSafe = await this._coordinator.exitSafeMode({ actor });
       this._sendJson(res, 200, resSafe);
+      return;
+    }
+
+    // Minecraft Brigadier-Style Command Autocomplete (`/api/v1/commands/autocomplete`)
+    if (method === 'GET' && pathname === '/api/v1/commands/autocomplete') {
+      authorizeRole(actor, 'viewer');
+      const [playersRes, schRes, st] = await Promise.all([
+        this._coordinator.listServerPlayers({ actor }).catch(() => ({ players: [] })),
+        this._coordinator.listSchematics({ actor }).catch(() => ({ schematics: [] })),
+        Promise.resolve(this._coordinator.getStatusSnapshot?.() || {})
+      ]);
+      const nonSwarmPlayers = (playersRes.players || [])
+        .filter((p) => !p.isSwarmBot && p.username)
+        .map((p) => p.username);
+      const bots = Array.isArray(st.bots)
+        ? st.bots.map((b) => b.botId || b.username).filter(Boolean)
+        : [];
+      const dictionary = buildAutocompleteDictionary({
+        players: nonSwarmPlayers,
+        bots,
+        schematics: schRes.schematics || []
+      });
+      if (parsedUrl.searchParams.get('dictionary') === '1') {
+        this._sendJson(res, 200, { dictionary });
+        return;
+      }
+      const q = parsedUrl.searchParams.get('q') || '';
+      const limit = Math.max(1, Math.min(30, Number(parsedUrl.searchParams.get('limit') || 14)));
+      const completions = getBrigadierCompletions(q, dictionary, limit);
+      this._sendJson(res, 200, completions);
       return;
     }
 
