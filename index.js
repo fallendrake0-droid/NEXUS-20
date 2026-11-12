@@ -457,9 +457,9 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
     process.once('SIGINT', () => shutdownWorker('SIGINT'));
     process.once('SIGTERM', () => shutdownWorker('SIGTERM'));
     if (isInteractive) {
-      const botNames = Array.from(worker.bots.values())
-        .map((b) => b.username)
-        .join(', ');
+      const runners = Array.from(worker.bots.values());
+      const botNames = runners.map((b) => b.username).join(', ');
+      const pendingErr = runners.find((b) => b.lastConnectError)?.lastConnectError || null;
       stdout.write(
         [
           '',
@@ -468,6 +468,12 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
           `  Master Link   : ${config.worker.masterUrl} (${config.worker.workerId})`,
           `  MC Target     : ${config.worker.minecraftHost}:${config.worker.minecraftPort}`,
           `  Active Bots   : ${botNames || started.botCount}`,
+          ...(pendingErr
+            ? [
+                `  MC Status     : Waiting for Minecraft server (${pendingErr})`,
+                '                  Auto-retrying in background — keep this window open!'
+              ]
+            : ['  MC Status     : Connected & spawned in Minecraft!']),
           '  (Press Ctrl+C to disconnect cleanly)',
           '============================================================',
           ''
@@ -489,7 +495,10 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
       const simToken = master.botRegistry.createBootstrapToken({
         createdBy: isRealStandalone ? 'local_standalone' : 'local_sim'
       });
-      const localUrl = `http://127.0.0.1:${startInfo.port}`;
+      const connectHost =
+        startInfo.host === '0.0.0.0' || startInfo.host === '::' ? '127.0.0.1' : startInfo.host;
+      const connectScheme = config.tls.enabled ? 'https' : 'http';
+      const localUrl = `${connectScheme}://${connectHost}:${startInfo.port}`;
       const simStatePath = path.join(
         path.dirname(path.resolve(config.storage.sqlitePath)),
         isRealStandalone ? 'local-standalone-worker-state.json' : 'local-sim-worker-state.json'

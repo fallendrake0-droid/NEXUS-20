@@ -808,6 +808,12 @@ class BotRunner extends EventEmitter {
     this._activeLease = null;
     this._worldObservations = [];
     this._kickedOrBanned = false;
+    this._stopped = false;
+    this._connecting = false;
+    this._reconnectTimer = null;
+    this._reconnectAttempt = 0;
+    this._lastConnectError = null;
+    this._reconnectBaseMs = Math.max(500, Number(options.reconnectBaseMs || 8_000));
   }
 
   get driver() {
@@ -818,7 +824,17 @@ class BotRunner extends EventEmitter {
     return this._activeLease;
   }
 
+  get lastConnectError() {
+    return this._lastConnectError;
+  }
+
   async start() {
+    this._stopped = false;
+    this._kickedOrBanned = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._listeners.dispose();
     this._listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
     this._listeners.on(this._driver, 'end', (reason) => {
@@ -828,13 +844,20 @@ class BotRunner extends EventEmitter {
         status: 'disconnected',
         reason: String(reason || 'socket_closed').slice(0, 120)
       });
+      if (!this._stopped && !this._kickedOrBanned && !this._connecting) {
+        this._scheduleReconnect();
+      }
     });
     this._listeners.on(this._driver, 'kicked', (reason) => {
-      this._kickedOrBanned = true;
+      const text = String(reason || '');
+      // Only permanent bans / whitelist rejections block auto-reconnect; Aternos "offline"/"starting"/"throttled" kicks retry cleanly
+      if (/banned|banhammer|not whitelisted|you are not white-listed/i.test(text)) {
+        this._kickedOrBanned = true;
+      }
       this.emit('bot_lifecycle', {
         botId: this.botId,
         status: 'disconnected',
-        reason: `kicked:${String(reason || '').slice(0, 100)}`
+        reason: `kicked:${text.slice(0, 100)}`
       });
     });
     this._listeners.on(this._driver, 'chat', (msg) => {
@@ -850,15 +873,66 @@ class BotRunner extends EventEmitter {
       }
     });
 
-    await this._driver.connect();
-    this.emit('bot_lifecycle', {
-      botId: this.botId,
-      status: 'ready',
-      reason: 'spawned'
-    });
+    await this._attemptConnect();
+  }
+
+  async _attemptConnect() {
+    if (this._stopped || this._connecting) return false;
+    this._connecting = true;
+    try {
+      await this._driver.connect();
+      this._reconnectAttempt = 0;
+      this._lastConnectError = null;
+      this._connecting = false;
+      this._logger?.info('Bot connected and spawned in Minecraft', {
+        botId: this.botId,
+        username: this.username
+      });
+      this.emit('bot_lifecycle', {
+        botId: this.botId,
+        status: 'ready',
+        reason: 'spawned'
+      });
+      return true;
+    } catch (err) {
+      this._connecting = false;
+      const reason = String(err?.message || err || 'connect_failed').slice(0, 180);
+      this._lastConnectError = reason;
+      this._logger?.warn('Bot could not connect to Minecraft yet; will retry automatically', {
+        botId: this.botId,
+        username: this.username,
+        reason
+      });
+      this.emit('bot_lifecycle', {
+        botId: this.botId,
+        status: 'disconnected',
+        reason: reason.slice(0, 120)
+      });
+      if (!this._stopped && !this._kickedOrBanned) {
+        this._scheduleReconnect();
+      }
+      return false;
+    }
+  }
+
+  _scheduleReconnect() {
+    if (this._stopped || this._kickedOrBanned || this._reconnectTimer) return;
+    this._reconnectAttempt += 1;
+    const delayMs = Math.min(30_000, this._reconnectBaseMs * Math.min(4, this._reconnectAttempt));
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (!this._stopped && !this._kickedOrBanned) {
+        this._attemptConnect().catch(() => {});
+      }
+    }, delayMs);
   }
 
   async stop(reason = 'worker_stopping') {
+    this._stopped = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this._activeLease) {
       this._activeLease.cancelled = true;
     }
