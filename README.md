@@ -2,7 +2,7 @@
 
 Distributed Mineflayer AI Swarm. The root [MASTER_PROJECT_CONTEXT.md](./MASTER_PROJECT_CONTEXT.md) is the project brief.
 
-> **Termux / Linux quick start:** See [`docs/TERMUX_LINUX_QUICKSTART.md`](docs/TERMUX_LINUX_QUICKSTART.md) for installation, Master/Worker setup, Control Centre access, and the Tab-autocomplete command console.
+> **Termux / Linux quick start:** See [`docs/TERMUX_LINUX_QUICKSTART.md`](docs/TERMUX_LINUX_QUICKSTART.md) for installation, Master/Worker setup, Control Centre access, and the Tab-autocomplete command console. The interactive terminal opens on a clean alternate screen and restores your previous terminal display and scrollback when you quit, press Ctrl+C, or close its input.
 
 ## Coding agent entry point
 
