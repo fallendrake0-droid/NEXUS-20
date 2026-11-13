@@ -359,11 +359,15 @@ class SkillExecutor {
             buildRes.summary || `${action} failed`
           );
         }
+        const verifiedBlocks = Number.isSafeInteger(buildRes.verifiedBlocks) ? buildRes.verifiedBlocks : 0;
+        if (verifiedBlocks < 1) {
+          return makeFailure('PATH_BLOCKED', true, `${action} reported success without verified block changes`);
+        }
         finalEvidence = {
           evidenceId: crypto.randomUUID(),
           kind: 'block_state',
-          claimedDelta: Math.max(1, buildRes.verifiedBlocks || 1),
-          details: { verifiedBlocks: Math.max(1, buildRes.verifiedBlocks || 1) }
+          claimedDelta: verifiedBlocks,
+          details: { verifiedBlocks }
         };
       } else if (action === 'transfer') {
         const depRes = await driver.depositToContainer({

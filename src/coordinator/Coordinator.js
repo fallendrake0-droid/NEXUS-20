@@ -178,7 +178,9 @@ class Coordinator {
       actor,
       source = 'cli',
       text,
-      priority = 'normal'
+      priority = 'normal',
+      forceAI = false,
+      conversationContext = ''
     } = intentRequest;
 
     authorizeRole(actor, source === 'chat' ? 'chat_allowed' : 'operator');
@@ -189,6 +191,15 @@ class Coordinator {
       );
     }
     this._assertWritable();
+    if (forceAI) {
+      const activeProvider = this._ai.listProviders?.().find((provider) => provider.active);
+      if (!activeProvider?.available) {
+        throw new DomainError(
+          'AI_PROVIDER_UNAVAILABLE',
+          'No active AI provider is available. Configure and activate one in the System & AI tab, then retry.'
+        );
+      }
+    }
 
     const idemKey = idempotencyKey ? String(idempotencyKey) : null;
     if (idemKey && this._inFlightIdempotency.has(idemKey)) {
@@ -238,7 +249,13 @@ class Coordinator {
           requestId,
           taskId: created.taskId,
           userText: text,
-          compactContext: this.buildSwarmWorldContext()
+          compactContext: {
+            ...this.buildSwarmWorldContext(),
+            ...(typeof conversationContext === 'string' && conversationContext.trim()
+              ? { conversationContext: conversationContext.trim().slice(-1200) }
+              : {})
+          },
+          forceAI: Boolean(forceAI)
         });
 
         const planned = this._tasks.attachPlan({
@@ -364,7 +381,7 @@ class Coordinator {
     return { scheduled: scheduledCount };
   }
 
-  async clarifyTask({ actor, taskId, answerText }) {
+  async clarifyTask({ actor, taskId, answerText, forceAI = false, conversationContext = '' }) {
     authorizeRole(actor, 'operator');
     this._assertWritable();
     const existing = this._tasks.getTask(taskId);
@@ -375,12 +392,25 @@ class Coordinator {
       );
     }
 
-    const combinedText = `${existing.rawText} — Clarification: ${String(answerText || '').trim()}`;
+    const clarification = String(answerText || '').trim().slice(0, 500);
+    if (forceAI) {
+      const activeProvider = this._ai.listProviders?.().find((provider) => provider.active);
+      if (!activeProvider?.available) {
+        throw new DomainError('AI_PROVIDER_UNAVAILABLE', 'The active AI provider is unavailable. Reconnect Ollama in System & AI before answering this clarification.');
+      }
+    }
     const planResult = await this._ai.createPlan({
       requestId: crypto.randomUUID(),
       taskId,
-      userText: answerText || combinedText,
-      compactContext: this.buildSwarmWorldContext()
+      userText: clarification || existing.rawText,
+      compactContext: {
+        ...this.buildSwarmWorldContext(),
+        conversationContext: [
+          existing.rawText.slice(0, 500),
+          typeof conversationContext === 'string' ? conversationContext.slice(-700) : ''
+        ].filter(Boolean).join('\n').slice(-1200)
+      },
+      forceAI: Boolean(forceAI)
     });
 
     const updated = this._tasks.attachPlan({ taskId, plan: planResult.plan });
@@ -1221,6 +1251,7 @@ class Coordinator {
     actor,
     mode,
     targetPlayer = null,
+    targetPosition = null,
     botId = '*',
     preferredWeaponStyle = 'auto',
     itemFilter = null,
@@ -1246,6 +1277,19 @@ class Coordinator {
     }
 
     const cleanMode = String(mode || 'idle').trim().toLowerCase();
+    let cleanTargetPosition = null;
+    if (cleanMode === 'goto') {
+      const x = targetPosition?.x;
+      const y = targetPosition?.y;
+      const z = targetPosition?.z;
+      if (
+        ![x, y, z].every((coord) => typeof coord === 'number' && Number.isFinite(coord)) ||
+        Math.abs(x) > 29_999_984 || y < -2048 || y > 2048 || Math.abs(z) > 29_999_984
+      ) {
+        throw new DomainError('SCHEMA_VALIDATION_FAILED', 'goto requires finite x/y/z coordinates within world bounds');
+      }
+      cleanTargetPosition = { x, y, z };
+    }
     const workers = this._registry.listWorkers();
     const enqueued = [];
 
@@ -1257,6 +1301,7 @@ class Coordinator {
           botId: botRow.bot_id,
           mode: cleanMode,
           targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
+          targetPosition: cleanTargetPosition,
           preferredWeaponStyle,
           itemFilter,
           allies,
@@ -1268,6 +1313,7 @@ class Coordinator {
         this._botTacticalStates.set(botRow.bot_id, {
           mode: cleanMode,
           targetPlayer: targetPlayer || null,
+          targetPosition: cleanTargetPosition,
           preferredWeaponStyle
         });
         enqueued.push(env.commandId);
@@ -1277,6 +1323,7 @@ class Coordinator {
             botId: '*',
             mode: cleanMode,
             targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
+            targetPosition: cleanTargetPosition,
             preferredWeaponStyle,
             itemFilter,
             allies,
@@ -1291,6 +1338,7 @@ class Coordinator {
           this._botTacticalStates.set(b.botId, {
             mode: cleanMode,
             targetPlayer: targetPlayer || null,
+            targetPosition: cleanTargetPosition,
             preferredWeaponStyle
           });
         }
@@ -1300,6 +1348,7 @@ class Coordinator {
     this._publishPostCommit('players.tactical_updated', targetPlayer || 'swarm', {
       mode: cleanMode,
       targetPlayer,
+      targetPosition: cleanTargetPosition,
       botId,
       preferredWeaponStyle,
       enqueuedCount: enqueued.length
@@ -1309,6 +1358,7 @@ class Coordinator {
       ok: true,
       mode: cleanMode,
       targetPlayer,
+      targetPosition: cleanTargetPosition,
       botId,
       preferredWeaponStyle,
       enqueuedCommandIds: enqueued,

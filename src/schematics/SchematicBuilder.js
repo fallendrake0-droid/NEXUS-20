@@ -4,7 +4,7 @@
  * NEXUS-20 Schematic & Architectural Blueprint Engine.
  *
  * Provides:
- * 1. 16 built-in survival, defense, logistics, farming, Nether & PvP blueprints
+ * 1. Built-in survival, defense, logistics, farming, Nether & PvP blueprints
  * 2. Custom JSON / Layer-Palette schematic parser & validator (`parseCustomSchematic`)
  * 3. Bottom-up (`y` ascending), anti-self-trap (`distance-from-center` descending) build ordering
  * 4. Smart block-material fallback mapping when exact decorative blocks are unavailable
@@ -169,7 +169,7 @@ function buildBuiltinSchematics() {
       category: 'farming',
       primaryMaterial: 'minecraft:dirt',
       dimensions: '11x11x2',
-      description: 'Standard 9x9 dirt plot framed in cobblestone with central water well.'
+      description: 'Raised 9x9 dirt plot framed in cobblestone with a central open irrigation spot; add water manually.'
     },
     () => {
       const b = [];
@@ -386,6 +386,53 @@ function buildBuiltinSchematics() {
         }
       }
       return b;
+    }
+  );
+
+  add(
+    'animal_pen',
+    {
+      name: 'Passive Animal Pen (7x7)',
+      category: 'farming',
+      primaryMaterial: 'minecraft:oak_fence',
+      dimensions: '7x7x2',
+      description: 'A fenced, open-top pen for keeping livestock near the base; the south side stays open as an entry.'
+    },
+    () => {
+      const blocks = [];
+      for (let x = -3; x <= 3; x += 1) {
+        for (let z = -3; z <= 3; z += 1) {
+          if (Math.abs(x) === 3 || Math.abs(z) === 3) {
+            if (z === 3 && x === 0) continue;
+            blocks.push({ x, y: 0, z, block: 'oak_fence' });
+            blocks.push({ x, y: 1, z, block: 'oak_fence' });
+          }
+        }
+      }
+      blocks.push({ x: 0, y: 0, z: 3, block: 'oak_fence_gate', optional: true });
+      return blocks;
+    }
+  );
+
+  add(
+    'torch_waystation',
+    {
+      name: 'Lit Mining Waystation (7x7)',
+      category: 'survival',
+      primaryMaterial: 'minecraft:cobblestone',
+      dimensions: '7x7x2',
+      description: 'Compact cobblestone rest pad with supported torch posts to mark a safe return point.'
+    },
+    () => {
+      const blocks = [];
+      for (let x = -3; x <= 3; x += 1) {
+        for (let z = -3; z <= 3; z += 1) blocks.push({ x, y: 0, z, block: 'cobblestone' });
+      }
+      for (const [x, z] of [[-2, -2], [2, -2], [-2, 2], [2, 2]]) {
+        blocks.push({ x, y: 1, z, block: 'cobblestone' });
+        blocks.push({ x, y: 2, z, block: 'torch', optional: true });
+      }
+      return blocks;
     }
   );
 

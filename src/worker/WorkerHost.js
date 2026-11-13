@@ -162,12 +162,53 @@ class WorkerHost {
     } else {
       try {
         const rec = await this.client.reconcile([]);
-        if (Array.isArray(rec.canonicalBots) && rec.canonicalBots.length > 0) {
-          const canonById = new Map(rec.canonicalBots.map((c) => [String(c.botId), c]));
-          botDefs = botDefs.map((b) => {
-            const canon = canonById.get(String(b.botId));
-            return canon ? { ...b, username: canon.username } : b;
-          });
+        if (Array.isArray(rec.canonicalBots)) {
+          const canonicalIds = rec.canonicalBots.map((b) => String(b.botId)).sort();
+          const configuredIds = botDefs.map((b) => String(b.botId)).sort();
+          const rosterMatches =
+            canonicalIds.length === configuredIds.length &&
+            canonicalIds.every((botId, index) => botId === configuredIds[index]);
+
+          if (!rosterMatches) {
+            if (!wCfg.bootstrapToken) {
+              throw new DomainError(
+                'BOT_ROSTER_MISMATCH',
+                `Configured bot roster (${configuredIds.join(', ') || 'empty'}) does not match the Master's enrolled roster (${canonicalIds.join(', ') || 'empty'}). Re-enroll this worker with a fresh bootstrap token to change its bot roster.`
+              );
+            }
+
+            // Standalone Master mints a fresh one-time bootstrap token each start. Use it to
+            // reconcile persisted worker credentials when the local configured roster changed,
+            // rather than spawning unowned bots that make every heartbeat fail with HTTP 403.
+            this.client.setCredentials(null);
+            const reg = await this.client.register({
+              bootstrapToken: wCfg.bootstrapToken,
+              workerInfo: {
+                schemaVersion: 1,
+                workerId: wCfg.workerId,
+                hostname: wCfg.hostname,
+                maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
+                allowUsernameChange: Boolean(wCfg.forceRenameBots),
+                configuredBots: botDefs
+              }
+            });
+            activeWorkerToken = reg.workerToken;
+            this._heartbeatIntervalMs = reg.heartbeatIntervalMs || this._heartbeatIntervalMs;
+            this.logger.info('Re-enrolled worker with updated bot roster', {
+              workerId: wCfg.workerId,
+              previousBotIds: canonicalIds,
+              configuredBotIds: configuredIds
+            });
+            rec.canonicalBots = reg.canonicalBots || [];
+          }
+
+          if (rec.canonicalBots.length > 0) {
+            const canonById = new Map(rec.canonicalBots.map((c) => [String(c.botId), c]));
+            botDefs = botDefs.map((b) => {
+              const canon = canonById.get(String(b.botId));
+              return canon ? { ...b, username: canon.username } : b;
+            });
+          }
         }
       } catch (err) {
         if (err?.code === 'UNAUTHENTICATED' && wCfg.bootstrapToken) {

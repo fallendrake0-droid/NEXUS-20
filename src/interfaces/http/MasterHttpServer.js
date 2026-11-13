@@ -649,7 +649,9 @@ class MasterHttpServer {
         source: 'dashboard',
         idempotencyKey: body.idempotencyKey || crypto.randomUUID(),
         text: body.text,
-        priority: body.priority || 'normal'
+        priority: body.priority || 'normal',
+        forceAI: body.forceAI === true,
+        conversationContext: typeof body.conversationContext === 'string' ? body.conversationContext.slice(-1200) : ''
       });
       this._sendJson(res, 201, created);
       return;
@@ -675,7 +677,9 @@ class MasterHttpServer {
         const resTask = await this._coordinator.clarifyTask({
           actor,
           taskId,
-          answerText: body.answerText
+          answerText: body.answerText ?? body.text,
+          forceAI: body.forceAI === true,
+          conversationContext: typeof body.conversationContext === 'string' ? body.conversationContext.slice(-1200) : ''
         });
         this._sendJson(res, 200, resTask);
         return;
@@ -860,7 +864,7 @@ class MasterHttpServer {
       return;
     }
 
-    // Zero-AI 1,370+ Command Catalog (`/api/v1/commands`)
+    // Zero-AI curated Command Catalog (`/api/v1/commands`)
     if (method === 'GET' && pathname === '/api/v1/commands') {
       const category = parsedUrl.searchParams.get('category') || null;
       const search = parsedUrl.searchParams.get('search') || null;
@@ -912,6 +916,7 @@ class MasterHttpServer {
         actor,
         mode: body.mode,
         targetPlayer: body.targetPlayer || null,
+        targetPosition: body.targetPosition || null,
         botId: body.botId || '*',
         preferredWeaponStyle: body.preferredWeaponStyle || 'auto',
         itemFilter: body.itemFilter || null,

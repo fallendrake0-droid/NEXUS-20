@@ -11,7 +11,7 @@
 
 1. **Zero local inference on phone:** `OllamaClient` rejects `127.0.0.1`, `::1`, `localhost`, `0.0.0.0`, `unix://` and RFC-3927 link-local endpoints (`DomainError('AI_LOCAL_HOST_FORBIDDEN')`).
 2. **Zero paid/cloud APIs:** `OllamaClient` rejects OpenAI, Anthropic, Google Gemini, OpenRouter, Together, Groq and any host outside `config.ai.allowedHosts` (`DomainError('AI_PAID_PROVIDER_FORBIDDEN')`).
-3. **Structured advisory output only:** Ollama receives compact `PlanningContextV1` (`<= 8,192 bytes` serialized UTF-8) via `POST /api/chat` with `stream: false` and `format: TASK_PLAN_V1_SCHEMA`. Model outputs are untrusted proposals validated syntactically and semantically by `SchemaValidator` before `TaskManager` accepts them.
+3. **Structured advisory output only:** Ollama receives compact `PlanningContextV1` (`<= 8,192 bytes` serialized UTF-8) via `POST /api/chat` with `stream: false` and `format: TASK_PLAN_V1_SCHEMA`. Optional `conversationContext` is bounded to 1,200 characters, contains only recent chat turns / the original task for clarification, and is untrusted. The latest `userIntent` is authoritative; history may only resolve references or preferences. Model outputs are untrusted proposals validated syntactically and semantically by `SchemaValidator` before `TaskManager` accepts them.
 4. **AI never runs inside real-time control loops:** Reflexes (pathfinding, eating, block digging, combat evasion, lease checks) execute 100% deterministically on `WorkerHost` with `0` LLM calls.
 5. **Fast-path first (`AiEfficiencyController`):** Clear structured commands (`collect/mine/gather <N> <item>`, `craft <N> <item>`, `explore <radius>`, `guard <target>`, `status`, `pause`, `resume`, `cancel`, `stop`) bypass Ollama completely (`0` network tokens, `< 1 ms` latency).
 
@@ -59,6 +59,7 @@
     "schemaVersion": { "const": 1 },
     "requestId": { "type": "string", "format": "uuid" },
     "userIntent": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "conversationContext": { "type": "string", "maxLength": 1200 },
     "serverProfile": {
       "type": "object",
       "additionalProperties": false,

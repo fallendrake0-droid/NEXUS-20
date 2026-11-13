@@ -451,9 +451,16 @@ class SimulatedBotDriver extends EventEmitter {
   }
 
   async setTacticalOrder(order = {}) {
+    const mode = String(order.mode || 'idle');
+    const targetPosition = order.targetPosition &&
+      [order.targetPosition.x, order.targetPosition.y, order.targetPosition.z].every((v) => Number.isFinite(Number(v)))
+      ? { x: Number(order.targetPosition.x), y: Number(order.targetPosition.y), z: Number(order.targetPosition.z) }
+      : null;
+    if (mode === 'goto' && targetPosition) this.position = { ...targetPosition };
     this._tacticalState = {
-      mode: String(order.mode || 'idle'),
+      mode,
       targetPlayer: order.targetPlayer || null,
+      targetPosition: mode === 'goto' ? targetPosition : null,
       preferredWeaponStyle: order.preferredWeaponStyle || 'auto',
       updatedAt: new Date().toISOString()
     };
@@ -750,7 +757,7 @@ function createMineflayerDriver(options = {}) {
     autonomyTimer = setInterval(() => {
       // Allow a 1,500ms post-spawn grace window so initial chunk streaming & teleports settle cleanly
       if (!bot || !bot.entity || busyWorkSection || Date.now() - spawnedAt < 1_500) return;
-      combatEngine.tick(bot, moveNearPosition).catch(() => {});
+      combatEngine.tick(bot, moveNearPosition, setNavigationGoal).catch(() => {});
     }, 500);
     autonomyTimer.unref?.();
   }
@@ -823,6 +830,26 @@ function createMineflayerDriver(options = {}) {
       }
     }
     return Boolean(bot && bot.entity && bot.entity.position.distanceTo(targetPos) <= range + 0.9);
+  }
+
+  function setNavigationGoal(targetPos, range = 1.25) {
+    if (!bot || !bot.entity || !bot.pathfinder || !pathfinderMod?.goals?.GoalNear) return false;
+    try {
+      if (!targetPos) {
+        bot.pathfinder.setGoal(null);
+        return true;
+      }
+      const goal = new pathfinderMod.goals.GoalNear(
+        targetPos.x,
+        targetPos.y,
+        targetPos.z,
+        Math.max(1, Number(range) || 1.25)
+      );
+      bot.pathfinder.setGoal(goal);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function equipBestToolForBlock(blockName) {
@@ -1015,70 +1042,81 @@ function createMineflayerDriver(options = {}) {
     }
     const anchor = bot.entity.position.floored().offset(3, 0, 3);
     const ordered = sortBlocksForSafePlacement(schematic.blocks);
+    const requiredCount = ordered.filter((cell) => !cell.optional).length;
     let placedCount = 0;
+    let missingMaterials = 0;
+    let blockedPlacements = 0;
+    let cancelled = false;
 
     for (const cell of ordered) {
       if (typeof checkAbort === 'function') {
         const gate = await checkAbort();
-        if (gate?.aborted === 'cancelled') return { ok: false, cancelled: true };
+        if (gate?.aborted === 'cancelled') { cancelled = true; break; }
         if (gate?.aborted) break;
       }
       const worldPos = anchor.offset(cell.x, cell.y, cell.z);
       const existing = bot.blockAt(worldPos);
-      if (existing && existing.name === cell.block) {
-        placedCount += 1;
+      if (existing && (existing.name === cell.block || FALLBACK_BUILDING_MATERIALS.includes(existing.name))) {
+        if (!cell.optional) placedCount += 1;
         continue;
       }
 
       const inv = bot.inventory?.items?.() || [];
       let blockItem = inv.find((i) => i.name === cell.block);
-      if (!blockItem && !cell.optional) {
-        blockItem = inv.find((i) => FALLBACK_BUILDING_MATERIALS.includes(i.name));
-      }
+      if (!blockItem && !cell.optional) blockItem = inv.find((i) => FALLBACK_BUILDING_MATERIALS.includes(i.name));
       if (!blockItem) {
-        if (cell.optional) continue;
+        if (!cell.optional) missingMaterials += 1;
         continue;
       }
 
-      // Ensure bot is within placement range without standing inside target block
+      let reached = true;
       if (bot.entity.position.floored().equals(worldPos)) {
-        await moveNearPosition(worldPos.offset(2, 0, 2), 1.8, 3_500);
+        reached = await moveNearPosition(worldPos.offset(2, 0, 2), 1.8, 3_500);
       } else if (bot.entity.position.distanceTo(worldPos) > 4.2) {
-        await moveNearPosition(worldPos, 3.2, 6_000);
+        reached = await moveNearPosition(worldPos, 3.2, 6_000);
+      }
+      if (!reached) {
+        if (!cell.optional) blockedPlacements += 1;
+        continue;
       }
 
-      if (existing && existing.name !== 'air' && existing.boundingBox !== 'block') {
-        await bot.dig(existing).catch(() => {});
-      }
-
-      // Find adjacent solid face to place against
+      if (existing && existing.name !== 'air' && existing.boundingBox !== 'block') await bot.dig(existing).catch(() => {});
       const dirs = [
-        [0, -1, 0, { x: 0, y: 1, z: 0 }],
-        [1, 0, 0, { x: -1, y: 0, z: 0 }],
-        [-1, 0, 0, { x: 1, y: 0, z: 0 }],
-        [0, 0, 1, { x: 0, y: 0, z: -1 }],
-        [0, 0, -1, { x: 0, y: 0, z: 1 }],
-        [0, 1, 0, { x: 0, y: -1, z: 0 }]
+        [0, -1, 0, { x: 0, y: 1, z: 0 }], [1, 0, 0, { x: -1, y: 0, z: 0 }],
+        [-1, 0, 0, { x: 1, y: 0, z: 0 }], [0, 0, 1, { x: 0, y: 0, z: -1 }],
+        [0, 0, -1, { x: 0, y: 0, z: 1 }], [0, 1, 0, { x: 0, y: -1, z: 0 }]
       ];
+      let cellPlaced = false;
       for (const [dx, dy, dz, faceVec] of dirs) {
         const ref = bot.blockAt(worldPos.offset(dx, dy, dz));
-        if (ref && ref.boundingBox === 'block') {
-          try {
-            await bot.equip(blockItem, 'hand');
-            await bot.placeBlock(ref, faceVec);
-            placedCount += 1;
+        if (!ref || ref.boundingBox !== 'block') continue;
+        try {
+          await bot.equip(blockItem, 'hand');
+          await bot.placeBlock(ref, faceVec);
+          const placedBlock = bot.blockAt(worldPos);
+          if (placedBlock && (placedBlock.name === cell.block || FALLBACK_BUILDING_MATERIALS.includes(placedBlock.name))) {
+            cellPlaced = true;
             break;
-          } catch {
-            // try next adjacent face
           }
+        } catch {
+          // Try the next solid adjacent face; never claim an unverified placement.
         }
       }
+      if (cellPlaced && !cell.optional) placedCount += 1;
+      else if (!cell.optional) blockedPlacements += 1;
     }
 
+    if (cancelled) return { ok: false, cancelled: true, verifiedBlocks: placedCount };
+    const ok = placedCount >= requiredCount && blockedPlacements === 0 && missingMaterials === 0;
     return {
-      ok: true,
-      verifiedBlocks: Math.max(1, placedCount),
-      placedBlocks: placedCount
+      ok,
+      verifiedBlocks: placedCount,
+      placedBlocks: placedCount,
+      ...(ok ? {} : {
+        failureCode: missingMaterials > 0 ? 'RESOURCE_NOT_FOUND' : 'PATH_BLOCKED',
+        retryable: true,
+        summary: `Schematic incomplete: placed ${placedCount}/${requiredCount} required blocks; ${missingMaterials} missing materials, ${blockedPlacements} blocked placements`
+      })
     };
   }
 
@@ -1290,6 +1328,17 @@ function createMineflayerDriver(options = {}) {
     async eatFoodIfPossible() {
       if (!bot) return false;
       return combatEngine.autoFeedIfNeeded(bot, false);
+    },
+    async huntForFoodIfNeeded() {
+      if (!bot || !bot.entity) return { acted: false, reason: 'bot_not_spawned' };
+      busyWorkSection = true;
+      try {
+        return await combatEngine.huntForFoodIfNeeded(bot, moveNearPosition);
+      } catch {
+        return { acted: false, reason: 'food_hunt_failed' };
+      } finally {
+        busyWorkSection = false;
+      }
     },
     async gatherResource({ resourceId }) {
       if (!bot || !bot.entity) {
@@ -1528,7 +1577,7 @@ function createMineflayerDriver(options = {}) {
             return await placeSchematicBlocks(schematic, checkAbort);
           }
         }
-        return { ok: true, verifiedBlocks: 1 };
+        return { ok: false, failureCode: 'PATH_BLOCKED', retryable: false, summary: `Worker does not have a verified ${actionType} skill; task was not marked complete` };
       } finally {
         busyWorkSection = false;
       }
@@ -1617,7 +1666,9 @@ function createMineflayerDriver(options = {}) {
       return out;
     },
     async setTacticalOrder(order = {}) {
+      const previousMode = combatEngine.tacticalState.mode;
       const state = combatEngine.setTacticalOrder(order);
+      if (previousMode === 'goto' && state.mode !== 'goto') setNavigationGoal(null);
       if (state.mode === 'idle' && bot && typeof bot.clearControlStates === 'function') {
         bot.clearControlStates();
       }
@@ -1954,19 +2005,28 @@ class BotRunner extends EventEmitter {
       const wasPaused = this._activeLease ? this._activeLease.paused : false;
       if (this._activeLease) this._activeLease.paused = true;
 
-      const ate = await this._driver.eatFoodIfPossible();
+      let recovered = await this._driver.eatFoodIfPossible();
       const trigger = raw.health <= minHealth ? 'low_health' : 'starving';
+      if (!recovered && raw.food <= minFood && raw.health > minHealth && typeof this._driver.huntForFoodIfNeeded === 'function') {
+        const deadline = Date.now() + 18_000;
+        while (!recovered && Date.now() < deadline) {
+          const hunt = await this._driver.huntForFoodIfNeeded();
+          recovered = Boolean(hunt?.ate);
+          if (recovered || ['no_edible_animal_in_range', 'inventory_full', 'food_hunt_failed'].includes(hunt?.reason)) break;
+          if (!recovered) await new Promise((resolve) => setTimeout(resolve, 450));
+        }
+      }
       const overridePayload = {
         botId: this.botId,
         trigger,
         health: raw.health,
         food: raw.food,
-        recovered: ate,
+        recovered,
         assignmentId: this._activeLease?.assignment?.assignmentId || null
       };
       this.emit('survival_override', overridePayload);
 
-      if (ate && this._activeLease && !wasPaused) {
+      if (recovered && this._activeLease && !wasPaused) {
         this._activeLease.paused = false;
       }
       return overridePayload;

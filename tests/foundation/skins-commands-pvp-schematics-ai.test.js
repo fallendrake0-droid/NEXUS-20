@@ -21,9 +21,11 @@ const {
   scoreArmorItem,
   scoreWeaponItem,
   scoreMiningToolItem,
-  CombatAndSurvivalEngine
+  CombatAndSurvivalEngine,
+  FOOD_MOBS
 } = require('../../src/combat/CombatAndSurvivalEngine');
 const { SchematicRegistry } = require('../../src/schematics/SchematicBuilder');
+const { resolveUnifiedCommandExecution } = require('../../src/commands/CommandCompleter');
 
 test('NEXUS-SKINS: Exclusively equips all bots (bot-01..bot-20) with the 64x64 Crimson Shadow Knight skin', () => {
   const sm = new SkinManager();
@@ -53,14 +55,17 @@ test('NEXUS-SKINS: Exclusively equips all bots (bot-01..bot-20) with the 64x64 C
   assert.equal(sm.isValidSkinId('robe_gold'), false);
 });
 
-test('NEXUS-ZERO-AI: All 1,370+ catalog commands & natural user phrases resolve with 0 LLM calls and valid TaskPlanV1', () => {
-  assert.ok(
-    MASTER_ZERO_AI_CATALOG.length >= 1300,
-    `Expected >= 1,300 Zero-AI commands, got ${MASTER_ZERO_AI_CATALOG.length}`
-  );
+test('NEXUS-ZERO-AI: curated distinct commands resolve through deterministic tasks or explicit actions', () => {
+  assert.ok(MASTER_ZERO_AI_CATALOG.length >= 350 && MASTER_ZERO_AI_CATALOG.length < 600, `Expected a compact curated deck, got ${MASTER_ZERO_AI_CATALOG.length}`);
+  const commandFamilies = MASTER_ZERO_AI_CATALOG.map((item) => item.commandText.toLowerCase().replace(/\b\d+\b/g, '#'));
+  assert.equal(new Set(commandFamilies).size, commandFamilies.length, 'Quantity-only duplicate command presets must be omitted');
 
-  // Every single catalog command must resolve deterministically with valid TaskPlanV1!
   for (const entry of MASTER_ZERO_AI_CATALOG) {
+    const direct = resolveUnifiedCommandExecution(entry.commandText);
+    if (direct.type === 'player_action') {
+      assert.ok(direct.payload.mode, `Direct action has a mode: ${entry.commandText}`);
+      continue;
+    }
     const det = buildDeterministicPlan(null, entry.commandText);
     assert.equal(det.matched, true, `Catalog command did not match Zero-AI: "${entry.commandText}"`);
     const v = validateTaskPlanV1(det.plan);
@@ -93,6 +98,35 @@ test('NEXUS-ZERO-AI: All 1,370+ catalog commands & natural user phrases resolve 
 
   const searchRes = listZeroAiCommands({ search: 'diamond', limit: 50 });
   assert.ok(searchRes.matchedCount >= 10);
+});
+
+test('NEXUS-FOOD-HUNT: Low-food bots hunt passive meat mobs, collect drops, and eat without targeting hostiles', async () => {
+  assert.deepEqual([...FOOD_MOBS].sort(), ['chicken', 'cow', 'mooshroom', 'pig', 'rabbit', 'sheep']);
+  const pos = (x) => ({ x, y: 64, z: 0, distanceTo(other) { return Math.hypot(this.x - other.x, this.y - other.y, this.z - other.z); } });
+  const pig = { id: 7, name: 'pig', position: pos(4), health: 10 };
+  const zombie = { id: 8, name: 'zombie', position: pos(1), health: 20 };
+  const nearby = { entity: { position: pos(0) }, entities: { 7: pig, 8: zombie } };
+  const engine = new CombatAndSurvivalEngine({ botId: 'bot-01', username: 'Nexus_01' });
+  assert.equal(engine.findNearestFoodMob(nearby, nearby.entity.position), pig);
+
+  let food = 5;
+  const inventoryItems = [];
+  const target = { id: 11, name: 'pig', position: pos(3), health: 10 };
+  const bot = {
+    entity: { position: pos(0) }, entities: { 11: target }, health: 20,
+    get food() { return food; }, inventory: { items: () => inventoryItems }, equip: async () => {},
+    consume: async () => { inventoryItems.splice(0, 1); food = 20; }
+  };
+  engine.engageTarget = async (_bot, mob) => {
+    delete bot.entities[mob.id];
+    inventoryItems.push({ name: 'porkchop', count: 1 });
+    return { acted: true };
+  };
+  const result = await engine.tick(bot, async () => true);
+  assert.equal(result.targetMob, 'pig');
+  assert.equal(result.foodCollected, 1);
+  assert.equal(result.ate, true);
+  assert.equal(food, 20);
 });
 
 test('NEXUS-PVP-SURVIVAL: Mace aerial smash, Axe shield-break, Spear reach, Enchanted Armor & Auto-Feed', async () => {
@@ -199,7 +233,14 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
   const cli = fs.readFileSync(path.join(__dirname, '../../index.js'), 'utf8');
   assert.equal(/\sstyle\s*=/.test(html), false, 'index.html must contain zero inline style="" attributes');
   assert.equal(/\.style\./.test(js), false, 'app.js must contain zero element.style.* mutations');
-  assert.match(html, /placeholder="Type a command and press \[Tab\].*mine diamond 64/);
+  assert.match(html, /placeholder="Type a command \(e\.g\. mine diamond 64\) · press Tab for suggestions"/);
+  assert.match(html, /id="noai-search-input" type="search"/);
+  assert.match(html, /Popular shortcuts/);
+  assert.match(html, /add-worker-form/);
+  assert.match(js, /requestSeq !== state\.noaiRequestSeq/);
+  assert.match(js, /noaiLimit: 24/);
+  assert.match(js, /\.filter\(\(task\) => task\.state !== 'cancelled'\)/);
+  assert.match(js, /Cancelled tasks are hidden/);
   assert.doesNotMatch(html, /mc-slash-badge/);
   assert.match(cli, /prompt: 'nexus> '/);
   assert.match(cli, /principalId: 'cli:tty'/);
@@ -209,7 +250,10 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
 
   // Verify SchematicRegistry custom ASCII-layer schematic parsing
   const schReg = new SchematicRegistry();
-  assert.ok(schReg.listSchematics().length >= 16);
+  assert.ok(schReg.listSchematics().length >= 18);
+  const survivalBlueprintIds = new Set(schReg.listSchematics().map((entry) => entry.schematicId));
+  assert.ok(survivalBlueprintIds.has('animal_pen'));
+  assert.ok(survivalBlueprintIds.has('torch_waystation'));
   const custom = schReg.registerCustomSchematic({
     name: 'Test Beacon Pyramid',
     palette: { I: 'iron_block', B: 'beacon' },
@@ -325,6 +369,30 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify({ mode: 'idle' })
+    });
+    await worker.flushAndPoll();
+
+    const gotoRes = await fetch(`${baseUrl}/api/v1/players/action`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ mode: 'goto', targetPosition: { x: 123.5, y: 70, z: -45 }, botId: 'bot-01', preemptTask: true })
+    });
+    assert.equal(gotoRes.status, 200);
+    await worker.flushAndPoll();
+    assert.deepEqual(worker.bots.get('bot-01').getTacticalState().targetPosition, { x: 123.5, y: 70, z: -45 });
+    assert.deepEqual(worker.bots.get('bot-01').driver.position, { x: 123.5, y: 70, z: -45 });
+    const swarmGotoRes = await fetch(`${baseUrl}/api/v1/players/action`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ mode: 'goto', targetPosition: { x: 10, y: 64, z: 20 }, botId: '*', preemptTask: true })
+    });
+    assert.equal(swarmGotoRes.status, 200);
+    await worker.flushAndPoll();
+    for (const botId of ['bot-01', 'bot-02']) {
+      assert.deepEqual(worker.bots.get(botId).getTacticalState().targetPosition, { x: 10, y: 64, z: 20 });
+    }
+    await fetch(`${baseUrl}/api/v1/players/action`, {
+      method: 'POST', headers: authHeaders, body: JSON.stringify({ mode: 'idle' })
     });
     await worker.flushAndPoll();
 

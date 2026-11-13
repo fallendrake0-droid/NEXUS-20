@@ -38,6 +38,29 @@ async function waitFor(predicate, { timeoutMs = 6000, intervalMs = 40 } = {}) {
 }
 
 describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () => {
+  it('does not mark a build task complete when the driver reports zero verified block changes', async () => {
+    const executor = new SkillExecutor({ leaseSafetyMarginMs: 100, stepIntervalMs: 5 });
+    const driver = {
+      connected: true,
+      async captureState() { return { itemCounts: {} }; },
+      async safeStop() { return { ok: true }; },
+      async performBlockTask() { return { ok: true, verifiedBlocks: 0 }; }
+    };
+    const outcome = await executor.execute({
+      assignment: {
+        assignmentId: '11111111-1111-4111-8111-111111111111', leaseId: '22222222-2222-4222-8222-222222222222',
+        allocationEpoch: 1, taskId: '33333333-3333-4333-8333-333333333333', objectiveId: 'build-shelter',
+        workerId: 'worker-build', botId: 'bot-build', actionType: 'build', quotaQuantity: 1,
+        leaseTtlMs: 10_000, checkpointIntervalMs: 5000
+      },
+      driver,
+      getControlState: () => ({ paused: false, cancelled: false, fenced: false, disconnected: false, monotonicDeadlineMs: performance.now() + 20_000 })
+    });
+    assert.equal(outcome.type, 'failed');
+    assert.equal(outcome.report.failureCode, 'PATH_BLOCKED');
+    assert.match(outcome.report.summary, /without verified block changes/);
+  });
+
   it('E2E-01: Master + WorkerHost (2 bots) enroll, split quota, execute mine skill, verify ledger & record world knowledge over live TCP', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-worker-e2e1-'));
     const cliToken = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';

@@ -12,13 +12,18 @@
     noaiCategory: 'all',
     noaiSearch: '',
     noaiOffset: 0,
-    noaiLimit: 96,
+    noaiLimit: 24,
+    noaiRequestSeq: 0,
     skinsById: {},
     providersCache: [],
     aiFormInitialized: false,
     autocompleteDict: null,
     cmdHistory: [],
-    cmdHistoryIndex: -1
+    cmdHistoryIndex: -1,
+    lastStatus: null,
+    aiChatHistory: [],
+    aiPendingClarificationTaskId: null,
+    aiChatSending: false
   };
 
   const el = (id) => document.getElementById(id);
@@ -121,6 +126,8 @@
 
   function enterShell(actor) {
     state.actor = actor;
+    restoreAiChatHistory();
+    el('ai-control-submit').textContent = state.aiPendingClarificationTaskId ? 'Answer clarification' : 'Send instruction';
     el('auth-screen').classList.add('hidden');
     el('app-shell').classList.remove('hidden');
     el('actor-badge').textContent = actor.username + ' (' + actor.role + ')';
@@ -197,8 +204,120 @@
     return td;
   }
 
+  function nextWorkerId(workers) {
+    const ids = new Set((workers || []).map((worker) => String(worker.workerId)));
+    let index = 1;
+    while (ids.has('worker-' + index)) index += 1;
+    return 'worker-' + index;
+  }
+
+  function occupiedBotNumbers(bots) {
+    return new Set((bots || [])
+      .map((bot) => String(bot.botId || '').match(/(?:^|[-_])(\d+)$/))
+      .filter(Boolean)
+      .map((match) => Number(match[1]))
+      .filter((number) => Number.isSafeInteger(number) && number >= 1 && number <= 20));
+  }
+
+  function nextBotStartIndex(bots, count) {
+    const occupied = occupiedBotNumbers(bots);
+    const botCount = Math.max(1, Number(count) || 1);
+    for (let start = 1; start + botCount - 1 <= 20; start += 1) {
+      if (Array.from({ length: botCount }, (_, i) => start + i).every((n) => !occupied.has(n))) return start;
+    }
+    return '';
+  }
+
+  function drawSurroundings(st) {
+    const canvas = el('surroundings-canvas');
+    const caption = el('surroundings-caption');
+    if (!canvas || !caption) return;
+    const width = Math.max(320, Math.floor(canvas.clientWidth || 720));
+    const height = 320;
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0b1118';
+    ctx.fillRect(0, 0, width, height);
+
+    const bots = (st.bots || []).map((b) => ({
+      id: b.botId,
+      position: b.snapshot && b.snapshot.position,
+      state: b.connectionState
+    })).filter((b) => b.position && Number.isFinite(b.position.x) && Number.isFinite(b.position.z));
+    const knowledge = st.worldKnowledge || {};
+    const groups = [
+      { key: 'resources', color: '#f4c95d', name: 'resources' },
+      { key: 'hazards', color: '#ff6b6b', name: 'hazards' },
+      { key: 'bases', color: '#5ee0aa', name: 'bases' },
+      { key: 'structures', color: '#56b4e9', name: 'structures' },
+      { key: 'storage', color: '#c39bff', name: 'storage' }
+    ];
+    const observations = groups.flatMap((group) => (knowledge[group.key] || [])
+      .filter((entry) => entry.pos && Number.isFinite(entry.pos.x) && Number.isFinite(entry.pos.z))
+      .map((entry) => ({ ...entry, color: group.color, kind: group.name })));
+    const points = [...bots.map((b) => b.position), ...observations.map((o) => o.pos)];
+    const center = points.length
+      ? { x: points.reduce((sum, p) => sum + p.x, 0) / points.length, z: points.reduce((sum, p) => sum + p.z, 0) / points.length }
+      : { x: 0, z: 0 };
+    const radius = 64;
+    const scale = Math.min((width - 72) / (radius * 2), (height - 50) / (radius * 2));
+    const originX = width / 2;
+    const originY = height / 2;
+    const screen = (p) => ({ x: originX + (p.x - center.x) * scale, y: originY + (p.z - center.z) * scale });
+
+    ctx.strokeStyle = 'rgba(148, 163, 184, .14)';
+    ctx.lineWidth = 1;
+    for (let block = -radius; block <= radius; block += 16) {
+      const px = originX + block * scale;
+      const py = originY + block * scale;
+      ctx.beginPath(); ctx.moveTo(px, 20); ctx.lineTo(px, height - 20); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(36, py); ctx.lineTo(width - 36, py); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(226, 232, 240, .5)';
+    ctx.beginPath(); ctx.moveTo(originX, 20); ctx.lineTo(originX, height - 20); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(36, originY); ctx.lineTo(width - 36, originY); ctx.stroke();
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText('X ' + Math.round(center.x), 8, 16);
+    ctx.fillText('Z ' + Math.round(center.z), 8, height - 8);
+
+    for (const item of observations) {
+      const p = screen(item.pos);
+      ctx.fillStyle = item.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const bot of bots) {
+      const p = screen(bot.position);
+      ctx.fillStyle = bot.state === 'ready' ? '#fff' : '#94a3b8';
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#e2e8f0'; ctx.font = '11px system-ui, sans-serif';
+      ctx.fillText(bot.id, p.x + 9, p.y - 8);
+    }
+    const dimension = bots.length && st.bots.find((b) => b.botId === bots[0].id)?.snapshot?.dimension;
+    caption.textContent = bots.length + ' positioned bot' + (bots.length === 1 ? '' : 's') + ' · ' + observations.length +
+      ' current known observation' + (observations.length === 1 ? '' : 's') + ' · centered near swarm' +
+      (dimension ? ' · ' + dimension : '') + '. Map shows reports only; unseen terrain is not guessed.';
+  }
+
   function renderStatus(st) {
+    state.lastStatus = st;
     if (st.envProfile) state.envProfile = st.envProfile;
+    const masterUrlInput = el('add-worker-master-url');
+    if (masterUrlInput && !masterUrlInput.value) masterUrlInput.value = window.location.origin;
+    const workerInput = el('add-worker-id');
+    const knownWorkers = new Set((st.workers || []).map((worker) => String(worker.workerId)));
+    if (!workerInput.value || knownWorkers.has(workerInput.value.trim())) workerInput.value = nextWorkerId(st.workers);
+    const startInput = el('add-worker-start-index');
+    const count = Number(el('add-worker-count').value) || 1;
+    const occupied = occupiedBotNumbers(st.bots);
+    const start = Number(startInput.value);
+    const overlaps = Number.isInteger(start) && Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n));
+    if (!startInput.value || overlaps) startInput.value = nextBotStartIndex(st.bots, count);
     el('kpi-mode').textContent = st.operatingMode || 'HYBRID';
     el('kpi-governor').textContent = 'Governor: ' + st.governorState + ' (' + st.performanceProfile + ')';
     el('mode-select').value = st.operatingMode || 'HYBRID';
@@ -216,6 +335,8 @@
     const lagP95 = st.resources && st.resources.eventLoopDelayMs ? st.resources.eventLoopDelayMs.p95 : 0;
     el('kpi-rss').textContent = (rssBytes / (1024 * 1024)).toFixed(1) + ' MiB';
     el('kpi-lag').textContent = 'Loop p95: ' + Number(lagP95 || 0).toFixed(1) + ' ms';
+
+    drawSurroundings(st);
 
     // Active assignments
     const asgBody = el('active-assignments-tbody');
@@ -479,10 +600,10 @@
     const res = await api('/api/v1/tasks?limit=30');
     const tbody = el('tasks-tbody');
     clearChildren(tbody);
-    const items = res.items || [];
+    const items = (res.items || []).filter((task) => task.state !== 'cancelled');
     if (items.length === 0) {
       const tr = document.createElement('tr');
-      const td = tdText('No tasks submitted yet.');
+      const td = tdText(res.items?.length ? 'No visible tasks. Cancelled tasks are hidden.' : 'No tasks submitted yet.');
       td.colSpan = 4;
       td.className = 'muted';
       tr.appendChild(td);
@@ -665,7 +786,166 @@
     }
   }
 
+  function aiChatStorageKey() {
+    return 'nexus_ai_chat_' + String(state.actor?.principalId || 'operator');
+  }
+
+  function persistAiChatHistory() {
+    state.aiChatHistory = state.aiChatHistory.slice(-40);
+    try {
+      sessionStorage.setItem(aiChatStorageKey(), JSON.stringify({
+        messages: state.aiChatHistory,
+        pendingClarificationTaskId: state.aiPendingClarificationTaskId
+      }));
+    } catch {
+      // The live in-memory chat still works when browser storage is disabled.
+    }
+  }
+
+  function restoreAiChatHistory() {
+    state.aiChatHistory = [];
+    state.aiPendingClarificationTaskId = null;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(aiChatStorageKey()) || '{}');
+      if (Array.isArray(saved.messages)) {
+        state.aiChatHistory = saved.messages.slice(-40).filter((message) =>
+          message && ['user', 'assistant'].includes(message.role) && typeof message.text === 'string'
+        ).map((message) => ({
+          id: String(message.id || Date.now() + Math.random()),
+          role: message.role,
+          text: message.text.slice(0, 1200),
+          status: String(message.status || 'complete')
+        }));
+      }
+      state.aiPendingClarificationTaskId = typeof saved.pendingClarificationTaskId === 'string'
+        ? saved.pendingClarificationTaskId
+        : null;
+    } catch {
+      state.aiChatHistory = [];
+      state.aiPendingClarificationTaskId = null;
+    }
+    renderAiChatHistory();
+  }
+
+  function renderAiChatHistory() {
+    const log = el('ai-chat-messages');
+    if (!log) return;
+    clearChildren(log);
+    if (state.aiChatHistory.length === 0) {
+      const welcome = document.createElement('div');
+      welcome.className = 'ai-chat-welcome';
+      welcome.textContent = 'Tell the AI what you want the bots to accomplish. It can ask follow-up questions; task progress and verified completion are tracked separately.';
+      log.appendChild(welcome);
+      return;
+    }
+    for (const message of state.aiChatHistory) {
+      const row = document.createElement('div');
+      row.className = 'ai-chat-row ' + message.role + (message.status === 'pending' ? ' pending' : '');
+      row.dataset.messageId = message.id;
+      const label = document.createElement('span');
+      label.className = 'ai-chat-speaker';
+      label.textContent = message.role === 'user' ? 'YOU' : 'NEXUS AI';
+      const bubble = document.createElement('p');
+      bubble.className = 'ai-chat-bubble';
+      bubble.textContent = message.text;
+      row.append(label, bubble);
+      log.appendChild(row);
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function addAiChatMessage(role, text, status = 'complete') {
+    const id = window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now()) + Math.random();
+    state.aiChatHistory.push({ id, role, text: String(text).slice(0, 1200), status });
+    persistAiChatHistory();
+    renderAiChatHistory();
+    return id;
+  }
+
+  function updateAiChatMessage(id, text, status = 'complete') {
+    const message = state.aiChatHistory.find((entry) => entry.id === id);
+    if (!message) return;
+    message.text = String(text).slice(0, 1200);
+    message.status = status;
+    persistAiChatHistory();
+    renderAiChatHistory();
+  }
+
+  function recentAiChatContext() {
+    // Last two entries are this turn's user message and its pending assistant bubble.
+    return state.aiChatHistory.slice(0, -2).slice(-8)
+      .map((message) => (message.role === 'user' ? 'User: ' : 'Assistant: ') + message.text)
+      .join('\n').slice(-1200);
+  }
+
+  function summarizeAiTask(task) {
+    const name = task.intentSummary || task.rawText || 'requested task';
+    if (task.state === 'clarification_required') {
+      state.aiPendingClarificationTaskId = task.taskId;
+      persistAiChatHistory();
+      return 'I need one detail before I can make a safe plan: ' + (task.clarificationQuestion || 'Please clarify the request.') + '\nReply here to continue this same task; no work has been dispatched yet.';
+    }
+    state.aiPendingClarificationTaskId = null;
+    persistAiChatHistory();
+    if (task.state === 'failed') {
+      return 'I could not create a valid task plan for “' + name + '”. Nothing is being reported as complete. Check the Tasks tab for details.';
+    }
+    if (task.state === 'paused') {
+      return 'Plan queued for “' + name + '” (task ' + task.taskId + '); the workload governor has paused execution for now. It is not complete.';
+    }
+    return 'Task planned: “' + name + '” (task ' + task.taskId + ', state: ' + task.state + '). This is not a completion claim—worker evidence and verified progress are shown in Tasks.';
+  }
+
+  async function dispatchAiControlRequest(rawText) {
+    const text = String(rawText || '').trim();
+    if (!text || state.aiChatSending) return;
+    addAiChatMessage('user', text);
+    el('ai-control-input').value = '';
+    const replyId = addAiChatMessage('assistant', 'Checking the active planner and building a validated task plan…', 'pending');
+    state.aiChatSending = true;
+    el('ai-control-submit').disabled = true;
+    el('ai-chat-clear').disabled = true;
+    el('ai-control-submit').textContent = 'Planning…';
+    const isClarification = Boolean(state.aiPendingClarificationTaskId);
+    const conversationContext = recentAiChatContext();
+    try {
+      let created;
+      if (isClarification) {
+        const taskId = state.aiPendingClarificationTaskId;
+        created = await api('/api/v1/tasks/' + encodeURIComponent(taskId) + '/clarify', {
+          method: 'POST',
+          body: { answerText: text, forceAI: true, conversationContext }
+        });
+      } else {
+        const status = state.lastStatus || await api('/api/v1/status');
+        const activeProvider = (status.aiBrain?.providers || []).find((provider) => provider.active);
+        if (!activeProvider || !activeProvider.available) {
+          throw new Error('No AI provider is ready. Configure and activate Ollama in System & AI first.');
+        }
+        created = await api('/api/v1/tasks', {
+          method: 'POST',
+          body: {
+            text,
+            priority: 'normal',
+            forceAI: true,
+            ...(conversationContext ? { conversationContext } : {})
+          }
+        });
+      }
+      updateAiChatMessage(replyId, summarizeAiTask(created));
+      refreshStatusAndTasks();
+    } catch (err) {
+      updateAiChatMessage(replyId, 'I could not safely submit that instruction: ' + err.message + '\nNo success is assumed. You can correct the request, configure the provider, or retry.');
+    } finally {
+      state.aiChatSending = false;
+      el('ai-control-submit').disabled = false;
+      el('ai-chat-clear').disabled = false;
+      el('ai-control-submit').textContent = state.aiPendingClarificationTaskId ? 'Answer clarification' : 'Send instruction';
+    }
+  }
+
   async function refreshZeroAiDeck() {
+    const requestSeq = ++state.noaiRequestSeq;
     try {
       const q =
         '/api/v1/commands?category=' +
@@ -677,11 +957,17 @@
         '&offset=' +
         state.noaiOffset;
       const deck = await api(q);
-      el('noai-total-badge').textContent = String(deck.totalCatalogCommands || 1370);
+      if (requestSeq !== state.noaiRequestSeq) return;
+      el('noai-total-badge').textContent = String(deck.totalCatalogCommands || 0);
       el('noai-matched-count').textContent = String(deck.matchedCount || 0);
+      const activeCategory = state.noaiCategory === 'all' ? 'all categories' : state.noaiCategory.replace(/_/g, ' ');
+      el('noai-active-filter').textContent = activeCategory;
+      el('noai-category-summary').textContent = activeCategory;
       const pageNum = Math.floor((deck.offset || 0) / state.noaiLimit) + 1;
-      const totalPages = Math.max(1, Math.ceil((deck.matchedCount || 1) / state.noaiLimit));
+      const totalPages = Math.max(1, Math.ceil((deck.matchedCount || 0) / state.noaiLimit));
       el('noai-page-label').textContent = 'Page ' + pageNum + ' / ' + totalPages;
+      el('noai-prev-btn').disabled = pageNum <= 1;
+      el('noai-next-btn').disabled = pageNum >= totalPages || (deck.matchedCount || 0) === 0;
 
       // Category chips
       const catBar = el('noai-category-bar');
@@ -743,8 +1029,9 @@
         card.appendChild(foot);
         grid.appendChild(card);
       }
+      el('noai-empty-state').classList.toggle('hidden', (deck.commands || []).length > 0);
     } catch {
-      // ignore
+      // Keep the last rendered results if a transient search request fails.
     }
   }
 
@@ -864,6 +1151,17 @@
     }
 
     const activeMeta = aiBrain.providers.find((p) => p.name === aiBrain.activeProvider);
+    const aiControlStatus = el('ai-control-status');
+    if (aiControlStatus) {
+      aiControlStatus.textContent = activeMeta?.available
+        ? activeMeta.name === 'ollama'
+          ? 'Ready: private Ollama is configured; AI planning requests are sent from the Master to your Ollama device.'
+          : activeMeta.name === 'none'
+            ? 'Ready: deterministic Zero-AI mode is active; supported tasks work without an LLM.'
+            : 'Ready: ' + (activeMeta.label || activeMeta.name) + ' · provider charges may apply.'
+        : 'AI not ready. Configure and activate Ollama under System & AI to use plain-language control.';
+      aiControlStatus.classList.toggle('ai-control-ready', Boolean(activeMeta?.available));
+    }
     if (statusLine && activeMeta) {
       statusLine.textContent =
         'Active Brain: ' +
@@ -871,7 +1169,7 @@
         ' | Model: ' +
         (activeMeta.model || 'n/a') +
         ' | Key: ' +
-        (activeMeta.hasApiKey ? activeMeta.maskedApiKey : activeMeta.requiresApiKey ? 'Not set (falls back to 1,370+ Zero-AI)' : 'Not required');
+        (activeMeta.hasApiKey ? activeMeta.maskedApiKey : activeMeta.requiresApiKey ? 'Not set (supported tasks use deterministic fallback)' : 'Not required');
     }
   }
 
@@ -1134,6 +1432,29 @@
     }
   });
 
+  el('ai-control-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    dispatchAiControlRequest(el('ai-control-input').value);
+  });
+  el('ai-control-input').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      el('ai-control-form').requestSubmit();
+    }
+  });
+  el('ai-control-config').addEventListener('click', () => {
+    const systemTab = document.querySelector('.tab[data-tab="system"]');
+    if (systemTab) systemTab.click();
+  });
+  el('ai-chat-clear').addEventListener('click', () => {
+    state.aiChatHistory = [];
+    state.aiPendingClarificationTaskId = null;
+    persistAiChatHistory();
+    renderAiChatHistory();
+    el('ai-control-submit').textContent = 'Send instruction';
+    el('ai-control-input').focus();
+  });
+
   el('emergency-stop-btn').addEventListener('click', async () => {
     try {
       const out = await api('/api/v1/swarm/emergency-stop', { method: 'POST', body: {} });
@@ -1193,26 +1514,81 @@
     }
   });
 
-  el('mint-token-btn').addEventListener('click', async () => {
+  function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  el('add-worker-count').addEventListener('input', () => {
+    const status = state.lastStatus;
+    if (!status) return;
+    const count = Number(el('add-worker-count').value) || 1;
+    const input = el('add-worker-start-index');
+    const start = Number(input.value);
+    const occupied = occupiedBotNumbers(status.bots);
+    if (!Number.isInteger(start) || Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n))) {
+      input.value = nextBotStartIndex(status.bots, count);
+    }
+  });
+
+  el('add-worker-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
     try {
-      const out = await api('/api/v1/workers/bootstrap-token', { method: 'POST', body: {} });
+      const status = state.lastStatus || {};
+      const workerId = el('add-worker-id').value.trim();
+      const rawMasterUrl = el('add-worker-master-url').value.trim();
+      let parsedMasterUrl;
+      try { parsedMasterUrl = new URL(rawMasterUrl); }
+      catch { throw new Error('Enter the Master URL that the Linux Worker can reach, such as http://192.168.1.20:3000.'); }
+      if (!['http:', 'https:'].includes(parsedMasterUrl.protocol) || parsedMasterUrl.username || parsedMasterUrl.password || ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(parsedMasterUrl.hostname.toLowerCase())) {
+        throw new Error('The worker cannot use localhost or 0.0.0.0. Enter the phone’s reachable LAN/VPN IP or DNS name.');
+      }
+      const masterUrl = parsedMasterUrl.origin;
+      const count = Number(el('add-worker-count').value);
+      const start = Number(el('add-worker-start-index').value);
+      const prefix = el('add-worker-prefix').value.trim();
+      const host = el('add-worker-mc-host').value.trim();
+      const port = Number(el('add-worker-mc-port').value);
+      const workerIds = new Set((status.workers || []).map((worker) => String(worker.workerId)));
+      const occupied = occupiedBotNumbers(status.bots);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(workerId) || workerIds.has(workerId)) throw new Error('Choose a unique Worker ID using letters, numbers, dot, underscore or hyphen.');
+      if (!Number.isInteger(count) || count < 1 || count > 20 || !Number.isInteger(start) || start < 1 || start + count - 1 > 20) throw new Error('Choose a bot count and number range that fit within bot-01 to bot-20.');
+      if (Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n))) throw new Error('That bot number range is already used. Choose the suggested free range.');
+      if (!/^[A-Za-z0-9_]{2,12}$/.test(prefix)) throw new Error('Minecraft name prefix must be 2–12 letters, numbers or underscores.');
+      if (!host || /\s/.test(host) || host.length > 255) throw new Error('Enter a Minecraft server hostname without spaces.');
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Server port must be from 1 to 65535.');
+      const existingCount = (status.bots || []).length;
+      if (existingCount + count > Number(status.enabledBotsCap || 0)) throw new Error('Increase Bot Cap to at least ' + (existingCount + count) + ' before adding these bots.');
+      if (existingCount + count > Number(status.globalMaxBots || 20)) throw new Error('This would exceed the Master global bot limit.');
+
+      const minted = await api('/api/v1/workers/bootstrap-token', { method: 'POST', body: {} });
+      const vars = [
+        ['SWARM_ROLE', 'worker'], ['SWARM_ENV_PROFILE', state.envProfile || 'private_offline_test'],
+        ['SWARM_MASTER_URL', masterUrl], ['SWARM_BOOTSTRAP_TOKEN', minted.bootstrapToken],
+        ['SWARM_WORKER_ID', workerId], ['SWARM_WORKER_STATE_PATH', './data/' + workerId + '-state.json'],
+        ['SWARM_MC_HOST', host], ['SWARM_MC_PORT', port], ['SWARM_SPAWN_STAGGER_MS', 4000],
+        ['SWARM_BOT_NAME_PREFIX', prefix], ['SWARM_WORKER_BOT_COUNT', count], ['SWARM_WORKER_BOT_START_INDEX', start]
+      ];
+      const command = vars.map(([key, value]) => key + '=' + shellQuote(value)).join(' ') + ' npm run start:worker';
       const box = el('bootstrap-token-output');
       clearChildren(box);
-      const title = document.createElement('div');
-      title.textContent = 'Single-use Worker Bootstrap Token (expires ' + out.expiresAt + '): ' + out.bootstrapToken;
-      const cmd = document.createElement('code');
-      cmd.className = 'cmd-snippet';
-      cmd.textContent =
-        'SWARM_ROLE=worker SWARM_ENV_PROFILE=' +
-        (state.envProfile || 'private_offline_test') +
-        ' SWARM_MASTER_URL=' +
-        window.location.origin +
-        ' SWARM_BOOTSTRAP_TOKEN=' +
-        out.bootstrapToken +
-        ' SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_SPAWN_STAGGER_MS=4000 SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 npm run start:worker';
-      box.appendChild(title);
-      box.appendChild(cmd);
+      const token = document.createElement('p');
+      token.textContent = 'Single-use bootstrap token (expires ' + minted.expiresAt + '): ' + minted.bootstrapToken;
+      const note = document.createElement('p');
+      note.textContent = 'Run this command from the project folder on a Node.js machine that can reach the Master and Minecraft server. Keep the token private.';
+      const code = document.createElement('code');
+      code.className = 'worker-launch-command';
+      code.textContent = command;
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn small';
+      copy.textContent = 'Copy launch command';
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(command); showToast('Launch command copied'); }
+        catch { showToast('Clipboard unavailable; select and copy the command manually.', true); }
+      });
+      box.append(token, note, code, copy);
       box.classList.remove('hidden');
+      showToast('Worker enrollment command generated.');
     } catch (err) {
       showToast(err.message, true);
     }
@@ -1289,6 +1665,14 @@
   });
 
   let searchTimer = null;
+  el('noai-clear-search').addEventListener('click', () => {
+    clearTimeout(searchTimer);
+    el('noai-search-input').value = '';
+    state.noaiSearch = '';
+    state.noaiOffset = 0;
+    refreshZeroAiDeck();
+    el('noai-search-input').focus();
+  });
   el('noai-search-input').addEventListener('input', (ev) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
@@ -1447,6 +1831,10 @@
   const FALLBACK_AUTOCOMPLETE_DICT = {
     rootCommands: [
       { name: 'mine', syntax: 'mine <ore_or_block> [count]', category: 'mining', description: 'Mine ores or stone across swarm', hasArgs: true },
+      { name: 'goto', syntax: 'goto <x> <y> <z> [bot]', category: 'navigation', description: 'Navigate to absolute Minecraft coordinates', hasArgs: true },
+      { name: 'go', syntax: 'go <x> <y> <z> [bot]', category: 'navigation', description: 'Alias for goto', hasArgs: true },
+      { name: 'tree', syntax: 'tree [count]', category: 'gathering', description: 'Chop nearby trees for logs', hasArgs: true },
+      { name: 'food', syntax: 'food [bot]', category: 'survival', description: 'Hunt edible animals safely', hasArgs: true },
       { name: 'collect', syntax: 'collect <resource> [count]', category: 'gathering', description: 'Gather logs, crops or drops', hasArgs: true },
       { name: 'craft', syntax: 'craft <item> [count]', category: 'crafting', description: 'Auto-craft tools, mace, spears & armor', hasArgs: true },
       { name: 'smelt', syntax: 'smelt <item> [count]', category: 'smelting', description: 'Smelt ores or cook food in furnace', hasArgs: true },
@@ -1457,7 +1845,8 @@
       { name: 'protect', syntax: 'protect <player> [bot]', category: 'players', description: 'Bodyguard player & kill threats', hasArgs: true },
       { name: 'surround', syntax: 'surround <player> [bot]', category: 'players', description: '360 knight shield ring around player', hasArgs: true },
       { name: 'drop', syntax: 'drop <player> [item|all] [bot]', category: 'players', description: 'Walk to player and drop loot', hasArgs: true },
-      { name: 'hunt', syntax: 'hunt [bot]', category: 'pvp', description: 'Hunt nearby hostile mobs', hasArgs: true },
+      { name: 'mobs', syntax: 'mobs [bot]', category: 'combat', description: 'Hunt nearby hostile mobs', hasArgs: true },
+      { name: 'hunt', syntax: 'hunt [bot]', category: 'combat', description: 'Hunt nearby hostile mobs', hasArgs: true },
       { name: 'ally', syntax: 'ally <player>', category: 'players', description: 'Mark player as trusted ally', hasArgs: true },
       { name: 'kos', syntax: 'kos <player>', category: 'pvp', description: 'Mark player Kill-On-Sight', hasArgs: true },
       { name: 'explore', syntax: 'explore <sector>', category: 'exploration', description: 'Scout & map sectors in parallel', hasArgs: true },
@@ -1594,6 +1983,12 @@
           ? (dict.mineTargets || []).map((t) => entry(t, 'Mine ' + priorTokens[1] + ' ' + t, 'mining', false))
           : (dict.stackCounts || []).map((n) => entry(n, 'Quantity: ' + n, 'count', false));
       }
+    } else if (verb === 'goto' || verb === 'go') {
+      if (argIndex === 4) pool = botPool;
+    } else if (verb === 'tree') {
+      if (argIndex === 1) pool = ['8', '16', '32', '64'].map((n) => entry(n, 'Chop ' + n + ' logs', 'count', false));
+    } else if (verb === 'food' || verb === 'mobs' || verb === 'hunt' || verb === 'hunt_mobs') {
+      if (argIndex === 1) pool = botPool;
     } else if (verb === 'collect' || verb === 'gather' || verb === 'chop' || verb === 'harvest') {
       if (argIndex === 1) {
         pool = (dict.collectTargets || []).map((t) => entry(t, 'Collect ' + t, 'gathering', true));
@@ -1785,12 +2180,39 @@
         });
         return;
       }
-      if (verb === 'hunt' || verb === 'hunt_mobs') {
+      if (verb === 'goto' || verb === 'go') {
+        const coordinatePattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+        const coords = parts.slice(1, 4).map(Number);
+        const valid = parts.length >= 4 && parts.length <= 5 &&
+          parts.slice(1, 4).every((value) => coordinatePattern.test(value)) &&
+          coords.every(Number.isFinite) && Math.abs(coords[0]) <= 29999984 &&
+          coords[1] >= -2048 && coords[1] <= 2048 && Math.abs(coords[2]) <= 29999984;
+        if (!valid) throw new Error('Usage: goto <x> <y> <z> [bot] (x/z ±29,999,984; y -2048..2048)');
         await sendPlayerTacticalOrder({
-          mode: 'hunt_mobs',
+          mode: 'goto',
+          targetPosition: { x: coords[0], y: coords[1], z: coords[2] },
+          botId: parts[4] || '*',
+          preemptTask: true
+        });
+        return;
+      }
+      if (verb === 'food' || verb === 'mobs' || verb === 'hunt' || verb === 'hunt_mobs') {
+        await sendPlayerTacticalOrder({
+          mode: verb === 'food' ? 'hunt_food' : 'hunt_mobs',
           botId: parts[1] || '*',
           preemptTask: true
         });
+        return;
+      }
+      if (verb === 'tree') {
+        const qty = /^\d+$/.test(parts[1] || '') ? Number(parts[1]) : 16;
+        if (!Number.isSafeInteger(qty) || qty < 1 || qty > 100000) throw new Error('Tree log target must be between 1 and 100000');
+        const created = await api('/api/v1/tasks', {
+          method: 'POST',
+          body: { text: 'collect ' + qty + ' oak logs', priority: 'normal' }
+        });
+        showToast('Tree chopping dispatched: ' + (created.intentSummary || (qty + ' oak logs')) + ' [' + created.state + ']');
+        refreshStatusAndTasks();
         return;
       }
       if ((verb === 'ally' || verb === 'kos') && parts[1]) {
@@ -1821,7 +2243,7 @@
         }
       }
 
-      // Default: dispatch to Zero-AI 1,370+ Engine / Central Task Brain
+      // Default: dispatch to Zero-AI curated Engine / Central Task Brain
       const created = await api('/api/v1/tasks', {
         method: 'POST',
         body: { text: clean, priority: 'normal' }
@@ -1978,7 +2400,7 @@
       isPopupOpen = currentSuggestions.length > 0;
       renderPopup();
 
-      // Freeform Zero-AI / AI Brain phrases are indexed on the Master (1,370+
+      // Freeform Zero-AI / AI Brain phrases are indexed on the Master (curated
       // catalog entries). Query the same completion API when the fast local
       // Brigadier tree has no match, and ignore stale responses while typing.
       const requestId = ++suggestionRequestId;

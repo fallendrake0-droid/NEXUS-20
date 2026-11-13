@@ -92,12 +92,15 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 Use the Web Control Centre's always-visible command bar, or the interactive Master terminal:
 
 ```text
+food
+hunt
 mine diamond 64
-collect oak_log 64
+collect oak_log 32
 craft diamond_pickaxe 1
 smelt iron_ingot 32
 kit full_iron_kit
 build watchtower
+build animal_pen
 kill Steve mace
 follow Steve
 mode HYBRID
@@ -115,3 +118,64 @@ SWARM_ROLE=master npm start
 ```
 
 For a WorkerHost, use the worker enrollment values and `npm run start:worker`. Do not paste bootstrap tokens into shared logs or public shell history.
+
+## Recommended two-device setup: Termux Master + Linux Worker + remote Ollama
+
+These are three separate roles, even if Ollama happens to run on the Linux computer:
+
+- **Termux phone = Master:** dashboard, task queue, and the only component that calls Ollama.
+- **Linux computer = Worker:** connects bots to Minecraft and polls the Master for jobs. It does not need Ollama credentials.
+- **Ollama PC/device = planner:** serves a model over your private Wi-Fi or VPN. It can be the Linux Worker computer, but Ollama is still called by the Master.
+
+### 1. Make the Termux Master reachable
+
+In the Master setup choose **Master** (not Standalone/local bots), set its bind host to `0.0.0.0`, and keep the dashboard port (default `3000`). Start it with `npm start`. Find the phone's current LAN/VPN address, then open `http://<phone-address>:3000` from the Linux computer. Both devices need a route to each other; a private VPN also works across networks. Do not expose the plain-HTTP dashboard to the public internet.
+
+### 2. Connect Ollama to the Master (not to each bot)
+
+On the computer running Ollama, download the model once:
+
+```sh
+ollama pull qwen2.5:3b
+ollama list
+```
+
+Ollama normally listens only on loopback. To allow the phone to reach it on a trusted private LAN, start/reconfigure Ollama to listen on the LAN interface, for example:
+
+```sh
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Allow TCP port `11434` only from your private LAN/VPN in that computer's firewall; never port-forward it to the public internet. From Termux, check reachability (replace the address with the Ollama computer's LAN/VPN IP):
+
+```sh
+curl -fsS http://<ollama-address>:11434/api/tags
+```
+
+Then in the Control Centre open **System & AI**, choose **Ollama Self-Hosted LAN/VPN Server**, set model to `qwen2.5:3b`, set Base URL to `http://<ollama-address>:11434`, and select **Save & Activate Provider**. The URL must be the Ollama computer's reachable address, not `localhost` or `127.0.0.1` (those would point back at the phone). You can also enter the same URL and model in `npm run setup` on the Master. In the dashboard, check that the active provider says **Ready** before using the AI Control prompt. If the curl check fails, fix the network route, Ollama listen address, or firewall before changing bot settings.
+
+The worker does not relay prompts to Ollama. Keep the Ollama URL/model only on the Master; worker setup should contain the Master URL, its enrollment token, and Minecraft settings. The command library and supported deterministic tasks remain available if Ollama is offline.
+
+### 3. Enroll the Linux Worker
+
+On Linux, clone/install the project and install the Mineflayer worker packages required for real bots:
+
+```sh
+git clone https://github.com/fallendrake0-droid/mineflayer-ai-swarm.git
+cd mineflayer-ai-swarm
+npm install
+npm install --no-save mineflayer mineflayer-pathfinder
+```
+
+In the phone dashboard, open **Bots & Workers**, use **Add Worker**, enter the phone’s reachable LAN/VPN URL in **Master URL reachable from Linux**, then set a unique worker ID and the authorized Minecraft bot roster. Copy the generated Linux launch command. Do not leave `localhost` in the Master URL field for a separate Linux device. Run it in the Linux project's shell. The generated command supplies the Master URL and one-time enrollment token. Keep it private; do not post it in chat, screenshots, or public logs. The worker connects outward to the Master using HTTP polling, so you do not need to open an inbound Linux port. Once enrolled, confirm the worker and bots show online in **Bots & Workers** before dispatching a task.
+
+If enrollment fails, check these three values first: the Master URL uses the phone's LAN/VPN address (not `127.0.0.1`), the phone dashboard port is reachable from Linux, and the bootstrap token has not already been used. Do not delete the worker state file or database as a first troubleshooting step.
+
+## Linux update command
+
+From the Linux project directory, update the checked-out branch with a fast-forward-only pull, then refresh dependencies if `package.json` changed:
+
+```sh
+git pull --ff-only
+npm install
+```
