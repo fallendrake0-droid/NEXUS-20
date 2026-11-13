@@ -209,6 +209,24 @@ function ensureModernMineflayerOnDisk(cwd, stdout) {
   }
 }
 
+function enterTerminalAlternateScreen(stdout, isTty) {
+  if (!isTty || !stdout || typeof stdout.write !== 'function') return () => {};
+
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    stdout.write('\u001b[?1049l');
+    process.removeListener('exit', restore);
+  };
+
+  // Save the current terminal buffer, use a clean alternate screen for NEXUS,
+  // and restore the user's shell scrollback when the process exits.
+  stdout.write('\u001b[?1049h\u001b[2J\u001b[H');
+  process.once('exit', restore);
+  return restore;
+}
+
 function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
   // eslint-disable-next-line global-require
   const readline = require('node:readline');
@@ -248,7 +266,10 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
     historySize: 100
   });
 
-  rl.on('close', () => clearInterval(contextRefreshTimer));
+  rl.on('close', () => {
+    clearInterval(contextRefreshTimer);
+    onQuit('TTY_CLOSED');
+  });
   rl.on('SIGINT', () => {
     rl.close();
     onQuit('SIGINT');
@@ -723,6 +744,7 @@ async function runCli(argv = process.argv.slice(2), io = {}) {
       });
       tokenLine = `  Worker Token  : ${autoToken.bootstrapToken}  (paste into Step 12 on your Worker PC)`;
     }
+    enterTerminalAlternateScreen(stdout, stdin.isTTY === true && stdout.isTTY === true);
     stdout.write(
       [
         '',
@@ -813,6 +835,7 @@ module.exports = {
   parseCliArgs,
   runCli,
   runCliEntry,
+  enterTerminalAlternateScreen,
   SkinManager,
   SchematicRegistry,
   listZeroAiCommands,

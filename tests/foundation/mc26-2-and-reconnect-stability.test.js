@@ -27,7 +27,7 @@ const {
   resolveUnifiedCommandExecution
 } = require('../../src/commands/CommandCompleter');
 const { parseExtendedZeroAiIntent } = require('../../src/commands/ZeroAiCommandDeck');
-const { createMaster } = require('../../index');
+const { createMaster, enterTerminalAlternateScreen } = require('../../index');
 
 describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabilizer', () => {
   it('MC26-01: defaults worker.minecraftVersion to 26.2 and spawnStaggerMs to 4500ms in loadConfig & setupWizard', async () => {
@@ -277,7 +277,28 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     await runner.stop();
   });
 
-  it('MC26-05: Minecraft Brigadier Tab autocomplete & slash-free commands work end-to-end across Web UI, API & CLI', async () => {
+  it('MC26-05: TTY terminal uses alternate screen and restores the prior shell screen on close', () => {
+    const writes = [];
+    const stdout = {
+      write(chunk) {
+        writes.push(String(chunk));
+        return true;
+      }
+    };
+
+    const restoreScreen = enterTerminalAlternateScreen(stdout, true);
+    assert.deepEqual(writes, ['\u001b[?1049h\u001b[2J\u001b[H']);
+    restoreScreen();
+    restoreScreen();
+    assert.deepEqual(writes, ['\u001b[?1049h\u001b[2J\u001b[H', '\u001b[?1049l']);
+
+    const nonTtyWrites = [];
+    const noopRestore = enterTerminalAlternateScreen({ write: (chunk) => nonTtyWrites.push(chunk) }, false);
+    noopRestore();
+    assert.deepEqual(nonTtyWrites, [], 'non-TTY/test streams must not receive terminal control sequences');
+  });
+
+  it('MC26-06: Minecraft Brigadier Tab autocomplete & slash-free commands work end-to-end across Web UI, API & CLI', async () => {
     const ctx = {
       players: ['DragonSlayer', 'Alex'],
       bots: ['bot-01', 'bot-02']

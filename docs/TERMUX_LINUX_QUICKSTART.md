@@ -42,7 +42,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
    npm start
    ```
 
-   The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus>` prompt. Type a command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly).
+   The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus>` prompt. Type a command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly). The interactive prompt uses a clean alternate terminal screen; quitting, Ctrl+C, or closing its input restores the previous terminal display and scrollback.
 
    For the dashboard to be reachable from another device on your Wi-Fi, configure the Master bind host as `0.0.0.0`, allow the chosen port through the host firewall, and open `http://<phone-LAN-IP>:<port>` from the other device. Only expose the Control Centre to trusted networks; use the project's TLS/reverse-proxy options for public access.
 
