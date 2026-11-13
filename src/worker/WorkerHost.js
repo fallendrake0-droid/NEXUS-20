@@ -91,6 +91,7 @@ class WorkerHost {
     this._pollIntervalMs = wCfg.commandPollIntervalMs ?? 1_000;
     this._needsReconcile = false;
     this._tickInFlight = false;
+    this._heartbeatPromise = null;
   }
 
   get started() {
@@ -283,10 +284,12 @@ class WorkerHost {
 
     // 4. Register consolidated periodic loops
     this.timers.registerInterval('worker-heartbeat', this._heartbeatIntervalMs, () => {
-      if (!this._stopping) this.tickHeartbeat().catch(() => {});
+      if (!this._stopping) return this.tickHeartbeat();
+      return undefined;
     });
     this.timers.registerInterval('worker-command-poll', this._pollIntervalMs, () => {
-      if (!this._stopping) this.flushAndPoll().catch(() => {});
+      if (!this._stopping) return this.flushAndPoll();
+      return undefined;
     });
 
     this._started = true;
@@ -323,13 +326,35 @@ class WorkerHost {
   }
 
   async tickHeartbeat() {
+    if (this._stopping) return null;
+    if (this._heartbeatPromise) return this._heartbeatPromise;
+    const pending = this._performHeartbeat();
+    this._heartbeatPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this._heartbeatPromise === pending) this._heartbeatPromise = null;
+    }
+  }
+
+  async _performHeartbeat() {
     const botSnapshots = [];
     const worldObservations = [];
     const playerMap = new Map();
     const botTacticalStates = {};
 
     for (const runner of this.bots.values()) {
-      await runner.checkSurvivalReflexes();
+      if (!runner.survivalCheckInFlight) {
+        const reflexRun = runner.checkSurvivalReflexes();
+        if (reflexRun && typeof reflexRun.catch === 'function') {
+          reflexRun.catch((err) => {
+            this.logger.warn('Bot survival reflex failed; next heartbeat will retry', {
+              botId: runner.botId,
+              reason: String(err?.message || err).slice(0, 180)
+            });
+          });
+        }
+      }
       botSnapshots.push(await runner.getHeartbeatSnapshot());
       botTacticalStates[runner.botId] = runner.getTacticalState();
       const players = await runner.listOnlinePlayers();
@@ -432,8 +457,12 @@ class WorkerHost {
       for (const cmd of commands) {
         await this._dispatchCommand(cmd);
       }
-    } catch {
+    } catch (err) {
       this._needsReconcile = true;
+      this.logger.warn('Worker command poll/flush failed; will retry', {
+        workerId: this.client.workerId,
+        reason: String(err?.message || err).slice(0, 180)
+      });
     } finally {
       this._tickInFlight = false;
     }

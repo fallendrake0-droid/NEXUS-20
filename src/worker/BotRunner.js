@@ -1776,6 +1776,7 @@ class BotRunner extends EventEmitter {
     this._reconnectAttempt = 0;
     this._throttleReconnectAttempt = 0;
     this._lastConnectError = null;
+    this._survivalCheckPromise = null;
     this._reconnectBaseMs = Math.max(500, Number(options.reconnectBaseMs || 8_000));
   }
 
@@ -1789,6 +1790,10 @@ class BotRunner extends EventEmitter {
 
   get lastConnectError() {
     return this._lastConnectError;
+  }
+
+  get survivalCheckInFlight() {
+    return Boolean(this._survivalCheckPromise);
   }
 
   async start() {
@@ -1826,9 +1831,14 @@ class BotRunner extends EventEmitter {
     this._listeners.on(this._driver, 'kicked', (reason) => {
       const text = formatDisconnectReason(reason);
       // Only permanent bans / whitelist rejections block auto-reconnect; Aternos "offline"/"starting"/"throttled" kicks retry cleanly
-      if (/banned|banhammer|not whitelisted|you are not white-listed/i.test(text)) {
-        this._kickedOrBanned = true;
-      }
+      const permanentRejection = /banned|banhammer|not whitelisted|you are not white-listed/i.test(text);
+      if (permanentRejection) this._kickedOrBanned = true;
+      this._logger?.warn(
+        permanentRejection
+          ? 'Minecraft rejected this bot; automatic reconnect is paused until configuration/server access is fixed'
+          : 'Minecraft kicked this bot; automatic reconnect remains enabled',
+        { botId: this.botId, username: this.username, reason: text.slice(0, 180), permanent: permanentRejection }
+      );
       this.emit('bot_lifecycle', {
         botId: this.botId,
         status: 'disconnected',
@@ -1956,6 +1966,14 @@ class BotRunner extends EventEmitter {
       );
     }
 
+    this._logger?.info('Scheduled Minecraft reconnect attempt', {
+      botId: this.botId,
+      username: this.username,
+      attempt: this._reconnectAttempt,
+      delayMs,
+      rateLimited: isRateLimited,
+      reason: String(reason || 'connection_closed').slice(0, 180)
+    });
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._stopped && !this._kickedOrBanned) {
@@ -1994,7 +2012,18 @@ class BotRunner extends EventEmitter {
   /**
    * Evaluate priority-0 Survival Reflexes (`MASTER_SPEC.md` §6: Survival > Safety > Operator > Task).
    */
-  async checkSurvivalReflexes() {
+  checkSurvivalReflexes() {
+    if (this._stopped) return Promise.resolve(null);
+    if (this._survivalCheckPromise) return this._survivalCheckPromise;
+    let pending;
+    pending = this._runSurvivalReflexes().finally(() => {
+      if (this._survivalCheckPromise === pending) this._survivalCheckPromise = null;
+    });
+    this._survivalCheckPromise = pending;
+    return pending;
+  }
+
+  async _runSurvivalReflexes() {
     const raw = await this._driver.captureState();
     if (!raw.connected) return null;
 
@@ -2009,7 +2038,7 @@ class BotRunner extends EventEmitter {
       const trigger = raw.health <= minHealth ? 'low_health' : 'starving';
       if (!recovered && raw.food <= minFood && raw.health > minHealth && typeof this._driver.huntForFoodIfNeeded === 'function') {
         const deadline = Date.now() + 18_000;
-        while (!recovered && Date.now() < deadline) {
+        while (!recovered && !this._stopped && Date.now() < deadline) {
           const hunt = await this._driver.huntForFoodIfNeeded();
           recovered = Boolean(hunt?.ate);
           if (recovered || ['no_edible_animal_in_range', 'inventory_full', 'food_hunt_failed'].includes(hunt?.reason)) break;
@@ -2041,14 +2070,15 @@ class BotRunner extends EventEmitter {
       : this._activeLease && !this._activeLease.cancelled && !this._activeLease.fenced
         ? 'busy'
         : 'ready';
+    const connected = Boolean(raw.connected);
     return {
       botId: this.botId,
       status,
-      dimension: raw.dimension || 'minecraft:overworld',
-      position: raw.position || { x: 0, y: 64, z: 0 },
-      health: raw.health ?? 20,
-      food: raw.food ?? 20,
-      heldItem: raw.heldTool
+      dimension: connected ? (raw.dimension || 'minecraft:overworld') : 'unknown',
+      position: connected ? (raw.position || null) : null,
+      health: connected ? (raw.health ?? null) : null,
+      food: connected ? (raw.food ?? null) : null,
+      heldItem: connected && raw.heldTool
         ? {
             name: raw.heldTool.itemKey,
             count: 1,
@@ -2056,8 +2086,8 @@ class BotRunner extends EventEmitter {
             maxDurability: 250
           }
         : null,
-      inventoryItems: raw.inventoryItems || [],
-      freeSlots: raw.freeSlots ?? 18,
+      inventoryItems: connected ? (raw.inventoryItems || []) : [],
+      freeSlots: connected ? (raw.freeSlots ?? null) : null,
       assignedTaskId: this._activeLease?.assignment?.taskId || null
     };
   }

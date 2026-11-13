@@ -11,7 +11,8 @@ const { performance } = require('node:perf_hooks');
 const { createMaster, createWorker, loadConfig, runCli } = require('../../index');
 const { loadDotEnvFile } = require('../../src/config/envFile');
 const { SkillExecutor } = require('../../src/worker/SkillExecutor');
-const { SimulatedBotDriver } = require('../../src/worker/BotRunner');
+const { BotRunner, SimulatedBotDriver } = require('../../src/worker/BotRunner');
+const { WorkerHost } = require('../../src/worker/WorkerHost');
 
 function createCaptureStream() {
   const chunks = [];
@@ -38,6 +39,86 @@ async function waitFor(predicate, { timeoutMs = 6000, intervalMs = 40 } = {}) {
 }
 
 describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () => {
+  it('keeps Master heartbeats moving while a survival food hunt is still in progress and coalesces overlapping ticks', async () => {
+    let finishSurvival;
+    const survivalPromise = new Promise((resolve) => { finishSurvival = resolve; });
+    let heartbeatCalls = 0;
+    let finishHeartbeat;
+    const worker = Object.create(WorkerHost.prototype);
+    Object.assign(worker, {
+      _stopping: false,
+      _needsReconcile: false,
+      _heartbeatPromise: null,
+      bots: new Map([['bot-01', {
+        botId: 'bot-01',
+        survivalCheckInFlight: false,
+        checkSurvivalReflexes: () => survivalPromise,
+        async getHeartbeatSnapshot() { return { botId: 'bot-01', status: 'ready' }; },
+        getTacticalState() { return { mode: 'idle' }; },
+        async listOnlinePlayers() { return []; },
+        drainWorldObservations() { return []; }
+      }]]),
+      logger: { warn() {} },
+      client: {
+        workerId: 'worker-heartbeat-test',
+        async heartbeat() {
+          heartbeatCalls += 1;
+          return new Promise((resolve) => { finishHeartbeat = resolve; });
+        }
+      }
+    });
+
+    const first = worker.tickHeartbeat();
+    await new Promise((resolve) => setImmediate(resolve));
+    const overlapping = worker.tickHeartbeat();
+    assert.equal(heartbeatCalls, 1, 'a slow heartbeat must not cause concurrent posts');
+    finishHeartbeat({});
+    assert.deepEqual(await first, {});
+    assert.deepEqual(await overlapping, {});
+    finishSurvival();
+  });
+
+  it('coalesces overlapping survival checks for one bot', async () => {
+    let finishCapture;
+    let captureCalls = 0;
+    const runner = new BotRunner({
+      workerId: 'worker-survival-test',
+      botId: 'bot-survival-test',
+      driver: {
+        async captureState() {
+          captureCalls += 1;
+          return new Promise((resolve) => { finishCapture = resolve; });
+        }
+      }
+    });
+    const first = runner.checkSurvivalReflexes();
+    const second = runner.checkSurvivalReflexes();
+    assert.equal(captureCalls, 1);
+    finishCapture({ connected: true, health: 20, food: 20, inventoryItems: [] });
+    assert.equal(await first, null);
+    assert.equal(await second, null);
+    assert.equal(runner.survivalCheckInFlight, false);
+  });
+
+  it('does not fabricate location, health, or hunger for a disconnected bot snapshot', async () => {
+    const runner = new BotRunner({
+      workerId: 'worker-snapshot-test',
+      botId: 'bot-snapshot-test',
+      driver: {
+        connected: false,
+        async captureState() {
+          return { connected: false, position: null, dimension: 'unknown', health: 0, food: 0, inventoryItems: [], freeSlots: 0 };
+        }
+      }
+    });
+    const snapshot = await runner.getHeartbeatSnapshot();
+    assert.equal(snapshot.status, 'disconnected');
+    assert.equal(snapshot.position, null);
+    assert.equal(snapshot.dimension, 'unknown');
+    assert.equal(snapshot.health, null);
+    assert.equal(snapshot.food, null);
+  });
+
   it('does not mark a build task complete when the driver reports zero verified block changes', async () => {
     const executor = new SkillExecutor({ leaseSafetyMarginMs: 100, stepIntervalMs: 5 });
     const driver = {
