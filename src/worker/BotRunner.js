@@ -62,6 +62,21 @@ async function waitRealLoginSlot(host, port, minSpacingMs) {
  * Extract readable disconnect/kick text from plain strings, JSON chat, or
  * 1.20.3+ / 26.2 Prismarine NBT chat compounds (`{ type: 'compound', value: ... }`).
  */
+function writeConnectionDiagnostic(username, target, message) {
+  const safeMessage = String(message || 'unknown connection failure')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+  const safeUsername = String(username || 'bot').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64);
+  const safeTarget = String(target || 'Minecraft server').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 160);
+  try {
+    process.stderr.write(`[MC] ${safeUsername} -> ${safeTarget}: ${safeMessage}\n`);
+  } catch {
+    // Diagnostics must never interfere with connection recovery.
+  }
+}
+
 function formatDisconnectReason(reason, depth = 0) {
   if (reason == null) return '';
   if (depth > 6) return '';
@@ -1833,6 +1848,15 @@ class BotRunner extends EventEmitter {
       // Only permanent bans / whitelist rejections block auto-reconnect; Aternos "offline"/"starting"/"throttled" kicks retry cleanly
       const permanentRejection = /banned|banhammer|not whitelisted|you are not white-listed/i.test(text);
       if (permanentRejection) this._kickedOrBanned = true;
+      if (!this._simulationMode) {
+        writeConnectionDiagnostic(
+          this.username,
+          this._reconnectServerKey,
+          permanentRejection
+            ? `server rejected login permanently; fix ban/whitelist/access: ${text || 'no kick reason supplied'}`
+            : `server kicked bot; automatic reconnect is enabled: ${text || 'no kick reason supplied'}`
+        );
+      }
       this._logger?.warn(
         permanentRejection
           ? 'Minecraft rejected this bot; automatic reconnect is paused until configuration/server access is fixed'
@@ -1882,8 +1906,8 @@ class BotRunner extends EventEmitter {
       }, 60_000);
       this._stabilityTimer.unref?.();
 
-      if (!this._simulationMode && process.stdout?.isTTY) {
-        process.stdout.write(`  [MC] ${this.username} connected & spawned in Minecraft!\n`);
+      if (!this._simulationMode) {
+        writeConnectionDiagnostic(this.username, this._reconnectServerKey, 'connected and spawned successfully');
       }
       this._logger?.info('Bot connected and spawned in Minecraft', {
         botId: this.botId,
@@ -1899,8 +1923,8 @@ class BotRunner extends EventEmitter {
       this._connecting = false;
       const reason = String(err?.message || err || 'connect_failed').slice(0, 180);
       this._lastConnectError = reason;
-      if (!this._simulationMode && process.stdout?.isTTY && reason !== prevErr) {
-        process.stdout.write(`  [MC] ${this.username}: ${reason}\n`);
+      if (!this._simulationMode && reason !== prevErr) {
+        writeConnectionDiagnostic(this.username, this._reconnectServerKey, `connection attempt failed: ${reason}`);
       }
       this._logger?.warn('Bot could not connect to Minecraft yet; will retry automatically', {
         botId: this.botId,
@@ -1960,9 +1984,11 @@ class BotRunner extends EventEmitter {
       delayMs = Math.max(0, scheduledAt - now);
     }
 
-    if (isRateLimited && process.stdout?.isTTY) {
-      process.stdout.write(
-        `  [MC] ${this.username}: server login throttle; retrying in ${Math.ceil(delayMs / 1000)}s with shared backoff.\n`
+    if (!this._simulationMode) {
+      writeConnectionDiagnostic(
+        this.username,
+        this._reconnectServerKey,
+        `reconnect attempt ${this._reconnectAttempt} scheduled in ${Math.ceil(delayMs / 1000)}s${isRateLimited ? ' (server throttle backoff)' : ''}; cause: ${reason || 'connection closed'}`
       );
     }
 

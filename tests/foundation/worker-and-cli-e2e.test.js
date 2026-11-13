@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Writable, PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { performance } = require('node:perf_hooks');
 
 const { createMaster, createWorker, loadConfig, runCli } = require('../../index');
@@ -39,6 +40,38 @@ async function waitFor(predicate, { timeoutMs = 6000, intervalMs = 40 } = {}) {
 }
 
 describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () => {
+  it('prints the Minecraft connection failure and retry delay to stderr without requiring a TTY', async () => {
+    const driver = new EventEmitter();
+    driver.connected = false;
+    driver.connect = async () => { throw new Error('connect ECONNREFUSED 203.0.113.2:25565'); };
+    driver.disconnect = async () => {};
+    const runner = new BotRunner({
+      workerId: 'worker-terminal-test',
+      botId: 'bot-terminal-test',
+      username: 'Nexus_Terminal_Test',
+      minecraftConfig: { minecraftHost: 'mc.example.test', minecraftPort: 25565 },
+      driver,
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    // Injected drivers default to simulation behavior; exercise the real connection diagnostics path.
+    runner._simulationMode = false;
+    const originalWrite = process.stderr.write;
+    let terminalOutput = '';
+    process.stderr.write = function capture(chunk) {
+      terminalOutput += String(chunk);
+      return true;
+    };
+    try {
+      await runner.start();
+    } finally {
+      await runner.stop('test_cleanup');
+      process.stderr.write = originalWrite;
+    }
+    assert.match(terminalOutput, /Nexus_Terminal_Test -> mc\.example\.test:25565/);
+    assert.match(terminalOutput, /ECONNREFUSED 203\.0\.113\.2:25565/);
+    assert.match(terminalOutput, /reconnect attempt 1 scheduled in \d+s/);
+  });
+
   it('keeps Master heartbeats moving while a survival food hunt is still in progress and coalesces overlapping ticks', async () => {
     let finishSurvival;
     const survivalPromise = new Promise((resolve) => { finishSurvival = resolve; });
