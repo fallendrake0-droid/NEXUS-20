@@ -755,6 +755,17 @@ class MasterHttpServer {
       return;
     }
 
+    if (method === 'POST' && pathname === '/api/v1/bots/chat') {
+      const body = await this._readJsonBody(req, 4096);
+      const queued = await this._coordinator.sendBotChatMessage({
+        actor,
+        botId: body.botId,
+        message: body.message
+      });
+      this._sendJson(res, 202, queued);
+      return;
+    }
+
     const botActionMatch = /^\/api\/v1\/bots\/([^/]+)\/(safe-stop|reassign)$/.exec(pathname);
     if (method === 'POST' && botActionMatch) {
       const botId = decodeURIComponent(botActionMatch[1]);

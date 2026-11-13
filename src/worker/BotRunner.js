@@ -163,6 +163,7 @@ class SimulatedBotDriver extends EventEmitter {
       });
     }
     this._containerStock = new Map();
+    this.sentChatMessages = [];
   }
 
   async connect() {
@@ -173,6 +174,15 @@ class SimulatedBotDriver extends EventEmitter {
   async disconnect(reason = 'shutdown') {
     this.connected = false;
     this.emit('end', reason);
+  }
+
+  async sendChatMessage(message) {
+    if (!this.connected) return { ok: false, reason: 'not_connected' };
+    const text = String(message || '');
+    this.sentChatMessages.push(text);
+    if (this.sentChatMessages.length > 50) this.sentChatMessages.shift();
+    this.emit('outgoing_chat', text);
+    return { ok: true };
   }
 
   setItemCount(itemKey, count, maxDurability = null, durabilityUsed = 0) {
@@ -1680,6 +1690,17 @@ function createMineflayerDriver(options = {}) {
       }
       return out;
     },
+    async sendChatMessage(message) {
+      if (!bot || !bot.entity || typeof bot.chat !== 'function') {
+        return { ok: false, reason: 'not_connected' };
+      }
+      try {
+        bot.chat(String(message));
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: String(err?.message || err).slice(0, 160) };
+      }
+    },
     async setTacticalOrder(order = {}) {
       const previousMode = combatEngine.tacticalState.mode;
       const state = combatEngine.setTacticalOrder(order);
@@ -2181,6 +2202,18 @@ class BotRunner extends EventEmitter {
       return this._driver.listOnlinePlayers();
     }
     return [];
+  }
+
+  async sendChatMessage(message) {
+    const text = String(message || '').trim();
+    if (!text || text.length > 256 || text.startsWith('/') || /[\u0000-\u001f\u007f]/.test(text)) {
+      return { ok: false, reason: 'invalid_message' };
+    }
+    if (!this._driver.connected) return { ok: false, reason: 'not_connected' };
+    if (typeof this._driver.sendChatMessage !== 'function') {
+      return { ok: false, reason: 'chat_not_supported' };
+    }
+    return this._driver.sendChatMessage(text);
   }
 
   async executeTacticalOrder(order = {}) {

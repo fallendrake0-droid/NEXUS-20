@@ -545,6 +545,26 @@ class WorkerHost {
       return;
     }
 
+    if (commandType === 'chat_message') {
+      const runner = this.bots.get(payload.botId);
+      let result;
+      try {
+        result = runner
+          ? await runner.sendChatMessage(payload.message)
+          : { ok: false, reason: 'bot_not_found' };
+      } catch (err) {
+        result = { ok: false, reason: String(err?.message || err).slice(0, 160) };
+      }
+      if (!result.ok) {
+        this.logger.warn('Bot chat message could not be sent', {
+          botId: payload.botId,
+          reason: result.reason || 'send_failed'
+        });
+      }
+      await this.client.ackCommand(commandId, { deliveryStatus: result.ok ? 'sent' : 'failed' });
+      return;
+    }
+
     if (commandType === 'safe_stop') {
       const runner = this.bots.get(payload.botId);
       if (runner) await runner.safeStopNow(payload.reason || 'safe_stop');

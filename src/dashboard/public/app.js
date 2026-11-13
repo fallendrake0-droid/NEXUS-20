@@ -24,6 +24,8 @@
     aiChatHistory: [],
     aiPendingClarificationTaskId: null,
     aiChatSending: false,
+    botChatHistory: [],
+    botChatSending: false,
     botMotionById: new Map(),
     gotoEtaByBot: new Map(),
     botUiTimer: null
@@ -585,6 +587,7 @@
 
   function renderStatus(st) {
     state.lastStatus = st;
+    refreshBotChatTargets(st.bots || []);
     const changedBotIds = sampleBotMovement(st);
     refreshGotoEtaEstimates(st, changedBotIds);
     renderBotDetailCards(st);
@@ -1072,6 +1075,82 @@
     } catch (err) {
       showToast(err.message, true);
     }
+  }
+
+  function refreshBotChatTargets(bots) {
+    const select = el('bot-chat-target');
+    if (!select) return;
+    const previous = select.value;
+    const connectedBots = (Array.isArray(bots) ? bots : []).filter(
+      (bot) => bot && bot.enabled !== false && bot.connectionState === 'ready'
+    );
+    clearChildren(select);
+    if (connectedBots.length === 0) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No connected bots';
+      select.appendChild(option);
+      select.value = '';
+    } else {
+      for (const bot of connectedBots) {
+        const option = document.createElement('option');
+        option.value = String(bot.botId);
+        option.textContent = `${bot.username || bot.botId} · ${bot.botId}`;
+        select.appendChild(option);
+      }
+      select.value = connectedBots.some((bot) => String(bot.botId) === previous)
+        ? previous
+        : String(connectedBots[0].botId);
+    }
+    const status = el('bot-chat-connection');
+    if (status) {
+      status.textContent = connectedBots.length
+        ? `${connectedBots.length} bot${connectedBots.length === 1 ? '' : 's'} connected`
+        : 'No bots connected';
+      status.classList.toggle('online', connectedBots.length > 0);
+    }
+    const submit = el('bot-chat-submit');
+    const canOperate = Boolean(state.actor && ['operator', 'admin'].includes(state.actor.role));
+    if (submit) submit.disabled = state.botChatSending || connectedBots.length === 0 || !canOperate;
+  }
+
+  function renderBotChatHistory() {
+    const log = el('bot-chat-log');
+    if (!log) return;
+    clearChildren(log);
+    if (state.botChatHistory.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'bot-chat-empty';
+      empty.textContent = 'Choose a connected bot and send your first message.';
+      log.appendChild(empty);
+      return;
+    }
+    for (const entry of state.botChatHistory) {
+      const row = document.createElement('div');
+      row.className = `bot-chat-entry ${entry.kind || 'operator'}${entry.status === 'failed' ? ' error' : ''}`;
+      const meta = document.createElement('p');
+      meta.className = 'bot-chat-meta';
+      const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      meta.textContent = `${entry.label || 'Bot chat'}${time ? ` · ${time}` : ''}${entry.status ? ` · ${entry.status}` : ''}`;
+      const bubble = document.createElement('p');
+      bubble.className = 'bot-chat-bubble';
+      bubble.textContent = entry.text;
+      row.append(meta, bubble);
+      log.appendChild(row);
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function addBotChatEntry(entry) {
+    state.botChatHistory.push({ ...entry, at: new Date().toISOString() });
+    state.botChatHistory = state.botChatHistory.slice(-60);
+    renderBotChatHistory();
+  }
+
+  function updateBotChatCounter() {
+    const input = el('bot-chat-input');
+    const counter = el('bot-chat-counter');
+    if (input && counter) counter.textContent = `${input.value.length} / 256`;
   }
 
   function aiChatStorageKey() {
@@ -1722,6 +1801,48 @@
     } catch (err) {
       showToast(err.message, true);
     }
+  });
+
+  renderBotChatHistory();
+  el('bot-chat-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const botId = el('bot-chat-target').value;
+    const text = el('bot-chat-input').value.trim();
+    if (!botId) return showToast('No connected bot is available for chat.', true);
+    if (!text) return;
+    if (text.startsWith('/')) return showToast('Only plain chat text is allowed here; slash commands are blocked.', true);
+    state.botChatSending = true;
+    el('bot-chat-submit').disabled = true;
+    el('bot-chat-submit').textContent = 'Queueing…';
+    try {
+      const result = await api('/api/v1/bots/chat', {
+        method: 'POST',
+        body: { botId, message: text }
+      });
+      const bot = (state.lastStatus?.bots || []).find((candidate) => String(candidate.botId) === botId);
+      addBotChatEntry({
+        kind: 'operator',
+        label: `You → ${result.username || bot?.username || botId}`,
+        text,
+        status: 'queued'
+      });
+      el('bot-chat-input').value = '';
+      updateBotChatCounter();
+      showToast(`Message queued for ${result.username || bot?.username || botId}.`);
+    } catch (err) {
+      addBotChatEntry({ kind: 'system', label: 'Not sent', text: err.message, status: 'failed' });
+      showToast(err.message, true);
+    } finally {
+      state.botChatSending = false;
+      el('bot-chat-submit').textContent = 'Send message';
+      refreshBotChatTargets(state.lastStatus?.bots || []);
+      updateBotChatCounter();
+    }
+  });
+  el('bot-chat-input').addEventListener('input', updateBotChatCounter);
+  el('bot-chat-clear').addEventListener('click', () => {
+    state.botChatHistory = [];
+    renderBotChatHistory();
   });
 
   el('ai-control-form').addEventListener('submit', (ev) => {

@@ -74,6 +74,7 @@
       <button class="tab active" data-tab="overview">Overview</button>
       <button class="tab" data-tab="noai">Commands</button>
       <button class="tab" data-tab="players">Players &amp; PvP</button>
+      <button class="tab" data-tab="chat">Bot Chat</button>
       <button class="tab" data-tab="skins">Skins &amp; Builds</button>
       <button class="tab" data-tab="tasks">Tasks</button>
       <button class="tab" data-tab="bots">Bots &amp; Workers</button>
@@ -379,6 +380,41 @@
               </table>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- TAB: OPERATOR-TO-BOT MINECRAFT CHAT -->
+      <section id="tab-chat" class="tab-panel hidden" aria-labelledby="bot-chat-title">
+        <div class="panel bot-chat-panel">
+          <div class="panel-header bot-chat-header">
+            <div>
+              <p class="eyebrow">LIVE SERVER CHAT</p>
+              <h2 id="bot-chat-title">Send a message as a bot</h2>
+              <p class="muted compact-sub">Choose one connected bot and send plain text to Minecraft chat. Slash commands are blocked.</p>
+            </div>
+            <div class="action-group bot-chat-header-actions">
+              <span id="bot-chat-connection" class="status-chip">Checking bots…</span>
+              <button id="bot-chat-clear" type="button" class="btn ghost small">Clear log</button>
+            </div>
+          </div>
+          <div id="bot-chat-log" class="bot-chat-log" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Bot chat messages"></div>
+          <form id="bot-chat-form" class="bot-chat-form" autocomplete="off">
+            <label class="bot-chat-target">
+              <span>Send as</span>
+              <select id="bot-chat-target" required>
+                <option value="">No connected bots</option>
+              </select>
+            </label>
+            <label class="bot-chat-message">
+              <span>Message</span>
+              <input id="bot-chat-input" type="text" maxlength="256" required autocomplete="off" placeholder="Type a message for the server chat…" />
+            </label>
+            <div class="bot-chat-send-wrap">
+              <span id="bot-chat-counter" class="muted small-label">0 / 256</span>
+              <button id="bot-chat-submit" type="submit" class="btn primary" disabled>Send message</button>
+            </div>
+          </form>
+          <p class="bot-chat-note">Messages are queued through the Master to the selected worker. A queued message is not proof it appeared in-game; check server chat for confirmation.</p>
         </div>
       </section>
 

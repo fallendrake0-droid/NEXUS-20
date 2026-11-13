@@ -324,6 +324,30 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
     worker = createWorker(workerCfg);
     await worker.start();
 
+    // Bot Chat panel sends bounded plain text through Master -> worker command queue -> Mineflayer driver.
+    const chatRes = await fetch(`${baseUrl}/api/v1/bots/chat`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ botId: 'bot-01', message: 'Hello from the Control Centre!' })
+    });
+    assert.equal(chatRes.status, 202);
+    const chatQueued = await chatRes.json();
+    assert.equal(chatQueued.status, 'queued');
+    assert.equal(chatQueued.username, 'Nexus_01');
+    await worker.flushAndPoll();
+    assert.deepEqual(worker.bots.get('bot-01').driver.sentChatMessages, ['Hello from the Control Centre!']);
+
+    const slashChatRes = await fetch(`${baseUrl}/api/v1/bots/chat`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ botId: 'bot-01', message: '/op Steve' })
+    });
+    assert.equal(slashChatRes.status, 403, 'chat panel must never dispatch Minecraft slash commands');
+    const longChatRes = await fetch(`${baseUrl}/api/v1/bots/chat`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ botId: 'bot-01', message: 'x'.repeat(257) })
+    });
+    assert.equal(longChatRes.status, 400);
+
     // 3. Switch AI Brain across Gemini, ChatGPT, Claude, Groq, OpenRouter & Zero-AI!
     for (const [prov, key, model] of [
       ['gemini', 'AIzaTestKey1234', 'gemini-2.5-flash'],

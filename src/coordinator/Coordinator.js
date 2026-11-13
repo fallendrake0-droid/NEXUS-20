@@ -857,6 +857,56 @@ class Coordinator {
     };
   }
 
+  /** Queue a plain-text Minecraft chat message for one connected bot. */
+  async sendBotChatMessage({ actor, botId, message }) {
+    authorizeRole(actor, 'operator');
+    this._assertWritable();
+    const cleanBotId = String(botId || '').trim();
+    const text = String(message || '').trim();
+    if (!cleanBotId) throw new DomainError('SCHEMA_VALIDATION_FAILED', 'Choose a bot to send the chat message.');
+    if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', 'Chat message must contain 1–256 printable characters.');
+    }
+    if (text.startsWith('/')) {
+      throw new DomainError('FORBIDDEN', 'Slash commands cannot be sent from the bot chat panel; enter plain chat text only.');
+    }
+
+    const botRow = this._store.get('SELECT * FROM bots WHERE bot_id = ?', cleanBotId);
+    if (!botRow) throw new DomainError('NOT_FOUND', `Bot ${cleanBotId} not found`);
+    if (!botRow.enabled || botRow.connection_state !== 'ready') {
+      throw new DomainError('CONFLICT', `Bot ${cleanBotId} is not currently connected.`);
+    }
+
+    const queued = this._store.transaction(() => {
+      const command = this._tasks._enqueueWorkerCommand(botRow.worker_id, 'chat_message', {
+        botId: botRow.bot_id,
+        message: text
+      });
+      this._store.recordAudit({
+        occurredAt: new Date().toISOString(),
+        actorType: actor.actorType || 'human',
+        actorId: actor.principalId,
+        action: 'bot.chat_message_queued',
+        targetId: botRow.bot_id,
+        outcome: 'ok',
+        details: { characterCount: text.length, commandId: command.commandId }
+      });
+      return command;
+    });
+    this._publishPostCommit('bot.chat_message_queued', botRow.bot_id, {
+      botId: botRow.bot_id,
+      workerId: botRow.worker_id,
+      commandId: queued.commandId
+    });
+    return {
+      schemaVersion: 1,
+      botId: botRow.bot_id,
+      username: botRow.username,
+      commandId: queued.commandId,
+      status: 'queued'
+    };
+  }
+
   /**
    * Emergency priority safety stop bypassing optional workload queues (`SECURITY_PLAN.md` §7).
    */
