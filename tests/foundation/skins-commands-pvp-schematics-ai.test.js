@@ -235,6 +235,8 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
   assert.match(html, /add-worker-form/);
   assert.match(js, /requestSeq !== state\.noaiRequestSeq/);
   assert.match(js, /noaiLimit: 24/);
+  assert.match(js, /\.filter\(\(task\) => task\.state !== 'cancelled'\)/);
+  assert.match(js, /Cancelled tasks are hidden/);
   assert.doesNotMatch(html, /mc-slash-badge/);
   assert.match(cli, /prompt: 'nexus> '/);
   assert.match(cli, /principalId: 'cli:tty'/);

@@ -515,10 +515,10 @@
     const res = await api('/api/v1/tasks?limit=30');
     const tbody = el('tasks-tbody');
     clearChildren(tbody);
-    const items = res.items || [];
+    const items = (res.items || []).filter((task) => task.state !== 'cancelled');
     if (items.length === 0) {
       const tr = document.createElement('tr');
-      const td = tdText('No tasks submitted yet.');
+      const td = tdText(res.items?.length ? 'No visible tasks. Cancelled tasks are hidden.' : 'No tasks submitted yet.');
       td.colSpan = 4;
       td.className = 'muted';
       tr.appendChild(td);
