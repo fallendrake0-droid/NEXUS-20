@@ -390,7 +390,7 @@
             <div>
               <p class="eyebrow">LIVE SERVER CHAT</p>
               <h2 id="bot-chat-title">Send a message as a bot</h2>
-              <p class="muted compact-sub">Choose one connected bot and send plain text to Minecraft chat. Slash commands are blocked.</p>
+              <p class="muted compact-sub">Choose one connected bot to send chat or a server command (for example, /tpa Steve). Commands use the bot’s own server permissions.</p>
             </div>
             <div class="action-group bot-chat-header-actions">
               <span id="bot-chat-connection" class="status-chip">Checking bots…</span>
@@ -407,14 +407,14 @@
             </label>
             <label class="bot-chat-message">
               <span>Message</span>
-              <input id="bot-chat-input" type="text" maxlength="256" required autocomplete="off" placeholder="Type a message for the server chat…" />
+              <input id="bot-chat-input" type="text" maxlength="256" required autocomplete="off" placeholder="Say hello or enter a command like /tpa Steve" />
             </label>
             <div class="bot-chat-send-wrap">
               <span id="bot-chat-counter" class="muted small-label">0 / 256</span>
               <button id="bot-chat-submit" type="submit" class="btn primary" disabled>Send message</button>
             </div>
           </form>
-          <p class="bot-chat-note">Messages are queued through the Master to the selected worker. A queued message is not proof it appeared in-game; check server chat for confirmation.</p>
+          <p class="bot-chat-note">Messages and commands go through the Master to the selected worker. Delivery status updates when the worker sends them; server permissions and plugin responses still apply.</p>
         </div>
       </section>
 

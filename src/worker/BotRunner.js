@@ -2206,7 +2206,7 @@ class BotRunner extends EventEmitter {
 
   async sendChatMessage(message) {
     const text = String(message || '').trim();
-    if (!text || text.length > 256 || text.startsWith('/') || /[\u0000-\u001f\u007f]/.test(text)) {
+    if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
       return { ok: false, reason: 'invalid_message' };
     }
     if (!this._driver.connected) return { ok: false, reason: 'not_connected' };

@@ -561,7 +561,13 @@ class WorkerHost {
           reason: result.reason || 'send_failed'
         });
       }
-      await this.client.ackCommand(commandId, { deliveryStatus: result.ok ? 'sent' : 'failed' });
+      await this.client.ackCommand(commandId, {
+        chatDelivery: {
+          botId: payload.botId,
+          status: result.ok ? 'sent' : 'failed',
+          ...(result.reason ? { reason: String(result.reason).slice(0, 160) } : {})
+        }
+      });
       return;
     }
 

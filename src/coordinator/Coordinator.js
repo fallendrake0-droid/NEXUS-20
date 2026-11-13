@@ -857,7 +857,7 @@ class Coordinator {
     };
   }
 
-  /** Queue a plain-text Minecraft chat message for one connected bot. */
+  /** Queue Minecraft chat text or a server command for one connected bot. */
   async sendBotChatMessage({ actor, botId, message }) {
     authorizeRole(actor, 'operator');
     this._assertWritable();
@@ -867,10 +867,6 @@ class Coordinator {
     if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
       throw new DomainError('SCHEMA_VALIDATION_FAILED', 'Chat message must contain 1–256 printable characters.');
     }
-    if (text.startsWith('/')) {
-      throw new DomainError('FORBIDDEN', 'Slash commands cannot be sent from the bot chat panel; enter plain chat text only.');
-    }
-
     const botRow = this._store.get('SELECT * FROM bots WHERE bot_id = ?', cleanBotId);
     if (!botRow) throw new DomainError('NOT_FOUND', `Bot ${cleanBotId} not found`);
     if (!botRow.enabled || botRow.connection_state !== 'ready') {
@@ -905,6 +901,25 @@ class Coordinator {
       commandId: queued.commandId,
       status: 'queued'
     };
+  }
+
+  /** Publish an authenticated worker's result for a queued bot chat request. */
+  reportBotChatDelivery({ workerId, botId, commandId, status, reason = null }) {
+    const cleanBotId = String(botId || '').trim();
+    const cleanCommandId = String(commandId || '').trim();
+    const deliveryStatus = String(status || '');
+    if (!['sent', 'failed'].includes(deliveryStatus) || !cleanCommandId) return { accepted: false };
+    const botRow = this._store.get('SELECT worker_id, username FROM bots WHERE bot_id = ?', cleanBotId);
+    if (!botRow || botRow.worker_id !== String(workerId)) return { accepted: false };
+    const payload = {
+      botId: cleanBotId,
+      username: botRow.username,
+      commandId: cleanCommandId,
+      status: deliveryStatus,
+      ...(reason ? { reason: String(reason).slice(0, 160) } : {})
+    };
+    this._publishPostCommit('bot.chat_delivery', cleanCommandId, payload);
+    return { accepted: true };
   }
 
   /**

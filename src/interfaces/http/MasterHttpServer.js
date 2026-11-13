@@ -533,7 +533,17 @@ class MasterHttpServer {
         return;
       }
       const acked = this._tasks.ackWorkerCommand(authWorker.workerId, commandId);
-      this._sendJson(res, 200, { commandId, acked });
+      let chatDelivery = null;
+      if (body.chatDelivery && typeof body.chatDelivery === 'object') {
+        chatDelivery = this._coordinator.reportBotChatDelivery({
+          workerId: authWorker.workerId,
+          botId: body.chatDelivery.botId,
+          commandId,
+          status: body.chatDelivery.status,
+          reason: body.chatDelivery.reason
+        });
+      }
+      this._sendJson(res, 200, { commandId, acked, ...(chatDelivery ? { chatDelivery } : {}) });
       return;
     }
 

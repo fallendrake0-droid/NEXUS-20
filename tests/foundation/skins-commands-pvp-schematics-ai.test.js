@@ -339,9 +339,13 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
 
     const slashChatRes = await fetch(`${baseUrl}/api/v1/bots/chat`, {
       method: 'POST', headers: authHeaders,
-      body: JSON.stringify({ botId: 'bot-01', message: '/op Steve' })
+      body: JSON.stringify({ botId: 'bot-01', message: '/tpa Steve' })
     });
-    assert.equal(slashChatRes.status, 403, 'chat panel must never dispatch Minecraft slash commands');
+    assert.equal(slashChatRes.status, 202, 'server plugin commands such as /tpa can be sent by the selected bot');
+    await worker.flushAndPoll();
+    assert.deepEqual(worker.bots.get('bot-01').driver.sentChatMessages, [
+      'Hello from the Control Centre!', '/tpa Steve'
+    ]);
     const longChatRes = await fetch(`${baseUrl}/api/v1/bots/chat`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({ botId: 'bot-01', message: 'x'.repeat(257) })

@@ -174,6 +174,7 @@
           if (t === 'knowledge.updated') {
             needsKnowledge = true;
           } else {
+            if (t === 'bot.chat_delivery') updateBotChatDelivery(item.data);
             needsStatus = true;
           }
         }
@@ -193,6 +194,9 @@
     es.addEventListener('swarm.mode_changed', triggerRefresh);
     es.addEventListener('swarm.profile_changed', triggerRefresh);
     es.addEventListener('bot.safe_stop', triggerRefresh);
+    es.addEventListener('bot.chat_delivery', (ev) => {
+      try { updateBotChatDelivery(JSON.parse(ev.data || '{}')); } catch { /* ignore malformed event */ }
+    });
     es.addEventListener('knowledge.updated', () => {
       if (!document.hidden) refreshKnowledge();
     });
@@ -1121,13 +1125,14 @@
     if (state.botChatHistory.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'bot-chat-empty';
-      empty.textContent = 'Choose a connected bot and send your first message.';
+      empty.textContent = 'Choose a connected bot. Send a message or a server command such as /tpa Steve.';
       log.appendChild(empty);
       return;
     }
     for (const entry of state.botChatHistory) {
       const row = document.createElement('div');
       row.className = `bot-chat-entry ${entry.kind || 'operator'}${entry.status === 'failed' ? ' error' : ''}`;
+      if (entry.commandId) row.dataset.commandId = entry.commandId;
       const meta = document.createElement('p');
       meta.className = 'bot-chat-meta';
       const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -1144,6 +1149,16 @@
   function addBotChatEntry(entry) {
     state.botChatHistory.push({ ...entry, at: new Date().toISOString() });
     state.botChatHistory = state.botChatHistory.slice(-60);
+    renderBotChatHistory();
+  }
+
+  function updateBotChatDelivery(delivery) {
+    if (!delivery || !delivery.commandId) return;
+    const entry = state.botChatHistory.find((item) => item.commandId === delivery.commandId);
+    if (!entry) return;
+      entry.status = delivery.status === 'sent' ? 'sent to game' : 'failed';
+      if (delivery.username) entry.label = delivery.username;
+      if (delivery.status === 'failed' && delivery.reason) entry.text += `\nNot sent: ${delivery.reason}`;
     renderBotChatHistory();
   }
 
@@ -1810,7 +1825,6 @@
     const text = el('bot-chat-input').value.trim();
     if (!botId) return showToast('No connected bot is available for chat.', true);
     if (!text) return;
-    if (text.startsWith('/')) return showToast('Only plain chat text is allowed here; slash commands are blocked.', true);
     state.botChatSending = true;
     el('bot-chat-submit').disabled = true;
     el('bot-chat-submit').textContent = 'Queueing…';
@@ -1821,9 +1835,10 @@
       });
       const bot = (state.lastStatus?.bots || []).find((candidate) => String(candidate.botId) === botId);
       addBotChatEntry({
-        kind: 'operator',
-        label: `You → ${result.username || bot?.username || botId}`,
+        kind: 'bot',
+        label: result.username || bot?.username || botId,
         text,
+        commandId: result.commandId,
         status: 'queued'
       });
       el('bot-chat-input').value = '';
