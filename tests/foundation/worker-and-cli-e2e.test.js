@@ -642,6 +642,7 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
     const master = createMaster(masterCfg);
     let w1 = null;
     let w2 = null;
+    let w3 = null;
     try {
       const startInfo = await master.start({ listenHttp: true });
       const masterUrl = `http://127.0.0.1:${startInfo.port}`;
@@ -698,9 +699,38 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
       await w2.start();
       assert.equal(w2.bots.get('bot-01').username, 'Nexus_01');
       assert.equal(w2.bots.get('bot-02').username, 'Nexus_02');
+      await w2.stop();
+      w2 = null;
+
+      // An explicit rename uses a fresh bootstrap token to update the Master canonical names too.
+      const tok3 = master.botRegistry.createBootstrapToken({ createdBy: 'test-prefix-rename' });
+      w3 = createWorker(
+        loadConfig({
+          env: {
+            SWARM_ROLE: 'worker',
+            SWARM_ENV_PROFILE: 'private_offline_test',
+            SWARM_MASTER_URL: masterUrl,
+            SWARM_WORKER_ID: 'worker-sticky',
+            SWARM_BOOTSTRAP_TOKEN: tok3.bootstrapToken,
+            SWARM_WORKER_STATE_PATH: path.join(tmpDir, 'pc2-state.json'),
+            SWARM_BOT_NAME_PREFIX: 'Changed',
+            SWARM_FORCE_RENAME_BOTS: 'true',
+            SWARM_WORKER_BOT_COUNT: '2',
+            SWARM_SPAWN_STAGGER_MS: '0',
+            SWARM_WORKER_SIMULATION: 'true',
+            SWARM_AI_ENABLED: 'false',
+            SWARM_DB_PATH: path.join(tmpDir, 'unused.db'),
+            SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+          }
+        })
+      );
+      await w3.start();
+      assert.equal(w3.bots.get('bot-01').username, 'Changed_01');
+      assert.equal(w3.bots.get('bot-02').username, 'Changed_02');
     } finally {
       if (w1) await w1.stop();
       if (w2) await w2.stop();
+      if (w3) await w3.stop();
       await master.stop();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

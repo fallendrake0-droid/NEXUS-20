@@ -169,18 +169,23 @@ class WorkerHost {
           const rosterMatches =
             canonicalIds.length === configuredIds.length &&
             canonicalIds.every((botId, index) => botId === configuredIds[index]);
+          const canonicalById = new Map(rec.canonicalBots.map((b) => [String(b.botId), b]));
+          const usernameMismatch = botDefs.some((bot) => {
+            const canonical = canonicalById.get(String(bot.botId));
+            return canonical && canonical.username !== bot.username;
+          });
+          const renameRequested = Boolean(wCfg.forceRenameBots && usernameMismatch);
 
-          if (!rosterMatches) {
+          if (!rosterMatches || renameRequested) {
             if (!wCfg.bootstrapToken) {
-              throw new DomainError(
-                'BOT_ROSTER_MISMATCH',
-                `Configured bot roster (${configuredIds.join(', ') || 'empty'}) does not match the Master's enrolled roster (${canonicalIds.join(', ') || 'empty'}). Re-enroll this worker with a fresh bootstrap token to change its bot roster.`
-              );
+              const message = renameRequested
+                ? 'SWARM_FORCE_RENAME_BOTS=true found configured usernames that differ from the Master, but no fresh SWARM_BOOTSTRAP_TOKEN is available. Mint a new one-time token on the Master and restart the worker to apply the prefix.'
+                : `Configured bot roster (${configuredIds.join(', ') || 'empty'}) does not match the Master's enrolled roster (${canonicalIds.join(', ') || 'empty'}). Re-enroll this worker with a fresh bootstrap token to change its bot roster.`;
+              throw new DomainError(renameRequested ? 'BOT_RENAME_REQUIRES_BOOTSTRAP' : 'BOT_ROSTER_MISMATCH', message);
             }
 
-            // Standalone Master mints a fresh one-time bootstrap token each start. Use it to
-            // reconcile persisted worker credentials when the local configured roster changed,
-            // rather than spawning unowned bots that make every heartbeat fail with HTTP 403.
+            // A fresh one-time bootstrap token is required for an explicit username change.
+            // It re-enrolls the worker so the Master and persisted worker state agree.
             this.client.setCredentials(null);
             const reg = await this.client.register({
               bootstrapToken: wCfg.bootstrapToken,
@@ -193,6 +198,11 @@ class WorkerHost {
                 configuredBots: botDefs
               }
             });
+            if (renameRequested) {
+              const warning = '[worker] Renaming bot usernames; in offline mode player UUIDs change, so old server inventories may remain under the previous names.';
+              try { process.stderr.write(`${warning}\n`); } catch { /* ignore terminal output errors */ }
+              this.logger.warn(warning, { workerId: wCfg.workerId, botIds: botDefs.map((b) => b.botId) });
+            }
             activeWorkerToken = reg.workerToken;
             this._heartbeatIntervalMs = reg.heartbeatIntervalMs || this._heartbeatIntervalMs;
             this.logger.info('Re-enrolled worker with updated bot roster', {

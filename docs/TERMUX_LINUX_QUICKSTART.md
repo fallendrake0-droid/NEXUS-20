@@ -179,3 +179,9 @@ From the Linux project directory, update the checked-out branch with a fast-forw
 git pull --ff-only
 npm install
 ```
+
+### Rename existing private offline bot usernames
+
+Worker state and the Master normally keep enrolled usernames fixed so a restart cannot silently switch a bot to a different offline player identity. To intentionally apply a changed `SWARM_BOT_NAME_PREFIX` to an already-enrolled worker, set `SWARM_FORCE_RENAME_BOTS=true`, obtain a **fresh, unused** one-time bootstrap token from the Master, set it as `SWARM_BOOTSTRAP_TOKEN` for the worker restart, and start the worker again. The worker re-enrolls the roster so both the worker and Master use the new names. If the Master reports that a fresh bootstrap token is required, mint a new one; the token from the original enrollment is already consumed.
+
+Changing an offline-mode username changes that player's UUID. Existing inventory and world data may remain associated with the old username, so use this only when that identity change is intended. This does not rename Microsoft-authenticated profiles; change those usernames through the legitimate Microsoft/Minecraft account settings instead. Offline-mode identities are only for private test servers you control.
