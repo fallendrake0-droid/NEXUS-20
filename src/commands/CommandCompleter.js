@@ -25,6 +25,34 @@ const ROOT_COMMANDS = Object.freeze([
     hasArgs: true
   },
   {
+    name: 'goto',
+    syntax: 'goto <x> <y> <z> [bot]',
+    category: 'navigation',
+    description: 'Navigate a bot or the swarm to absolute Minecraft coordinates',
+    hasArgs: true
+  },
+  {
+    name: 'go',
+    syntax: 'go <x> <y> <z> [bot]',
+    category: 'navigation',
+    description: 'Alias for goto',
+    hasArgs: true
+  },
+  {
+    name: 'tree',
+    syntax: 'tree [count]',
+    category: 'gathering',
+    description: 'Safely chop nearby trees for logs (e.g. tree 16; also: chop trees 16)',
+    hasArgs: true
+  },
+  {
+    name: 'food',
+    syntax: 'food [bot]',
+    category: 'survival',
+    description: 'Hunt nearby edible animals for food; backs off when hurt or threatened',
+    hasArgs: true
+  },
+  {
     name: 'collect',
     syntax: 'collect <resource> [count]',
     category: 'gathering',
@@ -449,7 +477,7 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
       };
     }
 
-    // Let single-word natural-language searches reach the 1,370+ Zero-AI catalog
+    // Let single-word natural-language searches reach the curated Zero-AI catalog
     // too (e.g. `wooden` -> `get wooden tools`), not only multi-token phrases.
     const searchText = body.trim().toLowerCase();
     const phraseMatches = MASTER_ZERO_AI_CATALOG
@@ -501,6 +529,12 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
         pool = dict.stackCounts.map((n) => makeEntry(n, `Target quantity: ${n}`, 'count', false));
       }
     }
+  } else if (verb === 'goto' || verb === 'go') {
+    if (argIndex === 4) pool = botChoices;
+  } else if (verb === 'tree') {
+    if (argIndex === 1) pool = dict.stackCounts.map((n) => makeEntry(n, `Chop ${n} logs`, 'count', false));
+  } else if (verb === 'food' || verb === 'mobs' || verb === 'hunt' || verb === 'hunt_mobs') {
+    if (argIndex === 1) pool = botChoices;
   } else if (verb === 'collect' || verb === 'gather' || verb === 'chop' || verb === 'harvest') {
     if (argIndex === 1) {
       pool = dict.collectTargets.map((t) => makeEntry(t, `Collect ${t}`, 'gathering', true));
@@ -586,7 +620,7 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
     } else if (argIndex === 3) {
       pool = botChoices;
     }
-  } else if (verb === 'hunt' || verb === 'hunt_mobs') {
+  } else if (verb === 'hunt' || verb === 'hunt_mobs' || verb === 'mobs' || verb === 'food') {
     if (argIndex === 1) {
       pool = botChoices;
     }
@@ -635,7 +669,7 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
     }
   }
 
-  // Fallback to 1,370+ Zero-AI catalog phrase search if user typed a freeform phrase
+  // Fallback to curated Zero-AI catalog phrase search if user typed a freeform phrase
   if (pool.length === 0) {
     const fullLower = body.trim().toLowerCase();
     const phraseMatches = [];
@@ -762,7 +796,34 @@ function resolveUnifiedCommandExecution(rawText, knownSchematicIds = null) {
       }
     };
   }
-  if (verb === 'hunt' || verb === 'hunt_mobs') {
+  if (verb === 'goto' || verb === 'go') {
+    const coordinatePattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+    const coords = parts.slice(1, 4).map((value) => Number(value));
+    const valid = parts.length >= 4 && parts.length <= 5 &&
+      parts.slice(1, 4).every((value) => coordinatePattern.test(value)) &&
+      coords.every(Number.isFinite) && Math.abs(coords[0]) <= 29_999_984 &&
+      coords[1] >= -2048 && coords[1] <= 2048 && Math.abs(coords[2]) <= 29_999_984;
+    if (!valid) {
+      return { type: 'invalid_command', message: 'Usage: goto <x> <y> <z> [bot] (x/z ±29,999,984; y -2048..2048)' };
+    }
+    return {
+      type: 'player_action',
+      payload: {
+        mode: 'goto',
+        targetPosition: { x: coords[0], y: coords[1], z: coords[2] },
+        botId: parts[4] || '*',
+        preemptTask: true
+      }
+    };
+  }
+  if (verb === 'food') {
+    return { type: 'player_action', payload: { mode: 'hunt_food', botId: parts[1] || '*', preemptTask: true } };
+  }
+  if (verb === 'tree') {
+    const qty = /^\d+$/.test(parts[1] || '') ? parts[1] : '16';
+    return { type: 'task_intent', text: `collect oak_log ${qty}` };
+  }
+  if (verb === 'hunt' || verb === 'hunt_mobs' || verb === 'mobs') {
     return {
       type: 'player_action',
       payload: {

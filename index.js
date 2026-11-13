@@ -289,7 +289,8 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
     if (trimmed === 'help' || trimmed === '/help' || trimmed === '?') {
       stdout.write(
         '  Commands (press [Tab] after any word to auto-complete!):\n' +
-          '    mine <ore_or_block> [count]     collect <resource> [count]\n' +
+          '    mine <ore_or_block> [count]     tree [count]  collect <resource> [count]\n' +
+          '    food [bot]  mobs [bot]           goto <x> <y> <z> [bot]\n' +
           '    craft <item> [count]            smelt <item> [count]\n' +
           '    kit <progression_kit>           build <schematic> [bot]\n' +
           '    kill <player> [weapon] [bot]    follow <player>  protect <player>\n' +
@@ -306,7 +307,9 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
       const schIds = new Set((schRes.schematics || []).map((s) => s.schematicId || s.id));
       const action = resolveUnifiedCommandExecution(trimmed, schIds);
 
-      if (action?.type === 'emergency_stop') {
+      if (action?.type === 'invalid_command') {
+        stdout.write(`  [ERR] ${action.message}\n`);
+      } else if (action?.type === 'emergency_stop') {
         const res = await master.coordinator.emergencyStopAll({ actor });
         await master.coordinator.dispatchPlayerTacticalAction({ actor, mode: 'idle', botId: '*' }).catch(() => {});
         stdout.write(`  [OK] Emergency stop & ceasefire sent (${res.stoppedBots || 0} bots)\n`);

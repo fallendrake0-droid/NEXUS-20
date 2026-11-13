@@ -193,6 +193,7 @@ test('AiEfficiencyController blocks local phone Ollama and paid cloud endpoints'
 
 test('AiEfficiencyController handles canonical intents with 0 LLM calls, deduplicates, caches, validates and falls back', async () => {
   let remoteCallCount = 0;
+  let lastPlanningDto = null;
   const ai = new AiEfficiencyController({
     ollamaBaseUrl: 'https://10.8.0.12:11434',
     maxConcurrent: 1,
@@ -201,6 +202,7 @@ test('AiEfficiencyController handles canonical intents with 0 LLM calls, dedupli
     transportOverride: async ({ body }) => {
       remoteCallCount += 1;
       const userDto = JSON.parse(body.messages[1].content);
+      lastPlanningDto = userDto;
       if (userDto.userObjective.includes('slow_timeout')) {
         await new Promise((r) => setTimeout(r, 250));
       }
@@ -314,11 +316,23 @@ test('AiEfficiencyController handles canonical intents with 0 LLM calls, dedupli
   assert.equal(cached.llmCalled, false);
   assert.equal(remoteCallCount, 1);
 
+  // Explicit AI requests bypass deterministic plans and cached templates.
+  const forced = await ai.createPlan({
+    userText: complexPrompt,
+    forceAI: true,
+    compactContext: { conversationContext: 'Earlier the user asked for a cautious iron expedition.' }
+  });
+  assert.equal(forced.llmCalled, true);
+  assert.equal(forced.source, 'remote_ollama');
+  assert.equal(lastPlanningDto.userObjective, complexPrompt);
+  assert.equal(lastPlanningDto.conversationContext, 'Earlier the user asked for a cautious iron expedition.');
+  assert.equal(remoteCallCount, 2);
+
   // 4. Cyclic schema-invalid response is rejected with NO retry loop and safe clarification fallback
   const bad = await ai.createPlan({ userText: 'Please run cyclic_bad_plan strategy' });
   assert.equal(bad.source, 'schema_rejected_fallback');
   assert.equal(bad.plan.clarificationRequired, true);
-  assert.equal(remoteCallCount, 2); // Only 1 call made, NOT retried!
+  assert.equal(remoteCallCount, 3); // Only 1 call made, NOT retried!
 
   // 5. Timeout triggers deterministic clarification fallback cleanly
   const timedOut = await ai.createPlan({ userText: 'Please run slow_timeout strategy' });

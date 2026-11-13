@@ -71,15 +71,16 @@
     <div id="toast-banner" class="toast hidden"></div>
 
     <nav class="tabbar" role="tablist">
-      <button class="tab active" data-tab="overview">1. Overview</button>
-      <button class="tab" data-tab="noai">2. No-AI Deck (1,370+)</button>
-      <button class="tab" data-tab="players">3. Players &amp; Elite PvP</button>
-      <button class="tab" data-tab="skins">4. Knight Skins &amp; Schematics</button>
-      <button class="tab" data-tab="tasks">5. Tasks &amp; Intent Brain</button>
-      <button class="tab" data-tab="bots">6. Bots &amp; Workers</button>
-      <button class="tab" data-tab="resources">7. Resources &amp; Storage</button>
-      <button class="tab" data-tab="knowledge">8. World Knowledge</button>
-      <button class="tab" data-tab="system">9. AI APIs (16+), Perf &amp; Security</button>
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="noai">Commands</button>
+      <button class="tab" data-tab="players">Players &amp; PvP</button>
+      <button class="tab" data-tab="chat">Bot Chat</button>
+      <button class="tab" data-tab="skins">Skins &amp; Builds</button>
+      <button class="tab" data-tab="tasks">Tasks</button>
+      <button class="tab" data-tab="bots">Bots &amp; Workers</button>
+      <button class="tab" data-tab="resources">Resources</button>
+      <button class="tab" data-tab="knowledge">Knowledge</button>
+      <button class="tab" data-tab="system">System &amp; AI</button>
     </nav>
 
     <!-- Global Minecraft Brigadier-Style Command Bar (Press Tab to Autocomplete) -->
@@ -95,13 +96,34 @@
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"
-            placeholder="Type a command and press [Tab] (e.g. mine diamond 64, kill Steve mace, build watchtower, kit full_iron_kit)"
+            placeholder="Type a command (e.g. mine diamond 64) · press Tab for suggestions"
           />
           <div id="mc-cmd-popup" class="mc-suggest-popup hidden" role="listbox" aria-label="Command Suggestions"></div>
         </div>
         <button id="mc-cmd-tab-btn" type="button" class="btn small mc-tab-btn" title="Auto-fill next suggested token (same as pressing Tab)">&#8677; Tab</button>
         <button id="mc-cmd-submit" type="submit" class="btn primary small">Run Command</button>
       </form>
+    </section>
+
+    <section class="ai-control-dock" aria-label="AI instruction chat">
+      <div class="ai-chat-heading">
+        <div class="ai-control-copy">
+          <strong>AI CONTROL CHAT</strong>
+          <span id="ai-control-status" class="muted small-label">Describe a goal in plain language. Configure an AI provider in System &amp; AI.</span>
+        </div>
+        <div class="ai-chat-heading-actions">
+          <span id="ai-chat-mode-hint" class="muted small-label">AI plans tasks; worker-verified progress appears in Tasks.</span>
+          <button id="ai-chat-clear" type="button" class="btn ghost small">New chat</button>
+          <button id="ai-control-config" type="button" class="btn ghost small">Configure AI</button>
+        </div>
+      </div>
+      <div id="ai-chat-messages" class="ai-chat-messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="AI task conversation"></div>
+      <form id="ai-control-form" class="ai-control-form" autocomplete="off">
+        <label class="visually-hidden" for="ai-control-input">Your instruction to the AI planner</label>
+        <textarea id="ai-control-input" rows="2" maxlength="500" required placeholder="Tell the swarm what you want, e.g. Find food, gather wood, make basic tools, then build a small shelter. You can answer the AI's clarification questions here."></textarea>
+        <button id="ai-control-submit" type="submit" class="btn accent-red small">Send instruction</button>
+      </form>
+      <p class="ai-chat-safety-note">The planner may ask before acting when details are unclear. Plans are schema-checked; a task is not complete until worker evidence is verified.</p>
     </section>
 
     <main class="main-grid">
@@ -128,6 +150,34 @@
             <strong id="kpi-rss">— MiB</strong>
             <small id="kpi-lag" class="muted">Loop p95: — ms</small>
           </div>
+        </div>
+
+        <div class="panel surroundings-panel">
+          <div class="panel-header">
+            <div>
+              <h2>AI Surroundings Viewer</h2>
+              <p id="surroundings-caption" class="muted compact-sub">Waiting for worker positions and discovered world observations.</p>
+            </div>
+            <span class="muted small-label">Known data only · not a live chunk renderer</span>
+          </div>
+          <canvas id="surroundings-canvas" class="surroundings-canvas" role="img" aria-label="Top-down view of bot positions and known world discoveries"></canvas>
+          <div class="surroundings-legend" aria-label="Map legend">
+            <span><i class="map-dot bot-dot"></i> Bots</span>
+            <span><i class="map-dot resource-dot"></i> Resources</span>
+            <span><i class="map-dot hazard-dot"></i> Hazards</span>
+            <span><i class="map-dot base-dot"></i> Bases / structures / storage</span>
+          </div>
+        </div>
+
+        <div class="panel bot-live-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Live Bot Status &amp; Navigation</h2>
+              <p class="muted compact-sub">Worker telemetry refreshes live. GOTO countdowns are estimates from recent observed movement—not guaranteed path durations.</p>
+            </div>
+            <span class="muted small-label">Health · hunger · position · gear · inventory · task · ETA</span>
+          </div>
+          <div id="bot-detail-grid" class="bot-detail-grid" aria-live="polite"></div>
         </div>
 
         <div class="two-col">
@@ -170,70 +220,86 @@
         </div>
       </section>
 
-      <!-- TAB 2: ZERO-AI COMMAND DECK (1,370+ INSTANT COMMANDS, £0, 0 LLM CALLS) -->
+      <!-- TAB 2: ZERO-AI COMMAND DECK -->
       <section id="tab-noai" class="tab-panel hidden">
-        <div class="panel crimson-panel">
-          <div class="panel-header">
+        <div class="panel crimson-panel noai-tools-panel">
+          <div class="noai-heading-row">
             <div>
-              <h2>Zero-AI Instant Command Deck (<span id="noai-total-badge">1,370+</span> Built-in Commands — 0 AI Needed)</h2>
-              <p class="muted compact-sub">Every command below dispatches deterministically in &lt;5ms with zero AI API calls, automatic multi-bot quota splitting, auto-crafting-table &amp; furnace smelting.</p>
+              <p class="eyebrow">DETERMINISTIC COMMANDS · NO AI CALLS</p>
+              <h2>Command Library <span class="muted">(<span id="noai-total-badge">—</span>)</span></h2>
+              <p class="muted compact-sub">Search by task or item, then run a command. Expand a section for presets, filters, and run options.</p>
             </div>
-            <div class="inline-controls">
-              <label for="noai-qty-override" class="muted small-label">Qty Override:</label>
-              <select id="noai-qty-override">
-                <option value="default">Preset Default</option>
-                <option value="1">1x</option>
-                <option value="4">4x</option>
-                <option value="8">8x</option>
-                <option value="16">16x</option>
-                <option value="32">32x</option>
-                <option value="64">64x (1 Stack)</option>
-                <option value="128">128x (2 Stacks)</option>
-                <option value="256">256x (4 Stacks)</option>
-                <option value="512">512x (8 Stacks)</option>
-              </select>
-              <select id="noai-priority">
-                <option value="normal">Priority: Normal</option>
-                <option value="high">Priority: High</option>
-                <option value="survival">Priority: Survival</option>
-              </select>
-            </div>
+            <details class="deck-options">
+              <summary>Run options</summary>
+              <div class="deck-options-content">
+                <label for="noai-qty-override">Quantity override</label>
+                <select id="noai-qty-override">
+                  <option value="default">Preset default</option>
+                  <option value="1">1x</option><option value="4">4x</option><option value="8">8x</option>
+                  <option value="16">16x</option><option value="32">32x</option>
+                  <option value="64">64x (1 stack)</option><option value="128">128x (2 stacks)</option>
+                  <option value="256">256x (4 stacks)</option><option value="512">512x (8 stacks)</option>
+                </select>
+                <label for="noai-priority">Task priority</label>
+                <select id="noai-priority">
+                  <option value="normal">Normal</option><option value="high">High</option><option value="survival">Survival</option>
+                </select>
+              </div>
+            </details>
           </div>
-
-          <div class="hero-quick-grid">
-            <button type="button" class="btn primary quick-noai-btn" data-cmd="collect 64 logs">Collect 64 Logs</button>
-            <button type="button" class="btn primary quick-noai-btn" data-cmd="collect stone">Collect Stone (64)</button>
-            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get stone tools">Get Stone Tools (Full DAG)</button>
-            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get iron tools">Get Iron Tools + Shield</button>
-            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get full iron kit">Get Full Iron Knight Kit</button>
-            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond tools">Get Diamond Tools</button>
-            <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond armor">Get Full Diamond Armor</button>
-            <button type="button" class="btn primary quick-noai-btn" data-cmd="mine iron, gold, diamonds">Mine Iron, Gold &amp; Diamonds</button>
-            <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get mace kit">1.21 Mace Smash PvP Kit</button>
-            <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get spear kit">Spear &amp; Shield Phalanx Kit</button>
-            <button type="button" class="btn quick-noai-btn" data-cmd="starter kit">Day-1 Starter Base + Shelter</button>
-            <button type="button" class="btn quick-noai-btn" data-cmd="get netherite">Forge Netherite Ingots</button>
+          <div class="command-search-row">
+            <label class="visually-hidden" for="noai-search-input">Search the command library</label>
+            <span class="search-glyph" aria-hidden="true">⌕</span>
+            <input id="noai-search-input" type="search" autocomplete="off" placeholder="Search curated commands — try ‘stone tools’, ‘diamond’, ‘smelt’ or ‘watchtower’" />
+            <button id="noai-clear-search" type="button" class="btn ghost" aria-label="Clear command search">Clear</button>
           </div>
-
-          <div class="inline-form top-gap">
-            <input id="noai-search-input" type="text" placeholder="Search 1,370+ commands (e.g. diamond, log, smelt, mace, spear, obsidian, bed, redstone, watchtower)..." />
-            <input id="noai-freeform-input" type="text" placeholder="Or type any No-AI command (e.g. mine iron, gold, diamonds / get stone tools / collect 64 logs)" />
-            <button id="noai-freeform-btn" type="button" class="btn primary">Run Instant No-AI</button>
+          <p class="search-helper"><span id="noai-matched-count">—</span> commands match <span id="noai-active-filter">all categories</span>.</p>
+          <div class="deck-disclosures">
+            <details class="deck-disclosure">
+              <summary>Popular shortcuts <span class="muted">Survival, combat, building and progression</span></summary>
+              <div class="hero-quick-grid">
+                <button type="button" class="btn primary quick-noai-btn" data-cmd="food">Hunt Animals for Food</button>
+                <button type="button" class="btn primary quick-noai-btn" data-cmd="hunt">Clear Hostile Mobs</button>
+                <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get stone tools">Get Stone Tools (Full DAG)</button>
+                <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get iron tools">Get Iron Tools + Shield</button>
+                <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get full iron kit">Get Full Iron Knight Kit</button>
+                <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond tools">Get Diamond Tools</button>
+                <button type="button" class="btn accent-red quick-noai-btn" data-cmd="get diamond armor">Get Full Diamond Armor</button>
+                <button type="button" class="btn primary quick-noai-btn" data-cmd="mine iron, gold, diamonds">Mine Iron, Gold &amp; Diamonds</button>
+                <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get mace kit">1.21 Mace Smash PvP Kit</button>
+                <button type="button" class="btn accent-gold quick-noai-btn" data-cmd="get spear kit">Spear &amp; Shield Phalanx Kit</button>
+                <button type="button" class="btn quick-noai-btn" data-cmd="build starter_shelter">Build Starter Shelter</button>
+                <button type="button" class="btn quick-noai-btn" data-cmd="get netherite">Forge Netherite Ingots</button>
+              </div>
+            </details>
+            <details class="deck-disclosure">
+              <summary>Browse categories <span id="noai-category-summary" class="muted">all</span></summary>
+              <div id="noai-category-bar" class="chip-bar"></div>
+            </details>
+            <details class="deck-disclosure">
+              <summary>Advanced: run a custom No-AI command</summary>
+              <div class="inline-form top-gap">
+                <label class="visually-hidden" for="noai-freeform-input">Custom No-AI command</label>
+                <input id="noai-freeform-input" type="text" placeholder="e.g. get stone tools, collect 64 logs, mine iron gold diamonds" />
+                <button id="noai-freeform-btn" type="button" class="btn primary">Run command</button>
+              </div>
+            </details>
           </div>
-
-          <div id="noai-category-bar" class="chip-bar"></div>
         </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Command Library (<span id="noai-matched-count">0</span> matching)</h2>
-            <div class="action-group">
-              <button id="noai-prev-btn" type="button" class="btn small ghost">Prev Page</button>
+        <div class="panel command-library-panel">
+          <div class="panel-header command-library-header">
+            <div>
+              <h2>Matching commands</h2>
+              <p class="muted compact-sub">Select a card to dispatch. Search to narrow the list.</p>
+            </div>
+            <div class="action-group pagination-controls">
+              <button id="noai-prev-btn" type="button" class="btn small ghost" aria-label="Previous command page">Previous</button>
               <span id="noai-page-label" class="muted small-label">Page 1</span>
-              <button id="noai-next-btn" type="button" class="btn small ghost">Next Page</button>
+              <button id="noai-next-btn" type="button" class="btn small ghost" aria-label="Next command page">Next</button>
             </div>
           </div>
           <div id="noai-grid" class="command-card-grid"></div>
+          <p id="noai-empty-state" class="empty-state hidden">No commands match that search. Try another word or clear the filters.</p>
         </div>
       </section>
 
@@ -317,6 +383,41 @@
         </div>
       </section>
 
+      <!-- TAB: OPERATOR-TO-BOT MINECRAFT CHAT -->
+      <section id="tab-chat" class="tab-panel hidden" aria-labelledby="bot-chat-title">
+        <div class="panel bot-chat-panel">
+          <div class="panel-header bot-chat-header">
+            <div>
+              <p class="eyebrow">LIVE SERVER CHAT</p>
+              <h2 id="bot-chat-title">Send a message as a bot</h2>
+              <p class="muted compact-sub">Choose one connected bot to send chat or a server command (for example, /tpa Steve). Commands use the bot’s own server permissions.</p>
+            </div>
+            <div class="action-group bot-chat-header-actions">
+              <span id="bot-chat-connection" class="status-chip">Checking bots…</span>
+              <button id="bot-chat-clear" type="button" class="btn ghost small">Clear log</button>
+            </div>
+          </div>
+          <div id="bot-chat-log" class="bot-chat-log" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Bot chat messages"></div>
+          <form id="bot-chat-form" class="bot-chat-form" autocomplete="off">
+            <label class="bot-chat-target">
+              <span>Send as</span>
+              <select id="bot-chat-target" required>
+                <option value="">No connected bots</option>
+              </select>
+            </label>
+            <label class="bot-chat-message">
+              <span>Message</span>
+              <input id="bot-chat-input" type="text" maxlength="256" required autocomplete="off" placeholder="Say hello or enter a command like /tpa Steve" />
+            </label>
+            <div class="bot-chat-send-wrap">
+              <span id="bot-chat-counter" class="muted small-label">0 / 256</span>
+              <button id="bot-chat-submit" type="submit" class="btn primary" disabled>Send message</button>
+            </div>
+          </form>
+          <p class="bot-chat-note">Messages and commands go through the Master to the selected worker. Delivery status updates when the worker sends them; server permissions and plugin responses still apply.</p>
+        </div>
+      </section>
+
       <!-- TAB 4: CRIMSON SHADOW KNIGHT SKIN & SCHEMATIC BUILDER -->
       <section id="tab-skins" class="tab-panel hidden">
         <div class="panel crimson-panel">
@@ -352,7 +453,7 @@
 
         <div class="two-col">
           <div class="panel">
-            <h2>Built-in Architectural Schematics (16 Blueprints)</h2>
+            <h2>Built-in Architectural Schematics (18 Blueprints)</h2>
             <div id="schematics-grid" class="command-card-grid"></div>
           </div>
 
@@ -437,13 +538,30 @@
 
       <!-- TAB 3: BOTS & WORKERS -->
       <section id="tab-bots" class="tab-panel hidden">
+        <div class="panel mode-guide-panel">
+          <h2>Swarm Operating Modes</h2>
+          <ul class="mode-guide-list">
+            <li><strong>HYBRID:</strong> Default balance—shares bots across independent tasks while allowing cooperation on suitable shared objectives.</li>
+            <li><strong>DISTRIBUTED:</strong> Favors giving separate ready tasks or objectives to different eligible bots.</li>
+            <li><strong>SYNCHRONIZED:</strong> Focuses the swarm on the highest-priority active task, splitting work into quotas or regions when suitable.</li>
+          </ul>
+          <p class="muted">Each bot handles one assignment at a time. The Bot Cap, connected workers, capabilities, task dependencies, and hunger/safety needs affect scheduling.</p>
+        </div>
         <div class="two-col">
           <div class="panel">
-            <div class="panel-header">
-              <h2>Worker Nodes</h2>
-              <button id="mint-token-btn" type="button" class="btn small primary">Mint Bootstrap Token</button>
-            </div>
-            <div id="bootstrap-token-output" class="alert info hidden"></div>
+            <h2>Worker Nodes</h2>
+            <p class="muted worker-add-help">Add bots by launching a WorkerHost. Set Bot Cap first. The Master URL must be reachable from Linux—if this dashboard says localhost or 127.0.0.1, enter the phone’s LAN/VPN address here.</p>
+            <form id="add-worker-form" class="worker-add-form">
+              <label for="add-worker-id">Worker ID<input id="add-worker-id" type="text" maxlength="64" placeholder="worker-2" required autocomplete="off" /></label>
+              <label for="add-worker-master-url">Master URL reachable from Linux<input id="add-worker-master-url" type="url" maxlength="300" placeholder="http://phone-lan-ip:3000" required autocomplete="url" /></label>
+              <label for="add-worker-count">Bots on worker<input id="add-worker-count" type="number" min="1" max="20" value="2" required /></label>
+              <label for="add-worker-start-index">First bot number<input id="add-worker-start-index" type="number" min="1" max="20" value="1" required /></label>
+              <label for="add-worker-prefix">Minecraft name prefix<input id="add-worker-prefix" type="text" maxlength="12" value="Nexus" required autocomplete="off" /></label>
+              <label for="add-worker-mc-host">Minecraft server host<input id="add-worker-mc-host" type="text" maxlength="255" placeholder="example.aternos.me" required autocomplete="off" /></label>
+              <label for="add-worker-mc-port">Server port<input id="add-worker-mc-port" type="number" min="1" max="65535" value="25565" required /></label>
+              <button id="mint-token-btn" type="submit" class="btn primary">Generate worker launch command</button>
+            </form>
+            <div id="bootstrap-token-output" class="alert info hidden" role="status"></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -574,6 +692,7 @@
             <button type="submit" class="btn primary">Save &amp; Activate Provider</button>
           </form>
           <div id="ai-provider-status" class="muted small-label"></div>
+          <p class="alert info compact-sub">Simple connection model: Ollama runs on a separate PC/device. Save that device’s LAN/VPN URL here on the Master (for example <code>http://192.168.1.50:11434</code>). Workers do not connect to Ollama; they only connect to the Master. The model must already be downloaded on the Ollama device.</p>
         </div>
 
         <div class="two-col">
@@ -634,6 +753,7 @@
     </main>
   </div>
 
+  <script src="/botMetrics.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

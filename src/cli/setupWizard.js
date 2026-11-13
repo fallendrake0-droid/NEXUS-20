@@ -189,7 +189,7 @@ function formatSavedConfigBanner(values = {}) {
   const prefix = values.SWARM_BOT_NAME_PREFIX || 'Nexus';
   const ai = values.SWARM_AI_ENABLED === 'true'
     ? `enabled (${values.SWARM_AI_PROVIDER || 'ollama'})`
-    : 'built-in 1,370+ No-AI commands (£0)';
+    : 'built-in deterministic commands (£0)';
   const endpoint = (values.SWARM_ROLE || 'master') === 'worker'
     ? `Master -> ${values.SWARM_MASTER_URL || 'http://192.168.1.168:8443'}`
     : `Control Centre -> http://${values.SWARM_BIND_HOST || '127.0.0.1'}:${values.SWARM_PORT || '8443'}`;
@@ -409,7 +409,7 @@ async function runSetupWizard({
     const prevProvider = existing.SWARM_AI_PROVIDER || (existing.SWARM_AI_ENABLED === 'true' ? 'ollama' : 'no');
     const aiRaw = (
       await ask(
-        '\n9. ai (no = 1,370+ No-AI commands, or: gemini / chatgpt / claude / groq / openrouter / deepseek / grok / ollama)',
+        '\n9. ai (no = deterministic commands, or: gemini / chatgpt / claude / groq / openrouter / deepseek / grok / ollama)',
         prevProvider
       )
     )

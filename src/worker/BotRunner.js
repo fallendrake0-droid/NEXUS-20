@@ -62,6 +62,21 @@ async function waitRealLoginSlot(host, port, minSpacingMs) {
  * Extract readable disconnect/kick text from plain strings, JSON chat, or
  * 1.20.3+ / 26.2 Prismarine NBT chat compounds (`{ type: 'compound', value: ... }`).
  */
+function writeConnectionDiagnostic(username, target, message) {
+  const safeMessage = String(message || 'unknown connection failure')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+  const safeUsername = String(username || 'bot').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64);
+  const safeTarget = String(target || 'Minecraft server').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 160);
+  try {
+    process.stderr.write(`[MC] ${safeUsername} -> ${safeTarget}: ${safeMessage}\n`);
+  } catch {
+    // Diagnostics must never interfere with connection recovery.
+  }
+}
+
 function formatDisconnectReason(reason, depth = 0) {
   if (reason == null) return '';
   if (depth > 6) return '';
@@ -148,6 +163,7 @@ class SimulatedBotDriver extends EventEmitter {
       });
     }
     this._containerStock = new Map();
+    this.sentChatMessages = [];
   }
 
   async connect() {
@@ -158,6 +174,15 @@ class SimulatedBotDriver extends EventEmitter {
   async disconnect(reason = 'shutdown') {
     this.connected = false;
     this.emit('end', reason);
+  }
+
+  async sendChatMessage(message) {
+    if (!this.connected) return { ok: false, reason: 'not_connected' };
+    const text = String(message || '');
+    this.sentChatMessages.push(text);
+    if (this.sentChatMessages.length > 50) this.sentChatMessages.shift();
+    this.emit('outgoing_chat', text);
+    return { ok: true };
   }
 
   setItemCount(itemKey, count, maxDurability = null, durabilityUsed = 0) {
@@ -451,9 +476,16 @@ class SimulatedBotDriver extends EventEmitter {
   }
 
   async setTacticalOrder(order = {}) {
+    const mode = String(order.mode || 'idle');
+    const targetPosition = order.targetPosition &&
+      [order.targetPosition.x, order.targetPosition.y, order.targetPosition.z].every((v) => Number.isFinite(Number(v)))
+      ? { x: Number(order.targetPosition.x), y: Number(order.targetPosition.y), z: Number(order.targetPosition.z) }
+      : null;
+    if (mode === 'goto' && targetPosition) this.position = { ...targetPosition };
     this._tacticalState = {
-      mode: String(order.mode || 'idle'),
+      mode,
       targetPlayer: order.targetPlayer || null,
+      targetPosition: mode === 'goto' ? targetPosition : null,
       preferredWeaponStyle: order.preferredWeaponStyle || 'auto',
       updatedAt: new Date().toISOString()
     };
@@ -750,7 +782,7 @@ function createMineflayerDriver(options = {}) {
     autonomyTimer = setInterval(() => {
       // Allow a 1,500ms post-spawn grace window so initial chunk streaming & teleports settle cleanly
       if (!bot || !bot.entity || busyWorkSection || Date.now() - spawnedAt < 1_500) return;
-      combatEngine.tick(bot, moveNearPosition).catch(() => {});
+      combatEngine.tick(bot, moveNearPosition, setNavigationGoal).catch(() => {});
     }, 500);
     autonomyTimer.unref?.();
   }
@@ -823,6 +855,26 @@ function createMineflayerDriver(options = {}) {
       }
     }
     return Boolean(bot && bot.entity && bot.entity.position.distanceTo(targetPos) <= range + 0.9);
+  }
+
+  function setNavigationGoal(targetPos, range = 1.25) {
+    if (!bot || !bot.entity || !bot.pathfinder || !pathfinderMod?.goals?.GoalNear) return false;
+    try {
+      if (!targetPos) {
+        bot.pathfinder.setGoal(null);
+        return true;
+      }
+      const goal = new pathfinderMod.goals.GoalNear(
+        targetPos.x,
+        targetPos.y,
+        targetPos.z,
+        Math.max(1, Number(range) || 1.25)
+      );
+      bot.pathfinder.setGoal(goal);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function equipBestToolForBlock(blockName) {
@@ -1015,70 +1067,81 @@ function createMineflayerDriver(options = {}) {
     }
     const anchor = bot.entity.position.floored().offset(3, 0, 3);
     const ordered = sortBlocksForSafePlacement(schematic.blocks);
+    const requiredCount = ordered.filter((cell) => !cell.optional).length;
     let placedCount = 0;
+    let missingMaterials = 0;
+    let blockedPlacements = 0;
+    let cancelled = false;
 
     for (const cell of ordered) {
       if (typeof checkAbort === 'function') {
         const gate = await checkAbort();
-        if (gate?.aborted === 'cancelled') return { ok: false, cancelled: true };
+        if (gate?.aborted === 'cancelled') { cancelled = true; break; }
         if (gate?.aborted) break;
       }
       const worldPos = anchor.offset(cell.x, cell.y, cell.z);
       const existing = bot.blockAt(worldPos);
-      if (existing && existing.name === cell.block) {
-        placedCount += 1;
+      if (existing && (existing.name === cell.block || FALLBACK_BUILDING_MATERIALS.includes(existing.name))) {
+        if (!cell.optional) placedCount += 1;
         continue;
       }
 
       const inv = bot.inventory?.items?.() || [];
       let blockItem = inv.find((i) => i.name === cell.block);
-      if (!blockItem && !cell.optional) {
-        blockItem = inv.find((i) => FALLBACK_BUILDING_MATERIALS.includes(i.name));
-      }
+      if (!blockItem && !cell.optional) blockItem = inv.find((i) => FALLBACK_BUILDING_MATERIALS.includes(i.name));
       if (!blockItem) {
-        if (cell.optional) continue;
+        if (!cell.optional) missingMaterials += 1;
         continue;
       }
 
-      // Ensure bot is within placement range without standing inside target block
+      let reached = true;
       if (bot.entity.position.floored().equals(worldPos)) {
-        await moveNearPosition(worldPos.offset(2, 0, 2), 1.8, 3_500);
+        reached = await moveNearPosition(worldPos.offset(2, 0, 2), 1.8, 3_500);
       } else if (bot.entity.position.distanceTo(worldPos) > 4.2) {
-        await moveNearPosition(worldPos, 3.2, 6_000);
+        reached = await moveNearPosition(worldPos, 3.2, 6_000);
+      }
+      if (!reached) {
+        if (!cell.optional) blockedPlacements += 1;
+        continue;
       }
 
-      if (existing && existing.name !== 'air' && existing.boundingBox !== 'block') {
-        await bot.dig(existing).catch(() => {});
-      }
-
-      // Find adjacent solid face to place against
+      if (existing && existing.name !== 'air' && existing.boundingBox !== 'block') await bot.dig(existing).catch(() => {});
       const dirs = [
-        [0, -1, 0, { x: 0, y: 1, z: 0 }],
-        [1, 0, 0, { x: -1, y: 0, z: 0 }],
-        [-1, 0, 0, { x: 1, y: 0, z: 0 }],
-        [0, 0, 1, { x: 0, y: 0, z: -1 }],
-        [0, 0, -1, { x: 0, y: 0, z: 1 }],
-        [0, 1, 0, { x: 0, y: -1, z: 0 }]
+        [0, -1, 0, { x: 0, y: 1, z: 0 }], [1, 0, 0, { x: -1, y: 0, z: 0 }],
+        [-1, 0, 0, { x: 1, y: 0, z: 0 }], [0, 0, 1, { x: 0, y: 0, z: -1 }],
+        [0, 0, -1, { x: 0, y: 0, z: 1 }], [0, 1, 0, { x: 0, y: -1, z: 0 }]
       ];
+      let cellPlaced = false;
       for (const [dx, dy, dz, faceVec] of dirs) {
         const ref = bot.blockAt(worldPos.offset(dx, dy, dz));
-        if (ref && ref.boundingBox === 'block') {
-          try {
-            await bot.equip(blockItem, 'hand');
-            await bot.placeBlock(ref, faceVec);
-            placedCount += 1;
+        if (!ref || ref.boundingBox !== 'block') continue;
+        try {
+          await bot.equip(blockItem, 'hand');
+          await bot.placeBlock(ref, faceVec);
+          const placedBlock = bot.blockAt(worldPos);
+          if (placedBlock && (placedBlock.name === cell.block || FALLBACK_BUILDING_MATERIALS.includes(placedBlock.name))) {
+            cellPlaced = true;
             break;
-          } catch {
-            // try next adjacent face
           }
+        } catch {
+          // Try the next solid adjacent face; never claim an unverified placement.
         }
       }
+      if (cellPlaced && !cell.optional) placedCount += 1;
+      else if (!cell.optional) blockedPlacements += 1;
     }
 
+    if (cancelled) return { ok: false, cancelled: true, verifiedBlocks: placedCount };
+    const ok = placedCount >= requiredCount && blockedPlacements === 0 && missingMaterials === 0;
     return {
-      ok: true,
-      verifiedBlocks: Math.max(1, placedCount),
-      placedBlocks: placedCount
+      ok,
+      verifiedBlocks: placedCount,
+      placedBlocks: placedCount,
+      ...(ok ? {} : {
+        failureCode: missingMaterials > 0 ? 'RESOURCE_NOT_FOUND' : 'PATH_BLOCKED',
+        retryable: true,
+        summary: `Schematic incomplete: placed ${placedCount}/${requiredCount} required blocks; ${missingMaterials} missing materials, ${blockedPlacements} blocked placements`
+      })
     };
   }
 
@@ -1290,6 +1353,17 @@ function createMineflayerDriver(options = {}) {
     async eatFoodIfPossible() {
       if (!bot) return false;
       return combatEngine.autoFeedIfNeeded(bot, false);
+    },
+    async huntForFoodIfNeeded() {
+      if (!bot || !bot.entity) return { acted: false, reason: 'bot_not_spawned' };
+      busyWorkSection = true;
+      try {
+        return await combatEngine.huntForFoodIfNeeded(bot, moveNearPosition);
+      } catch {
+        return { acted: false, reason: 'food_hunt_failed' };
+      } finally {
+        busyWorkSection = false;
+      }
     },
     async gatherResource({ resourceId }) {
       if (!bot || !bot.entity) {
@@ -1528,7 +1602,7 @@ function createMineflayerDriver(options = {}) {
             return await placeSchematicBlocks(schematic, checkAbort);
           }
         }
-        return { ok: true, verifiedBlocks: 1 };
+        return { ok: false, failureCode: 'PATH_BLOCKED', retryable: false, summary: `Worker does not have a verified ${actionType} skill; task was not marked complete` };
       } finally {
         busyWorkSection = false;
       }
@@ -1616,8 +1690,21 @@ function createMineflayerDriver(options = {}) {
       }
       return out;
     },
+    async sendChatMessage(message) {
+      if (!bot || !bot.entity || typeof bot.chat !== 'function') {
+        return { ok: false, reason: 'not_connected' };
+      }
+      try {
+        bot.chat(String(message));
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: String(err?.message || err).slice(0, 160) };
+      }
+    },
     async setTacticalOrder(order = {}) {
+      const previousMode = combatEngine.tacticalState.mode;
       const state = combatEngine.setTacticalOrder(order);
+      if (previousMode === 'goto' && state.mode !== 'goto') setNavigationGoal(null);
       if (state.mode === 'idle' && bot && typeof bot.clearControlStates === 'function') {
         bot.clearControlStates();
       }
@@ -1725,6 +1812,7 @@ class BotRunner extends EventEmitter {
     this._reconnectAttempt = 0;
     this._throttleReconnectAttempt = 0;
     this._lastConnectError = null;
+    this._survivalCheckPromise = null;
     this._reconnectBaseMs = Math.max(500, Number(options.reconnectBaseMs || 8_000));
   }
 
@@ -1738,6 +1826,28 @@ class BotRunner extends EventEmitter {
 
   get lastConnectError() {
     return this._lastConnectError;
+  }
+
+  get survivalCheckInFlight() {
+    return Boolean(this._survivalCheckPromise);
+  }
+
+  /**
+   * Watchdog fallback for drivers/servers that lose a socket without emitting `end`.
+   * Normal disconnects still enter the same guarded, rate-limited reconnect path.
+   */
+  ensureConnected() {
+    if (
+      this._stopped ||
+      this._kickedOrBanned ||
+      this._connecting ||
+      this._reconnectTimer ||
+      this._driver.connected
+    ) {
+      return false;
+    }
+    this._scheduleReconnect(this._lastConnectError || 'connection watchdog found bot offline');
+    return Boolean(this._reconnectTimer);
   }
 
   async start() {
@@ -1775,9 +1885,23 @@ class BotRunner extends EventEmitter {
     this._listeners.on(this._driver, 'kicked', (reason) => {
       const text = formatDisconnectReason(reason);
       // Only permanent bans / whitelist rejections block auto-reconnect; Aternos "offline"/"starting"/"throttled" kicks retry cleanly
-      if (/banned|banhammer|not whitelisted|you are not white-listed/i.test(text)) {
-        this._kickedOrBanned = true;
+      const permanentRejection = /banned|banhammer|not whitelisted|you are not white-listed/i.test(text);
+      if (permanentRejection) this._kickedOrBanned = true;
+      if (!this._simulationMode) {
+        writeConnectionDiagnostic(
+          this.username,
+          this._reconnectServerKey,
+          permanentRejection
+            ? `server rejected login permanently; fix ban/whitelist/access: ${text || 'no kick reason supplied'}`
+            : `server kicked bot; automatic reconnect is enabled: ${text || 'no kick reason supplied'}`
+        );
       }
+      this._logger?.warn(
+        permanentRejection
+          ? 'Minecraft rejected this bot; automatic reconnect is paused until configuration/server access is fixed'
+          : 'Minecraft kicked this bot; automatic reconnect remains enabled',
+        { botId: this.botId, username: this.username, reason: text.slice(0, 180), permanent: permanentRejection }
+      );
       this.emit('bot_lifecycle', {
         botId: this.botId,
         status: 'disconnected',
@@ -1821,8 +1945,8 @@ class BotRunner extends EventEmitter {
       }, 60_000);
       this._stabilityTimer.unref?.();
 
-      if (!this._simulationMode && process.stdout?.isTTY) {
-        process.stdout.write(`  [MC] ${this.username} connected & spawned in Minecraft!\n`);
+      if (!this._simulationMode) {
+        writeConnectionDiagnostic(this.username, this._reconnectServerKey, 'connected and spawned successfully');
       }
       this._logger?.info('Bot connected and spawned in Minecraft', {
         botId: this.botId,
@@ -1838,8 +1962,8 @@ class BotRunner extends EventEmitter {
       this._connecting = false;
       const reason = String(err?.message || err || 'connect_failed').slice(0, 180);
       this._lastConnectError = reason;
-      if (!this._simulationMode && process.stdout?.isTTY && reason !== prevErr) {
-        process.stdout.write(`  [MC] ${this.username}: ${reason}\n`);
+      if (!this._simulationMode && reason !== prevErr) {
+        writeConnectionDiagnostic(this.username, this._reconnectServerKey, `connection attempt failed: ${reason}`);
       }
       this._logger?.warn('Bot could not connect to Minecraft yet; will retry automatically', {
         botId: this.botId,
@@ -1899,12 +2023,22 @@ class BotRunner extends EventEmitter {
       delayMs = Math.max(0, scheduledAt - now);
     }
 
-    if (isRateLimited && process.stdout?.isTTY) {
-      process.stdout.write(
-        `  [MC] ${this.username}: server login throttle; retrying in ${Math.ceil(delayMs / 1000)}s with shared backoff.\n`
+    if (!this._simulationMode) {
+      writeConnectionDiagnostic(
+        this.username,
+        this._reconnectServerKey,
+        `reconnect attempt ${this._reconnectAttempt} scheduled in ${Math.ceil(delayMs / 1000)}s${isRateLimited ? ' (server throttle backoff)' : ''}; cause: ${reason || 'connection closed'}`
       );
     }
 
+    this._logger?.info('Scheduled Minecraft reconnect attempt', {
+      botId: this.botId,
+      username: this.username,
+      attempt: this._reconnectAttempt,
+      delayMs,
+      rateLimited: isRateLimited,
+      reason: String(reason || 'connection_closed').slice(0, 180)
+    });
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._stopped && !this._kickedOrBanned) {
@@ -1943,7 +2077,18 @@ class BotRunner extends EventEmitter {
   /**
    * Evaluate priority-0 Survival Reflexes (`MASTER_SPEC.md` §6: Survival > Safety > Operator > Task).
    */
-  async checkSurvivalReflexes() {
+  checkSurvivalReflexes() {
+    if (this._stopped) return Promise.resolve(null);
+    if (this._survivalCheckPromise) return this._survivalCheckPromise;
+    let pending;
+    pending = this._runSurvivalReflexes().finally(() => {
+      if (this._survivalCheckPromise === pending) this._survivalCheckPromise = null;
+    });
+    this._survivalCheckPromise = pending;
+    return pending;
+  }
+
+  async _runSurvivalReflexes() {
     const raw = await this._driver.captureState();
     if (!raw.connected) return null;
 
@@ -1954,19 +2099,28 @@ class BotRunner extends EventEmitter {
       const wasPaused = this._activeLease ? this._activeLease.paused : false;
       if (this._activeLease) this._activeLease.paused = true;
 
-      const ate = await this._driver.eatFoodIfPossible();
+      let recovered = await this._driver.eatFoodIfPossible();
       const trigger = raw.health <= minHealth ? 'low_health' : 'starving';
+      if (!recovered && raw.food <= minFood && raw.health > minHealth && typeof this._driver.huntForFoodIfNeeded === 'function') {
+        const deadline = Date.now() + 18_000;
+        while (!recovered && !this._stopped && Date.now() < deadline) {
+          const hunt = await this._driver.huntForFoodIfNeeded();
+          recovered = Boolean(hunt?.ate);
+          if (recovered || ['no_edible_animal_in_range', 'inventory_full', 'food_hunt_failed'].includes(hunt?.reason)) break;
+          if (!recovered) await new Promise((resolve) => setTimeout(resolve, 450));
+        }
+      }
       const overridePayload = {
         botId: this.botId,
         trigger,
         health: raw.health,
         food: raw.food,
-        recovered: ate,
+        recovered,
         assignmentId: this._activeLease?.assignment?.assignmentId || null
       };
       this.emit('survival_override', overridePayload);
 
-      if (ate && this._activeLease && !wasPaused) {
+      if (recovered && this._activeLease && !wasPaused) {
         this._activeLease.paused = false;
       }
       return overridePayload;
@@ -1981,14 +2135,15 @@ class BotRunner extends EventEmitter {
       : this._activeLease && !this._activeLease.cancelled && !this._activeLease.fenced
         ? 'busy'
         : 'ready';
+    const connected = Boolean(raw.connected);
     return {
       botId: this.botId,
       status,
-      dimension: raw.dimension || 'minecraft:overworld',
-      position: raw.position || { x: 0, y: 64, z: 0 },
-      health: raw.health ?? 20,
-      food: raw.food ?? 20,
-      heldItem: raw.heldTool
+      dimension: connected ? (raw.dimension || 'minecraft:overworld') : 'unknown',
+      position: connected ? (raw.position || null) : null,
+      health: connected ? (raw.health ?? null) : null,
+      food: connected ? (raw.food ?? null) : null,
+      heldItem: connected && raw.heldTool
         ? {
             name: raw.heldTool.itemKey,
             count: 1,
@@ -1996,8 +2151,8 @@ class BotRunner extends EventEmitter {
             maxDurability: 250
           }
         : null,
-      inventoryItems: raw.inventoryItems || [],
-      freeSlots: raw.freeSlots ?? 18,
+      inventoryItems: connected ? (raw.inventoryItems || []) : [],
+      freeSlots: connected ? (raw.freeSlots ?? null) : null,
       assignedTaskId: this._activeLease?.assignment?.taskId || null
     };
   }
@@ -2047,6 +2202,18 @@ class BotRunner extends EventEmitter {
       return this._driver.listOnlinePlayers();
     }
     return [];
+  }
+
+  async sendChatMessage(message) {
+    const text = String(message || '').trim();
+    if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
+      return { ok: false, reason: 'invalid_message' };
+    }
+    if (!this._driver.connected) return { ok: false, reason: 'not_connected' };
+    if (typeof this._driver.sendChatMessage !== 'function') {
+      return { ok: false, reason: 'chat_not_supported' };
+    }
+    return this._driver.sendChatMessage(text);
   }
 
   async executeTacticalOrder(order = {}) {

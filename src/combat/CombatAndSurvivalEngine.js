@@ -24,6 +24,8 @@ const HOSTILE_MOBS = new Set([
   'breeze', 'silverfish', 'endermite', 'guardian', 'elder_guardian', 'shulker'
 ]);
 
+const FOOD_MOBS = new Set(['cow', 'mooshroom', 'pig', 'sheep', 'chicken', 'rabbit']);
+
 const FOOD_SCORES = Object.freeze({
   golden_carrot: 30,
   cooked_beef: 29,
@@ -311,6 +313,7 @@ class CombatAndSurvivalEngine {
     this.tacticalState = {
       mode: 'idle',
       targetPlayer: null,
+      targetPosition: null,
       itemFilter: null,
       slotIndex: 0,
       slotTotal: 1,
@@ -323,6 +326,9 @@ class CombatAndSurvivalEngine {
     this._lastEatMs = 0;
     this._strafeDir = 1;
     this._eatingNow = false;
+    this._foodHuntBusy = false;
+    this._foodHuntTarget = null;
+    this._foodHuntFailedUntil = new Map();
   }
 
   setTacticalOrder(order = {}) {
@@ -339,10 +345,16 @@ class CombatAndSurvivalEngine {
     if (typeof order.autoEat === 'boolean') this.autoEatEnabled = order.autoEat;
     if (typeof order.autoArmor === 'boolean') this.autoArmorEnabled = order.autoArmor;
 
+    if (mode !== 'goto') {
+      this._gotoGoalKey = null;
+      this._gotoStartedAt = 0;
+    }
+
     if (mode === 'stop' || mode === 'idle') {
       this.tacticalState = {
         mode: 'idle',
         targetPlayer: null,
+        targetPosition: null,
         itemFilter: null,
         slotIndex: 0,
         slotTotal: 1,
@@ -351,9 +363,14 @@ class CombatAndSurvivalEngine {
       return this.tacticalState;
     }
 
+    const targetPosition = order.targetPosition &&
+      [order.targetPosition.x, order.targetPosition.y, order.targetPosition.z].every((v) => Number.isFinite(Number(v)))
+      ? { x: Number(order.targetPosition.x), y: Number(order.targetPosition.y), z: Number(order.targetPosition.z) }
+      : null;
     this.tacticalState = {
       mode,
       targetPlayer: order.targetPlayer ? String(order.targetPlayer).trim() : null,
+      targetPosition: mode === 'goto' ? targetPosition : null,
       itemFilter: order.itemFilter ? String(order.itemFilter).replace(/^minecraft:/, '').trim() : null,
       slotIndex: Number(order.slotIndex || 0),
       slotTotal: Math.max(1, Number(order.slotTotal || 1)),
@@ -705,16 +722,149 @@ class CombatAndSurvivalEngine {
     return nearest;
   }
 
+  findNearestFoodMob(bot, centerPos, maxRange = 32, excludedIds = null) {
+    if (!bot?.entities || !centerPos) return null;
+    let nearest = null;
+    let nearestDistance = maxRange;
+    for (const ent of Object.values(bot.entities)) {
+      if (!ent?.position || ent === bot.entity || ent.isBaby === true || excludedIds?.has(String(ent.id))) continue;
+      const name = String(ent.name || ent.mobType || '').replace(/^minecraft:/, '').toLowerCase();
+      if (!FOOD_MOBS.has(name)) continue;
+      const distance = centerPos.distanceTo(ent.position);
+      if (distance < nearestDistance) {
+        nearest = ent;
+        nearestDistance = distance;
+      }
+    }
+    return nearest;
+  }
+
+  foodItemCount(bot) {
+    return (bot?.inventory?.items?.() || []).reduce((total, item) => {
+      const name = String(item.name || '').replace(/^minecraft:/, '').toLowerCase();
+      return total + ((FOOD_SCORES[name] || 0) > 0 ? Math.max(0, Number(item.count) || 0) : 0);
+    }, 0);
+  }
+
+  shouldHuntForFood(bot) {
+    return Boolean(bot && (bot.food ?? 20) < 16 && this.foodItemCount(bot) === 0);
+  }
+
+  async huntForFoodIfNeeded(bot, moveNearFn, { force = false } = {}) {
+    if ((!force && !this.shouldHuntForFood(bot)) || !bot.entity) {
+      this._foodHuntTarget = null;
+      return { acted: false, reason: 'food_not_needed' };
+    }
+    if (this._foodHuntBusy) return { acted: false, reason: 'food_hunt_busy' };
+    if (typeof bot.inventory?.emptySlotCount === 'function' && bot.inventory.emptySlotCount() <= 0) {
+      return { acted: false, reason: 'inventory_full' };
+    }
+
+    // Hardcore-safe: don't initiate a food hunt while badly hurt or with a nearby threat.
+    if (Number(bot.health) > 0 && Number(bot.health) <= 8) {
+      return { acted: false, reason: 'health_too_low_to_hunt' };
+    }
+    const nearbyThreat = this.findNearestHostileThreat(bot, bot.entity.position, 8);
+    if (nearbyThreat) return { acted: false, reason: 'hostile_threat_nearby' };
+
+    const now = Date.now();
+    for (const [id, expiresAt] of this._foodHuntFailedUntil) {
+      if (expiresAt <= now) this._foodHuntFailedUntil.delete(id);
+    }
+    if (this._foodHuntTarget && now - this._foodHuntTarget.startedAt > 15_000) {
+      this._foodHuntFailedUntil.set(this._foodHuntTarget.mobId, now + 30_000);
+      this._foodHuntTarget = null;
+    }
+    if (!this._foodHuntTarget) {
+      const target = this.findNearestFoodMob(bot, bot.entity.position, 32, new Set(this._foodHuntFailedUntil.keys()));
+      if (!target) return { acted: false, reason: 'no_edible_animal_in_range' };
+      this._foodHuntTarget = {
+        target,
+        mobId: String(target.id ?? `${target.name}:${target.position.x},${target.position.y},${target.position.z}`),
+        name: String(target.name || target.mobType || 'animal'),
+        foodBefore: this.foodItemCount(bot),
+        position: target.position,
+        startedAt: now
+      };
+    }
+
+    const hunt = this._foodHuntTarget;
+    const present = () => {
+      if (hunt.target.isValid === false || (hunt.target.health != null && Number(hunt.target.health) <= 0)) return false;
+      return hunt.target.id == null || !bot.entities || Boolean(bot.entities[hunt.target.id]);
+    };
+    this._foodHuntBusy = true;
+    try {
+      if (present()) {
+        hunt.position = hunt.target.position || hunt.position;
+        const strike = await this.engageTarget(bot, hunt.target, moveNearFn);
+        if (present()) return { acted: Boolean(strike?.acted), targetMob: hunt.name, phase: 'engage' };
+      }
+      if (hunt.position && typeof moveNearFn === 'function') {
+        try { await moveNearFn(hunt.position, 1.25, 2500); } catch { /* allow pickup retry on the next tick */ }
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
+      const foodCollected = Math.max(0, this.foodItemCount(bot) - hunt.foodBefore);
+      this._foodHuntTarget = null;
+      if (foodCollected <= 0) this._foodHuntFailedUntil.set(hunt.mobId, Date.now() + 30_000);
+      const ate = foodCollected > 0 ? await this.autoFeedIfNeeded(bot, false) : false;
+      return { acted: foodCollected > 0, targetMob: hunt.name, foodCollected, ate, phase: 'collect' };
+    } finally {
+      this._foodHuntBusy = false;
+    }
+  }
+
   /**
    * Run periodic autonomous survival + active player/PvP tactical tick.
    */
-  async tick(bot, moveNearFn) {
+  async tick(bot, moveNearFn, setNavigationGoalFn) {
     if (!bot || !bot.entity) return { mode: this.tacticalState.mode, acted: false };
 
     await this.autoEquipBestGear(bot, this.tacticalState.mode === 'attack_player');
     await this.autoFeedIfNeeded(bot, this.tacticalState.mode === 'attack_player');
 
     const mode = this.tacticalState.mode;
+
+    if (mode === 'goto') {
+      const target = this.tacticalState.targetPosition;
+      if (!target) {
+        this.setTacticalOrder({ mode: 'idle' });
+        return { mode, acted: false, reason: 'invalid_target_position' };
+      }
+      const distance = bot.entity.position.distanceTo(target);
+      if (distance <= 1.5) {
+        if (typeof setNavigationGoalFn === 'function') setNavigationGoalFn(null);
+        this.setTacticalOrder({ mode: 'idle' });
+        return { mode, acted: true, arrived: true, distance };
+      }
+      if (this._gotoStartedAt && Date.now() - this._gotoStartedAt > 120_000) {
+        if (typeof setNavigationGoalFn === 'function') setNavigationGoalFn(null);
+        this.setTacticalOrder({ mode: 'idle' });
+        return { mode, acted: false, reason: 'navigation_timeout', distance };
+      }
+      const goalKey = `${target.x},${target.y},${target.z}`;
+      if (this._gotoGoalKey !== goalKey) {
+        if (typeof setNavigationGoalFn !== 'function' || !setNavigationGoalFn(target, 1.25)) {
+          this.setTacticalOrder({ mode: 'idle' });
+          return { mode, acted: false, reason: 'navigation_unavailable', distance };
+        }
+        this._gotoGoalKey = goalKey;
+        this._gotoStartedAt = Date.now();
+      }
+      return { mode, acted: true, distance, targetPosition: target };
+    }
+
+    if (mode === 'hunt_food') {
+      if (this.foodItemCount(bot) > 0) {
+        this.setTacticalOrder({ mode: 'idle' });
+        return { mode: 'hunt_food', acted: false, reason: 'food_available' };
+      }
+      return this.huntForFoodIfNeeded(bot, moveNearFn, { force: true });
+    }
+
+    if (mode === 'idle' && this.shouldHuntForFood(bot)) {
+      return this.huntForFoodIfNeeded(bot, moveNearFn);
+    }
 
     if (mode === 'attack_player' && this.tacticalState.targetPlayer) {
       const targetEnt = this.findPlayerEntity(bot, this.tacticalState.targetPlayer);
@@ -798,6 +948,9 @@ class CombatAndSurvivalEngine {
     }
 
     if (mode === 'hunt_mobs') {
+      if (Number(bot.health) > 0 && Number(bot.health) <= 8) {
+        return { mode, acted: false, reason: 'health_too_low_to_hunt' };
+      }
       const mob = this.findNearestHostileThreat(bot, bot.entity.position, 24);
       if (mob) return this.engageTarget(bot, mob, moveNearFn);
       return { mode, acted: false };
@@ -824,6 +977,7 @@ class CombatAndSurvivalEngine {
 module.exports = {
   CombatAndSurvivalEngine,
   HOSTILE_MOBS,
+  FOOD_MOBS,
   FOOD_SCORES,
   extractItemEnchantments,
   scoreArmorItem,

@@ -6,12 +6,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Writable, PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { performance } = require('node:perf_hooks');
 
 const { createMaster, createWorker, loadConfig, runCli } = require('../../index');
 const { loadDotEnvFile } = require('../../src/config/envFile');
 const { SkillExecutor } = require('../../src/worker/SkillExecutor');
-const { SimulatedBotDriver } = require('../../src/worker/BotRunner');
+const { BotRunner, SimulatedBotDriver } = require('../../src/worker/BotRunner');
+const { WorkerHost } = require('../../src/worker/WorkerHost');
 
 function createCaptureStream() {
   const chunks = [];
@@ -38,6 +40,155 @@ async function waitFor(predicate, { timeoutMs = 6000, intervalMs = 40 } = {}) {
 }
 
 describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () => {
+  it('prints the Minecraft connection failure and retry delay to stderr without requiring a TTY', async () => {
+    const driver = new EventEmitter();
+    driver.connected = false;
+    driver.connect = async () => { throw new Error('connect ECONNREFUSED 203.0.113.2:25565'); };
+    driver.disconnect = async () => {};
+    const runner = new BotRunner({
+      workerId: 'worker-terminal-test',
+      botId: 'bot-terminal-test',
+      username: 'Nexus_Terminal_Test',
+      minecraftConfig: { minecraftHost: 'mc.example.test', minecraftPort: 25565 },
+      driver,
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    // Injected drivers default to simulation behavior; exercise the real connection diagnostics path.
+    runner._simulationMode = false;
+    const originalWrite = process.stderr.write;
+    let terminalOutput = '';
+    process.stderr.write = function capture(chunk) {
+      terminalOutput += String(chunk);
+      return true;
+    };
+    try {
+      await runner.start();
+    } finally {
+      await runner.stop('test_cleanup');
+      process.stderr.write = originalWrite;
+    }
+    assert.match(terminalOutput, /Nexus_Terminal_Test -> mc\.example\.test:25565/);
+    assert.match(terminalOutput, /ECONNREFUSED 203\.0\.113\.2:25565/);
+    assert.match(terminalOutput, /reconnect attempt 1 scheduled in \d+s/);
+  });
+
+  it('watchdog schedules one reconnect if a disconnected driver misses its end event', async () => {
+    const runner = new BotRunner({
+      workerId: 'worker-watchdog-test',
+      botId: 'bot-watchdog-test',
+      driver: { connected: false, async disconnect() {} },
+      reconnectBaseMs: 500
+    });
+    assert.equal(runner.ensureConnected(), true);
+    assert.ok(runner._reconnectTimer);
+    assert.equal(runner.ensureConnected(), false, 'must not schedule duplicate retries');
+    await runner.stop('test_cleanup');
+    assert.equal(runner._reconnectTimer, null);
+  });
+
+  it('keeps Master heartbeats moving while a survival food hunt is still in progress and coalesces overlapping ticks', async () => {
+    let finishSurvival;
+    const survivalPromise = new Promise((resolve) => { finishSurvival = resolve; });
+    let heartbeatCalls = 0;
+    let finishHeartbeat;
+    const worker = Object.create(WorkerHost.prototype);
+    Object.assign(worker, {
+      _stopping: false,
+      _needsReconcile: false,
+      _heartbeatPromise: null,
+      bots: new Map([['bot-01', {
+        botId: 'bot-01',
+        survivalCheckInFlight: false,
+        checkSurvivalReflexes: () => survivalPromise,
+        async getHeartbeatSnapshot() { return { botId: 'bot-01', status: 'ready' }; },
+        getTacticalState() { return { mode: 'idle' }; },
+        async listOnlinePlayers() { return []; },
+        drainWorldObservations() { return []; }
+      }]]),
+      logger: { warn() {} },
+      client: {
+        workerId: 'worker-heartbeat-test',
+        async heartbeat() {
+          heartbeatCalls += 1;
+          return new Promise((resolve) => { finishHeartbeat = resolve; });
+        }
+      }
+    });
+
+    const first = worker.tickHeartbeat();
+    await new Promise((resolve) => setImmediate(resolve));
+    const overlapping = worker.tickHeartbeat();
+    assert.equal(heartbeatCalls, 1, 'a slow heartbeat must not cause concurrent posts');
+    finishHeartbeat({});
+    assert.deepEqual(await first, {});
+    assert.deepEqual(await overlapping, {});
+    finishSurvival();
+  });
+
+  it('coalesces overlapping survival checks for one bot', async () => {
+    let finishCapture;
+    let captureCalls = 0;
+    const runner = new BotRunner({
+      workerId: 'worker-survival-test',
+      botId: 'bot-survival-test',
+      driver: {
+        async captureState() {
+          captureCalls += 1;
+          return new Promise((resolve) => { finishCapture = resolve; });
+        }
+      }
+    });
+    const first = runner.checkSurvivalReflexes();
+    const second = runner.checkSurvivalReflexes();
+    assert.equal(captureCalls, 1);
+    finishCapture({ connected: true, health: 20, food: 20, inventoryItems: [] });
+    assert.equal(await first, null);
+    assert.equal(await second, null);
+    assert.equal(runner.survivalCheckInFlight, false);
+  });
+
+  it('does not fabricate location, health, or hunger for a disconnected bot snapshot', async () => {
+    const runner = new BotRunner({
+      workerId: 'worker-snapshot-test',
+      botId: 'bot-snapshot-test',
+      driver: {
+        connected: false,
+        async captureState() {
+          return { connected: false, position: null, dimension: 'unknown', health: 0, food: 0, inventoryItems: [], freeSlots: 0 };
+        }
+      }
+    });
+    const snapshot = await runner.getHeartbeatSnapshot();
+    assert.equal(snapshot.status, 'disconnected');
+    assert.equal(snapshot.position, null);
+    assert.equal(snapshot.dimension, 'unknown');
+    assert.equal(snapshot.health, null);
+    assert.equal(snapshot.food, null);
+  });
+
+  it('does not mark a build task complete when the driver reports zero verified block changes', async () => {
+    const executor = new SkillExecutor({ leaseSafetyMarginMs: 100, stepIntervalMs: 5 });
+    const driver = {
+      connected: true,
+      async captureState() { return { itemCounts: {} }; },
+      async safeStop() { return { ok: true }; },
+      async performBlockTask() { return { ok: true, verifiedBlocks: 0 }; }
+    };
+    const outcome = await executor.execute({
+      assignment: {
+        assignmentId: '11111111-1111-4111-8111-111111111111', leaseId: '22222222-2222-4222-8222-222222222222',
+        allocationEpoch: 1, taskId: '33333333-3333-4333-8333-333333333333', objectiveId: 'build-shelter',
+        workerId: 'worker-build', botId: 'bot-build', actionType: 'build', quotaQuantity: 1,
+        leaseTtlMs: 10_000, checkpointIntervalMs: 5000
+      },
+      driver,
+      getControlState: () => ({ paused: false, cancelled: false, fenced: false, disconnected: false, monotonicDeadlineMs: performance.now() + 20_000 })
+    });
+    assert.equal(outcome.type, 'failed');
+    assert.equal(outcome.report.failureCode, 'PATH_BLOCKED');
+    assert.match(outcome.report.summary, /without verified block changes/);
+  });
+
   it('E2E-01: Master + WorkerHost (2 bots) enroll, split quota, execute mine skill, verify ledger & record world knowledge over live TCP', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-worker-e2e1-'));
     const cliToken = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -491,6 +642,7 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
     const master = createMaster(masterCfg);
     let w1 = null;
     let w2 = null;
+    let w3 = null;
     try {
       const startInfo = await master.start({ listenHttp: true });
       const masterUrl = `http://127.0.0.1:${startInfo.port}`;
@@ -547,9 +699,37 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
       await w2.start();
       assert.equal(w2.bots.get('bot-01').username, 'Nexus_01');
       assert.equal(w2.bots.get('bot-02').username, 'Nexus_02');
+      await w2.stop();
+      w2 = null;
+
+      // Changing the prefix on the same offline worker uses a fresh bootstrap token to update Master names.
+      const tok3 = master.botRegistry.createBootstrapToken({ createdBy: 'test-prefix-rename' });
+      w3 = createWorker(
+        loadConfig({
+          env: {
+            SWARM_ROLE: 'worker',
+            SWARM_ENV_PROFILE: 'private_offline_test',
+            SWARM_MASTER_URL: masterUrl,
+            SWARM_WORKER_ID: 'worker-sticky',
+            SWARM_BOOTSTRAP_TOKEN: tok3.bootstrapToken,
+            SWARM_WORKER_STATE_PATH: path.join(tmpDir, 'pc2-state.json'),
+            SWARM_BOT_NAME_PREFIX: 'Changed',
+            SWARM_WORKER_BOT_COUNT: '2',
+            SWARM_SPAWN_STAGGER_MS: '0',
+            SWARM_WORKER_SIMULATION: 'true',
+            SWARM_AI_ENABLED: 'false',
+            SWARM_DB_PATH: path.join(tmpDir, 'unused.db'),
+            SWARM_BACKUP_DIR: path.join(tmpDir, 'backups')
+          }
+        })
+      );
+      await w3.start();
+      assert.equal(w3.bots.get('bot-01').username, 'Changed_01');
+      assert.equal(w3.bots.get('bot-02').username, 'Changed_02');
     } finally {
       if (w1) await w1.stop();
       if (w2) await w2.stop();
+      if (w3) await w3.stop();
       await master.stop();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

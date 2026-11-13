@@ -427,6 +427,51 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
       assert.equal(resDict.status, 200);
       const bodyDict = await resDict.json();
       assert.ok(Array.isArray(bodyDict.dictionary.rootCommands) && bodyDict.dictionary.rootCommands.length >= 20);
+      const survivalRoots = bodyDict.dictionary.rootCommands.map((command) => command.name);
+      for (const command of ['food', 'hunt', 'tree', 'goto']) assert.ok(survivalRoots.includes(command), `${command} is served for autocomplete`);
+      assert.ok(!survivalRoots.includes('mobs'), 'duplicate mobs alias is accepted by dispatch but not advertised as a second hunt command');
+
+      master.httpServer._staticCache.set(path.resolve(__dirname, '../../src/dashboard/public/app.js'), {
+        buffer: Buffer.from('stale cached dashboard script'),
+        size: 29,
+        mtimeMs: 0
+      });
+      const servedApp = await fetch(`http://127.0.0.1:${port}/app.js`, {
+        headers: { Authorization: `Bearer ${cliToken}` }
+      });
+      assert.equal(servedApp.status, 200);
+      const servedAppText = await servedApp.text();
+      assert.match(servedAppText, /mode: verb === 'food' \? 'hunt_food' : 'hunt_mobs'/);
+      assert.match(servedAppText, /Tree chopping dispatched/);
+      assert.match(servedAppText, /mode: 'goto'/);
+      assert.match(servedAppText, /forceAI: true/);
+      assert.match(servedAppText, /conversationContext/);
+      assert.match(servedAppText, /Answer clarification/);
+      assert.match(servedAppText, /Estimated arrival in/);
+      assert.match(servedAppText, /sampleBotMovement/);
+      assert.match(servedAppText, /Last \/goto/);
+      assert.match(servedAppText, /Last H:/);
+      assert.match(servedAppText, /telemetry stale/);
+      assert.match(servedAppText, /add-worker-master-url/);
+      assert.match(servedAppText, /worker cannot use localhost/);
+      const servedDashboard = await fetch(`http://127.0.0.1:${port}/`, {
+        headers: { Authorization: `Bearer ${cliToken}` }
+      });
+      assert.equal(servedDashboard.status, 200);
+      const servedHtml = await servedDashboard.text();
+      assert.match(servedHtml, /AI CONTROL CHAT/);
+      assert.match(servedHtml, /Live Bot Status &amp; Navigation/);
+      assert.match(servedHtml, /botMetrics.js/);
+      const servedBotMetrics = await fetch(`http://127.0.0.1:${port}/botMetrics.js`, {
+        headers: { Authorization: `Bearer ${cliToken}` }
+      });
+      assert.equal(servedBotMetrics.status, 200);
+      assert.match(await servedBotMetrics.text(), /deriveGotoEta/);
+      assert.match(servedHtml, /ai-chat-messages/);
+      assert.match(servedHtml, /AI CONTROL/);
+      assert.match(servedHtml, /AI Surroundings Viewer/);
+      assert.match(servedHtml, /surroundings-canvas/);
+      assert.match(servedHtml, /Master URL reachable from Linux/);
 
       const resRoot = await fetch(
         `http://127.0.0.1:${port}/api/v1/commands/autocomplete?q=${encodeURIComponent('mi')}`,

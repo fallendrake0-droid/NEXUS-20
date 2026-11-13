@@ -4,13 +4,13 @@ const crypto = require('node:crypto');
 const { BUILTIN_SCHEMATICS } = require('../schematics/SchematicBuilder');
 
 /**
- * NEXUS-20 Zero-AI Command & Progression Engine (1,300+ Deterministic Commands, £0 / 0 LLM Calls).
+ * NEXUS-20 Zero-AI Command & Progression Engine (curated Deterministic Commands, £0 / 0 LLM Calls).
  *
  * Covers:
  * - Natural-language offline command parsing ("collect 64 logs", "collect stone",
  *   "get stone tools", "mine iron, gold, diamonds", "smelt 32 iron", "build watchtower", etc.)
  * - Multi-step DAG progression kits (Wooden -> Stone -> Iron -> Diamond -> Netherite -> Mace/Spear PvP)
- * - 1,350+ structured one-click command presets across 14 survival, combat, crafting & building categories
+ * - curated structured one-click command presets across 14 survival, combat, crafting & building categories
  */
 
 const RESOURCE_SYNONYMS = Object.freeze({
@@ -452,7 +452,7 @@ const PROGRESSION_KITS = Object.freeze({
 });
 
 /**
- * Generate the full 1,350+ deterministic Zero-AI command catalog.
+ * Generate a deduplicated deterministic Zero-AI command catalog.
  */
 function buildMasterCommandCatalog() {
   const catalog = [];
@@ -478,8 +478,6 @@ function buildMasterCommandCatalog() {
     'mangrove', 'cherry', 'pale_oak', 'crimson', 'warped'
   ];
   const woodQtys = [8, 16, 32, 64, 128, 256];
-  add('wood', 'Collect 64 Logs (Any Nearby Trees)', 'collect 64 logs', ['wood', 'logs', 'popular']);
-  add('wood', 'Collect 32 Logs (Quick Timber)', 'collect 32 logs', ['wood', 'logs']);
   for (const w of woods) {
     const suffix = w === 'crimson' || w === 'warped' ? 'stem' : 'log';
     for (const q of woodQtys) {
@@ -686,7 +684,7 @@ function buildMasterCommandCatalog() {
     }
   }
 
-  // 11. Schematics & Base Construction (All 16 Blueprints + Guarded Variants = 32 commands)
+  // 11. Schematics & Base Construction (All built-in Blueprints + Guarded Variants)
   for (const sch of BUILTIN_SCHEMATICS.values()) {
     add('schematics', `Build Schematic: ${sch.name}`, `build schematic ${sch.schematicId}`, ['schematic', sch.schematicId, sch.category]);
     add('schematics', `Build ${sch.name} + Guard`, `build schematic ${sch.schematicId} while one bot guards`, ['schematic', 'guard', sch.schematicId]);
@@ -702,8 +700,6 @@ function buildMasterCommandCatalog() {
   for (const sec of sectors) {
     add('recon_guard', `Explore ${sec.replace(/_/g, ' ')}`, `explore ${sec}`, ['explore', sec]);
     add('recon_guard', `Guard ${sec.replace(/_/g, ' ')}`, `guard ${sec}`, ['guard', sec]);
-    add('recon_guard', `Inspect ${sec.replace(/_/g, ' ')}`, `inspect ${sec}`, ['inspect', sec]);
-    add('recon_guard', `Repair ${sec.replace(/_/g, ' ')}`, `repair ${sec}`, ['repair', sec]);
   }
   const deposits = [
     'cobblestone', 'oak_log', 'coal', 'raw_iron', 'iron_ingot', 'raw_gold',
@@ -716,7 +712,48 @@ function buildMasterCommandCatalog() {
     }
   }
 
-  return Object.freeze(catalog);
+  // A command library should expose different jobs, not hundreds of quantity-only copies.
+  // Keep one useful quantity per action/resource and retain genuinely different roles,
+  // combinations, schematics, and progression kits.
+  const curated = new Map();
+  const quantityScore = (text) => {
+    const quantities = String(text).match(/\b\d+\b/g) || [];
+    return quantities.reduce((score, raw) => score + Math.abs(Number(raw) - 32), 0);
+  };
+  for (const item of catalog) {
+    const normalized = item.commandText.toLowerCase().trim();
+    const familyKey = normalized.replace(/\b\d+\b/g, '#');
+    const previous = curated.get(familyKey);
+    if (!previous || quantityScore(normalized) < quantityScore(previous.commandText)) {
+      curated.set(familyKey, item);
+    }
+  }
+
+  const unique = Array.from(curated.values());
+  const addUseful = (category, label, commandText, tags = []) => {
+    const key = commandText.toLowerCase().trim().replace(/\b\d+\b/g, '#');
+    if (curated.has(key)) return;
+    const item = { category, label, commandText, tags };
+    curated.set(key, item);
+    unique.push(item);
+  };
+  // Survival actions are intentionally distinct from ordinary material quantity presets.
+  addUseful('survival', 'Hunt nearby animals for food', 'food', ['survival', 'food', 'animals']);
+  addUseful('combat', 'Clear nearby hostile mobs', 'hunt', ['combat', 'defense', 'hostiles']);
+  addUseful('survival', 'Chop nearby trees for starter timber', 'tree 16', ['survival', 'wood', 'starter']);
+  addUseful('survival', 'Build a compact starter shelter', 'build starter_shelter', ['survival', 'shelter', 'base']);
+  addUseful('farming', 'Prepare a crop plot with irrigation space', 'build crop_farm_9x9', ['food', 'farm', 'base']);
+  addUseful('defense', 'Build a safe perimeter wall', 'build perimeter_trench', ['defense', 'base', 'mobs']);
+  addUseful('exploration', 'Scout the spawn area for resources', 'explore spawn_basin', ['scout', 'resources']);
+  addUseful('defense', 'Guard the base perimeter', 'guard base_perimeter', ['guard', 'base', 'survival']);
+
+  return Object.freeze(unique.map((item, index) => Object.freeze({
+    id: `cmd_${String(index + 1).padStart(4, '0')}`,
+    category: item.category,
+    label: item.label,
+    commandText: item.commandText,
+    tags: item.tags
+  })));
 }
 
 const MASTER_ZERO_AI_CATALOG = buildMasterCommandCatalog();
@@ -765,7 +802,7 @@ function getCategorySummary() {
 
 /**
  * Extended Deterministic Zero-AI Natural Language Parser.
- * Resolves 1,350+ preset & freeform survival/mining/crafting/smelting/building/guard/logistics intents
+ * Resolves curated presets & freeform survival/mining/crafting/smelting/building/guard/logistics intents
  * into validated `TaskPlanV1` objects with 0 LLM calls.
  */
 function parseExtendedZeroAiIntent(userText, requestId) {
@@ -810,9 +847,13 @@ function parseExtendedZeroAiIntent(userText, requestId) {
 
   // 2. Schematic Build Commands ("build schematic watchtower", "build watchtower", "build castle keep while one bot guards")
   const hasGuardSuffix = /\s+while\s+(?:one|a|1)\s+bot\s+guards$/i.test(norm);
-  const coreBuildText = hasGuardSuffix
+  const withoutGuardSuffix = hasGuardSuffix
     ? norm.replace(/\s+while\s+(?:one|a|1)\s+bot\s+guards$/i, '').trim()
     : norm;
+  const treeCommand = /^(?:tree|chop tree|chop trees)(?:\s+(\d+))?$/.exec(withoutGuardSuffix);
+  const coreBuildText = treeCommand
+    ? `collect ${treeCommand[1] || 16} oak logs`
+    : withoutGuardSuffix;
 
   const schematicMatch = /^(?:build|construct|place)\s+(?:schematic\s+)?([a-z0-9_ -]{3,48})$/i.exec(coreBuildText);
   if (schematicMatch) {
@@ -918,17 +959,13 @@ function parseExtendedZeroAiIntent(userText, requestId) {
   }
 
   // 4. Guard / Explore / Inspect / Repair / Deposit
-  const sectorVerb = /^(guard|patrol|defend|explore|scout|scan|inspect|check|repair|fix)\s+([a-z0-9_ -]{2,48})$/i.exec(norm);
+  const sectorVerb = /^(guard|patrol|defend|explore|scout|scan)\s+([a-z0-9_ -]{2,48})$/i.exec(norm);
   if (sectorVerb) {
     const v = sectorVerb[1].toLowerCase();
     const kind =
       v === 'guard' || v === 'patrol' || v === 'defend'
         ? 'guard'
-        : v === 'explore' || v === 'scout' || v === 'scan'
-          ? 'explore'
-          : v === 'inspect' || v === 'check'
-            ? 'inspect'
-            : 'repair';
+        : 'explore';
     const label = sectorVerb[2]
       .trim()
       .replace(/^(?:the|around|area)\s+/i, '')
