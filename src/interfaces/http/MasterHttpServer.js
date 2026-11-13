@@ -19,6 +19,7 @@ const STATIC_ASSETS = Object.freeze({
   '/': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/style.css': { file: 'style.css', contentType: 'text/css; charset=utf-8' },
+  '/botMetrics.js': { file: 'botMetrics.js', contentType: 'application/javascript; charset=utf-8' },
   '/app.js': { file: 'app.js', contentType: 'application/javascript; charset=utf-8' }
 });
 
@@ -297,14 +298,17 @@ class MasterHttpServer {
 
   _serveStatic(res, assetDef) {
     const filePath = path.join(DASHBOARD_PUBLIC_DIR, assetDef.file);
-    let buf = this._staticCache.get(filePath);
-    if (!buf) {
-      if (!fs.existsSync(filePath)) {
-        throw new DomainError('NOT_FOUND', 'Dashboard asset not found');
-      }
-      buf = fs.readFileSync(filePath);
-      this._staticCache.set(filePath, buf);
+    if (!fs.existsSync(filePath)) {
+      throw new DomainError('NOT_FOUND', 'Dashboard asset not found');
     }
+    const stat = fs.statSync(filePath);
+    const cached = this._staticCache.get(filePath);
+    let asset = cached;
+    if (!cached || cached.size !== stat.size || cached.mtimeMs !== stat.mtimeMs) {
+      asset = { buffer: fs.readFileSync(filePath), size: stat.size, mtimeMs: stat.mtimeMs };
+      this._staticCache.set(filePath, asset);
+    }
+    const buf = asset.buffer;
     this._monitor?.recordNetworkBytes({ txBytes: buf.byteLength, requestEnded: true });
     res.statusCode = 200;
     res.setHeader('Content-Type', assetDef.contentType);

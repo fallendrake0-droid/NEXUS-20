@@ -168,6 +168,17 @@
           </div>
         </div>
 
+        <div class="panel bot-live-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Live Bot Status &amp; Navigation</h2>
+              <p class="muted compact-sub">Worker telemetry refreshes live. GOTO countdowns are estimates from recent observed movement—not guaranteed path durations.</p>
+            </div>
+            <span class="muted small-label">Health · hunger · position · gear · inventory · task · ETA</span>
+          </div>
+          <div id="bot-detail-grid" class="bot-detail-grid" aria-live="polite"></div>
+        </div>
+
         <div class="two-col">
           <div class="panel">
             <h2>Active Swarm Allocations (Synchronized Sectors &amp; Distributed Quotas)</h2>
@@ -706,6 +717,7 @@
     </main>
   </div>
 
+  <script src="/botMetrics.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

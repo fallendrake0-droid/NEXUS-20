@@ -23,7 +23,10 @@
     lastStatus: null,
     aiChatHistory: [],
     aiPendingClarificationTaskId: null,
-    aiChatSending: false
+    aiChatSending: false,
+    botMotionById: new Map(),
+    gotoEtaByBot: new Map(),
+    botUiTimer: null
   };
 
   const el = (id) => document.getElementById(id);
@@ -133,6 +136,8 @@
     el('actor-badge').textContent = actor.username + ' (' + actor.role + ')';
     connectSse();
     refreshAll();
+    clearInterval(state.botUiTimer);
+    state.botUiTimer = setInterval(updateBotCountdownLabels, 1000);
     clearInterval(state.pollTimer);
     state.pollTimer = setInterval(() => {
       if (!document.hidden) refreshAll();
@@ -304,8 +309,270 @@
       (dimension ? ' · ' + dimension : '') + '. Map shows reports only; unseen terrain is not guessed.';
   }
 
+  function hasFiniteCoordinate(value) {
+    return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+  }
+
+  function positionKey(position) {
+    if (!position || ![position.x, position.y, position.z].every(hasFiniteCoordinate)) return null;
+    return [Number(position.x), Number(position.y), Number(position.z)].join(',');
+  }
+
+  function sampleBotMovement(st) {
+    const changedBotIds = new Set();
+    const seen = new Set();
+    const nowMs = Date.now();
+    for (const bot of st.bots || []) {
+      const botId = String(bot.botId || '');
+      if (!botId) continue;
+      seen.add(botId);
+      const position = bot.snapshot?.position;
+      const key = positionKey(position);
+      if (!key) continue;
+      const revision = String(bot.updatedAt || bot.snapshot?.capturedAt || key);
+      const revisionTimeMs = Date.parse(revision);
+      const previous = state.botMotionById.get(botId);
+      if (previous && previous.revision === revision) continue;
+      if (previous && Number.isFinite(revisionTimeMs) && Number.isFinite(previous.revisionTimeMs) && revisionTimeMs < previous.revisionTimeMs) continue;
+      const next = previous || { revision: '', revisionTimeMs: null, position: null, receivedAtMs: null, latestTelemetryAtMs: null, lastMovedAtMs: null, speedSamples: [] };
+      const receivedAtMs = nowMs;
+      if (previous && previous.position && previous.receivedAtMs) {
+        const distance = window.NexusBotMetrics.distance3D(previous.position, position);
+        const elapsedSec = (receivedAtMs - previous.receivedAtMs) / 1000;
+        if (Number.isFinite(distance) && distance > 0.1) {
+          next.lastMovedAtMs = receivedAtMs;
+          changedBotIds.add(botId);
+          if (elapsedSec >= 0.5 && elapsedSec <= 30) {
+            const speed = distance / elapsedSec;
+            if (speed >= 0.15 && speed <= 10) {
+              next.speedSamples.push({ speed, atMs: receivedAtMs });
+              next.speedSamples = next.speedSamples.filter((sample) => receivedAtMs - sample.atMs <= 30_000).slice(-5);
+            }
+          }
+        }
+      } else {
+        next.lastMovedAtMs = receivedAtMs;
+      }
+      next.revision = revision;
+      if (Number.isFinite(revisionTimeMs)) next.revisionTimeMs = revisionTimeMs;
+      next.position = { x: Number(position.x), y: Number(position.y), z: Number(position.z) };
+      next.receivedAtMs = receivedAtMs;
+      next.latestTelemetryAtMs = receivedAtMs;
+      state.botMotionById.set(botId, next);
+    }
+    for (const botId of state.botMotionById.keys()) {
+      if (!seen.has(botId)) {
+        state.botMotionById.delete(botId);
+        state.gotoEtaByBot.delete(botId);
+      }
+    }
+    return changedBotIds;
+  }
+
+  function refreshGotoEtaEstimates(st, changedBotIds) {
+    const nowMs = Date.now();
+    const activeGotoIds = new Set();
+    for (const bot of st.bots || []) {
+      const botId = String(bot.botId || '');
+      const tactical = bot.tacticalState || {};
+      if (tactical.mode !== 'goto' || !tactical.targetPosition || !bot.snapshot?.position) {
+        if (state.gotoEtaByBot.has(botId)) state.gotoEtaByBot.delete(botId);
+        continue;
+      }
+      activeGotoIds.add(botId);
+      const target = tactical.targetPosition;
+      const targetKey = positionKey(target);
+      const distance = window.NexusBotMetrics.distance3D(bot.snapshot.position, target);
+      const motion = state.botMotionById.get(botId);
+      const estimate = window.NexusBotMetrics.deriveGotoEta({
+        distance,
+        speedSamples: motion?.speedSamples || [],
+        nowMs,
+        latestTelemetryAtMs: motion?.latestTelemetryAtMs,
+        lastMovedAtMs: motion?.lastMovedAtMs
+      });
+      const previous = state.gotoEtaByBot.get(botId);
+      const changedTarget = !previous || previous.targetKey !== targetKey;
+      const freshPosition = changedBotIds.has(botId);
+      let etaAtMs = changedTarget ? null : previous.etaAtMs;
+      if (estimate.status === 'estimated' && (changedTarget || freshPosition || !Number.isFinite(etaAtMs))) {
+        etaAtMs = nowMs + estimate.seconds * 1000;
+      } else if (estimate.status !== 'estimated') {
+        etaAtMs = null;
+      }
+      state.gotoEtaByBot.set(botId, { targetKey, target: { x: Number(target.x), y: Number(target.y), z: Number(target.z) }, distance, estimate, etaAtMs, measuredAtMs: nowMs });
+    }
+    for (const botId of state.gotoEtaByBot.keys()) {
+      if (!activeGotoIds.has(botId)) state.gotoEtaByBot.delete(botId);
+    }
+  }
+
+  function formatTelemetryAge(updatedAt) {
+    const timestamp = Date.parse(updatedAt || '');
+    if (!Number.isFinite(timestamp)) return 'Age unknown';
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    if (seconds < 60) return 'Updated ' + seconds + 's ago';
+    if (seconds < 3600) return 'Updated ' + Math.floor(seconds / 60) + 'm ago';
+    return 'Updated ' + Math.floor(seconds / 3600) + 'h ago';
+  }
+
+  function formatBotCoordinate(value) {
+    return hasFiniteCoordinate(value) ? Number(value).toFixed(1).replace(/\.0$/, '') : 'unknown';
+  }
+
+  function appendBotMetric(parent, label, value, detail = '') {
+    const metric = document.createElement('div');
+    metric.className = 'bot-detail-metric';
+    const title = document.createElement('span');
+    title.className = 'bot-detail-label';
+    title.textContent = label;
+    const main = document.createElement('strong');
+    main.textContent = value;
+    metric.append(title, main);
+    if (detail) {
+      const secondary = document.createElement('small');
+      secondary.textContent = detail;
+      metric.appendChild(secondary);
+    }
+    parent.appendChild(metric);
+    return metric;
+  }
+
+  function gotoCountdownText(botId) {
+    const eta = state.gotoEtaByBot.get(botId);
+    if (!eta) return 'No active /goto order';
+    const nowMs = Date.now();
+    const recalculated = window.NexusBotMetrics.deriveGotoEta({
+      distance: eta.distance,
+      speedSamples: state.botMotionById.get(botId)?.speedSamples || [],
+      nowMs,
+      latestTelemetryAtMs: state.botMotionById.get(botId)?.latestTelemetryAtMs,
+      lastMovedAtMs: state.botMotionById.get(botId)?.lastMovedAtMs
+    });
+    if (recalculated.status === 'near_target') return 'Within 1.5 blocks · waiting for worker arrival confirmation';
+    if (recalculated.status === 'stale') return 'ETA paused · bot telemetry is stale';
+    if (recalculated.status === 'stationary') return 'ETA unavailable · no recent movement observed';
+    if (recalculated.status === 'sampling') return 'Measuring movement · ETA not available yet';
+    if (recalculated.status !== 'estimated' || !Number.isFinite(eta.etaAtMs)) return 'ETA unavailable';
+    const remaining = Math.max(0, Math.ceil((eta.etaAtMs - nowMs) / 1000));
+    return 'Estimated arrival in ' + window.NexusBotMetrics.formatCountdown(remaining);
+  }
+
+  function updateBotCountdownLabels() {
+    const labels = document.querySelectorAll('[data-goto-countdown-bot]');
+    for (const label of labels) label.textContent = gotoCountdownText(label.dataset.gotoCountdownBot);
+  }
+
+  function renderBotDetailCards(st) {
+    const grid = el('bot-detail-grid');
+    if (!grid) return;
+    clearChildren(grid);
+    const bots = st.bots || [];
+    if (bots.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No registered bots yet. Bot details appear here when workers report real telemetry.';
+      grid.appendChild(empty);
+      return;
+    }
+    const assignments = new Map((st.activeAssignments || []).map((assignment) => [String(assignment.botId), assignment]));
+    for (const bot of bots) {
+      const botId = String(bot.botId || 'unknown');
+      const snap = bot.snapshot || {};
+      const card = document.createElement('article');
+      card.className = 'bot-detail-card';
+      const header = document.createElement('div');
+      header.className = 'bot-detail-card-heading';
+      const title = document.createElement('h3');
+      title.textContent = bot.username ? bot.username + ' · ' + botId : botId;
+      const status = document.createElement('span');
+      status.className = 'bot-state-badge ' + String(bot.connectionState || 'unknown').toLowerCase();
+      status.textContent = String(bot.connectionState || 'unknown') + (bot.enabled ? '' : ' · disabled');
+      header.append(title, status);
+      card.appendChild(header);
+
+      const vitals = document.createElement('div');
+      vitals.className = 'bot-vitals-grid';
+      for (const vital of [
+        { name: 'Health', value: snap.health, band: snap.healthBand, unit: 'HP' },
+        { name: 'Hunger', value: snap.food, band: snap.foodBand, unit: '/ 20' }
+      ]) {
+        const wrap = document.createElement('div');
+        wrap.className = 'bot-vital';
+        const label = document.createElement('div');
+        label.className = 'bot-detail-label';
+        label.textContent = vital.name;
+        const value = document.createElement('strong');
+        value.textContent = Number.isFinite(vital.value) ? Number(vital.value).toFixed(1) + ' ' + vital.unit : 'Unknown';
+        wrap.append(label, value);
+        if (Number.isFinite(vital.value)) {
+          const bar = document.createElement('progress');
+          bar.max = 20;
+          bar.value = Math.max(0, Math.min(20, vital.value));
+          bar.setAttribute('aria-label', vital.name + ' ' + value.textContent);
+          wrap.appendChild(bar);
+        }
+        const band = document.createElement('small');
+        band.textContent = 'Condition: ' + String(vital.band || 'unknown');
+        wrap.appendChild(band);
+        vitals.appendChild(wrap);
+      }
+      card.appendChild(vitals);
+
+      const metrics = document.createElement('div');
+      metrics.className = 'bot-detail-metrics';
+      const position = snap.position;
+      appendBotMetric(metrics, 'Position', position
+        ? formatBotCoordinate(position.x) + ', ' + formatBotCoordinate(position.y) + ', ' + formatBotCoordinate(position.z)
+        : 'Unknown', String(snap.dimension || 'Dimension unknown'));
+      appendBotMetric(metrics, 'Worker / server', String(bot.workerId || 'unknown'), String(bot.serverId || 'server unknown'));
+      appendBotMetric(metrics, 'Current action', assignments.get(botId)
+        ? String(assignments.get(botId).actionType || 'working') + (assignments.get(botId).resourceId ? ' · ' + assignments.get(botId).resourceId : '')
+        : (bot.tacticalState?.mode && bot.tacticalState.mode !== 'idle' ? String(bot.tacticalState.mode) : 'Idle'),
+      assignments.has(botId) ? 'Verified progress ' + String(assignments.get(botId).creditedQuantity ?? 0) +
+        (assignments.get(botId).quotaQuantity !== null ? ' / ' + assignments.get(botId).quotaQuantity : '') : 'No active task lease');
+      const tool = snap.activeTool;
+      appendBotMetric(metrics, 'Held tool', tool ? String(tool.name || tool.itemKey || 'unknown') : 'None reported',
+        tool ? 'Durability: ' + String(tool.durabilityBand || (Number.isFinite(tool.remainingDurability) ? tool.remainingDurability + ' remaining' : 'unknown')) : '');
+      appendBotMetric(metrics, 'Inventory space', Number.isFinite(snap.freeSlots) ? snap.freeSlots + ' free slots' : 'Unknown',
+        Number.isFinite(snap.occupiedSlots) ? snap.occupiedSlots + ' occupied slots' : '');
+      appendBotMetric(metrics, 'Telemetry', formatTelemetryAge(bot.updatedAt), 'Connection: ' + String(bot.connectionState || 'unknown'));
+      card.appendChild(metrics);
+
+      const items = Object.entries(snap.itemCounts || {})
+        .filter(([, count]) => Number.isFinite(Number(count)) && Number(count) > 0)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, 8);
+      const inventory = document.createElement('div');
+      inventory.className = 'bot-inventory-summary';
+      const inventoryHeading = document.createElement('strong');
+      inventoryHeading.textContent = 'Inventory snapshot';
+      const inventoryText = document.createElement('p');
+      inventoryText.textContent = items.length ? items.map(([name, count]) => String(name).replace(/^minecraft:/, '') + ' × ' + count).join(' · ') : 'No item counts reported';
+      inventory.append(inventoryHeading, inventoryText);
+      card.appendChild(inventory);
+
+      if (bot.tacticalState?.mode === 'goto' && bot.tacticalState.targetPosition) {
+        const target = bot.tacticalState.targetPosition;
+        const navigation = document.createElement('div');
+        navigation.className = 'bot-goto-countdown';
+        const label = document.createElement('strong');
+        label.textContent = ' /goto → ' + [target.x, target.y, target.z].map(formatBotCoordinate).join(', ');
+        const countdown = document.createElement('span');
+        countdown.dataset.gotoCountdownBot = botId;
+        countdown.textContent = gotoCountdownText(botId);
+        navigation.append(label, countdown);
+        card.appendChild(navigation);
+      }
+      grid.appendChild(card);
+    }
+  }
+
   function renderStatus(st) {
     state.lastStatus = st;
+    const changedBotIds = sampleBotMovement(st);
+    refreshGotoEtaEstimates(st, changedBotIds);
+    renderBotDetailCards(st);
     if (st.envProfile) state.envProfile = st.envProfile;
     const masterUrlInput = el('add-worker-master-url');
     if (masterUrlInput && !masterUrlInput.value) masterUrlInput.value = window.location.origin;
@@ -1398,6 +1665,10 @@
     sessionStorage.removeItem('nexus_csrf');
     if (state.sse) state.sse.close();
     clearInterval(state.pollTimer);
+    clearInterval(state.botUiTimer);
+    state.botUiTimer = null;
+    state.botMotionById.clear();
+    state.gotoEtaByBot.clear();
     renderAuthScreen(false);
   });
 
