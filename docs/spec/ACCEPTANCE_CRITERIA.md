@@ -1,166 +1,92 @@
-# Acceptance Criteria and Delivery Gates
+# Acceptance Criteria, Staged Rollout & Open Decisions
 
-**Specification:** 1.0.0  
-**Release status:** Not yet implemented or tested by this specification.  
-**Rule:** A stage cannot advance until its required evidence is attached to the repository.
+**Document:** `docs/spec/ACCEPTANCE_CRITERIA.md`  
+**Specification version:** 1.1.0  
+**Related:** `MASTER_SPEC.md`, `TEST_PLAN.md`, `PERFORMANCE_PLAN.md`
 
-## 1. Global invariants
+---
 
-| ID | Acceptance criterion | Evidence |
-|---|---|---|
-| G-01 | One authoritative TaskManager owns tasks, objective state, leases and progress | Unit/integration tests and architecture review |
-| G-02 | Dashboard, CLI and chat route through the same Coordinator | End-to-end tests showing identical task IDs/state |
-| G-03 | Shared quantity target is aggregate, never multiplied by bot count | Two-bot test for target 100 with quotas summing to 100 |
-| G-04 | One bot is selected when extra bots do not produce material improvement | Scheduler regression test |
-| G-05 | Multiple bots are selected only when feasible and expected improvement passes threshold | Benchmark-backed allocation decision record |
-| G-06 | Dependencies are acyclic and respected | DAG validation and execution-order test |
-| G-07 | Actual inventory/evidence is verified before progress is credited | InventoryLedger tests |
-| G-08 | Duplicate/stale worker events cannot double-credit | Idempotency and epoch-fencing tests |
-| G-09 | Worker loss is reconciled before its unverified quota is reassigned | Failure-injection test |
-| G-10 | AI output cannot directly execute game actions | Schema/policy/security tests |
-| G-11 | Deterministic supported tasks work without Ollama | Offline fallback test |
-| G-12 | No paid inference/API fallback exists | Config inspection and network test |
-| G-13 | Phone runs no local LLM and no twenty-client production load | Deployment configuration review |
-| G-14 | No server authentication, anti-cheat, access or connection limits are bypassed | Security test and operator config review |
-| G-15 | All external protocols are versioned and strictly validated | Contract tests |
-| G-16 | Persistence survives restart and backup is restorable | Restart and restore test |
-| G-17 | Logs, queues, caches and dashboard clients are bounded | Stress/overflow tests |
-| G-18 | No untested package or Minecraft compatibility is represented as supported | Compatibility matrix review |
+## 1. Automated Release Gates (`G-01 .. G-18`)
 
-## 2. Stage 0 — coordinator foundation (zero bots)
+No stage is complete until every gate below passes in automated tests without manual log inspection:
 
-Must pass:
-- Config validation and secret redaction.
-- StateStore migrations and restart recovery.
-- Coordinator routes for dashboard, CLI and mock chat adapter.
-- Task and objective lifecycle.
-- Scheduler unit/property tests with fake bots.
-- Worker protocol schemas and authentication.
-- Dashboard login, CSRF, roles and safe session handling.
-- ResourceMonitor and bounded queues.
-- Ollama unavailable fallback.
-- No real Minecraft account or bot connection required.
+| Gate | Requirement | Automated Verification | Pass Threshold |
+|---|---|---|---|
+| `G-01` | Phone lightweight separation | Dependency & module graph scan on Master entrypoint | `0` imports of `mineflayer`, `prismarine-world`, `mineflayer-pathfinder`, or `minecraft-data` |
+| `G-02` | Hard 20-bot ceiling | `config.test.js` + `WorkerRegistry` + `TaskScheduler` | `globalMaxBots > 20` rejected; active assignments `<= min(20, enabledBots, serverCap, hostCaps)` |
+| `G-03` | Single-bot preference | `taskScheduler.test.js` (`Q=1` craft & high-travel small mine) | Selects `1` bot (`100%` of cases where multi-bot gain `< 10%`) |
+| `G-04` | Subset & swarm scaling | `taskScheduler.test.js` (contended vs wide uncontested batch) | Selects subset `1 < |S| < |E|` under contention and `|E|` when uncontested & faster |
+| `G-05` | Single aggregate quota conservation | Fuzz `1,000` `splitQuota` runs + SQLite `CHECK` constraints | `sum(quotas) === remaining` and `verified + reserved <= target` (`0` violations) |
+| `G-06` | DAG dependency enforcement | `taskManager.test.js` (`logs -> planks -> sticks -> pickaxe`) | `0` assignments offered for dependent objective before predecessors reach `completed` |
+| `G-07` | Anti-false-progress verification | `inventoryLedger.test.js` (baseline stock, wrong item, drop, craft, transfer) | `0` false credits; two-bot `transferId` preserves exact net count |
+| `G-08` | Lease fencing & idempotency | `persistenceRecovery.test.js` + `workerProtocol.test.js` | Duplicate `messageId` & stale `allocationEpoch` produce `0` duplicate credits |
+| `G-09` | Remote-only bounded AI | `schemaValidator.test.js` + `aiFallback.test.js` | Localhost & paid APIs blocked; `PlanningContextV1 <= 8 KiB`; offline AI degrades cleanly |
+| `G-10` | Unified Coordinator boundary | `coordinatorFlow.test.js` (Dashboard + CLI + Chat) | Identical `TaskSummary` state transitions & RBAC enforcement across all 3 surfaces |
+| `G-11` | Secure auth, CSRF & worker tokens | `authService.test.js` + `workerProtocol.test.js` | RBAC enforced; missing CSRF/Origin `403`; replayed bootstrap or revoked worker `401` |
+| `G-12` | Bounded memory & zero leaks | `npm run test:leaks` (`--expose-gc`) | `0` leaked listeners, `0` ref'd background timers, `< 2.0 MiB` post-GC heap growth |
+| `G-13` | Adaptive pressure without task loss | `governor-and-ai.test.js` + `npm run bench` | `tasksSilentlyDiscarded === 0`; survival/safety preserved `100%`; hysteresis prevents thrash |
+| `G-14` | Termux & Galaxy A06 readiness | `npm run check:termux` | `$HOME` WAL DB + atomic backup pass; unavailable OS metrics report `'unavailable'`, never `0` |
+| `G-15` | Crash recovery | Kill/restart Master mid-task (`persistenceRecovery.test.js`) | Verified progress intact; expired leases reclaimed cleanly on restart |
+| `G-16` | Safe disconnect / server respect | `botController.test.js` | Immediate stop (`retryable: false`) on kick/ban/auth failure; `allowPvp === false` |
+| `G-17` | Coalesced Dashboard responsiveness | `modules.test.js` + `npm run bench` | SSE `<= 1 Hz` normal (`<= 0.2 Hz` critical); slow client dropped without Master stall |
+| `G-18` | Multi-process scale benchmark | `npm run bench` (`0, 1, 2, 5, 10, 20` bots) | `20/20` tasks completed; Master RSS flat (`< 140 MiB` target on `256 MiB` heap cap) |
 
-Exit gate: all stage-0 automated tests pass; no unresolved critical security defects; compatibility decisions recorded.
+---
 
-## 3. Stage 1 — one bot
+## 2. Staged Implementation & Delivery Roadmap (`0 -> 1 -> 2 -> 5 -> 10 -> 20` Bots)
 
-Must pass:
-- One approved worker host registers.
-- One legitimate bot account connects to the private authorised server.
-- Bot reports heartbeat, capabilities and compact snapshots.
-- One simple objective executes deterministically.
-- Initial inventory baseline and final evidence reconcile.
-- Task progress is updated only by the coordinator ledger.
-- Disconnect, death, low food, tool failure and cancellation are safe.
-- Master or worker restart does not duplicate progress.
-- Ollama may be unavailable without affecting supported deterministic actions.
+Coding agents implement and merge in strict stage order so parallel tracks never integrate against unverified foundations:
 
-Exit gate: one-bot end-to-end suite passes, two-hour soak completes without unbounded resource growth, actual benchmark captured.
+### Stage 0 — Architecture Spec & Low-Memory Performance Foundation (**Completed on `main`**)
+- Complete 9-document v1.1.0 specification in `docs/spec/`.
+- Implemented `ResourceMonitor`, `WorkloadGovernor`, `EventBus`, `src/performance/*` (`12` modules), `19/19` tests, `--expose-gc` leak suite, Termux probe, and `0..20` bot benchmark (`be0133f`).
 
-## 4. Stage 2 — two bots (initial target)
+### Stage 1 — Persistence, Schemas, Security & Coordinator Core (`0 -> 1` Simulated Bot)
+- Parallelizable tracks:
+  - **Track 1A:** `loadConfig.js` + `SchemaValidator.js` (compiling all `AI_PROTOCOL.md` schemas).
+  - **Track 1B:** `StateStore.js` (`node:sqlite` WAL migrations + backup) + `AuthService.js`.
+  - **Track 1C:** `InventoryLedger.js` + `TaskManager.js` + `Coordinator.js`.
+  - **Track 1D:** `WorkerRegistry.js` + `WorkerGateway.js` + simulated 1-bot `WorkerHost` E2E test.
+- **Stage 1 Gate:** 1 simulated bot completes single-step tasks end-to-end with crash recovery, RBAC/CSRF, and `0` leaks.
 
-Must pass:
-- Two independent BotControllers connect through one or more worker hosts.
-- Shared target of 100 cobblestone is divided into non-overlapping quotas whose sum is exactly 100.
-- Each bot's actual inventory change is verified.
-- A bot with unsuitable tool/health/position can be excluded.
-- Scheduler uses one bot for a single craft operation when that is more efficient.
-- Two resource targets can be scheduled independently.
-- One worker loss releases only its unverified quota after reconciliation.
-- Stale worker events and duplicate completion messages cannot double-count.
-- Builder + guard roles use separate objectives.
+### Stage 2 — Real Mineflayer WorkerHost & Initial 2-Bot Validation (`1 -> 2` Real Bots)
+- Parallelizable tracks:
+  - **Track 2A:** `BotController.js` + `ActionExecutor.js` (`mine`, `collect`, `craft`, `explore`, `guard`, `transfer`, `safe_stop`) + `CapabilityProfiler.js`.
+  - **Track 2B:** `TaskScheduler.js` (`chooseParticipants`, `splitQuota`, `partitionRegion`, DAG unlocking).
+  - **Track 2C:** `ReasoningEngine.js` + `OllamaClient.js` (wired to `AiEfficiencyController`) + `CLI` + `DashboardServer` (`SseCoalescer`).
+- **Stage 2 Gate (`enabledBots = 2`):**
+  1. `"Craft 1 wooden pickaxe"` -> Scheduler assigns **1 bot** (`G-03`).
+  2. `"Collect 64 cobblestone"` -> Scheduler splits quota across **2 bots** (`e.g. 32 + 32` or capability-weighted), verifies exact ledger sum `64`, stops at `64` (`G-05`, `G-07`).
+  3. Kill Worker 2 mid-task -> lease expires, `allocationEpoch` increments, Bot 1 finishes remaining unverified delta without over-collection (`G-08`, `G-15`).
 
-Exit gate: all shared-task correctness and recovery tests pass; measured two-bot makespan compared with one-bot baseline; phone memory/CPU and worker memory results recorded.
+### Stage 3 — Multi-Objective DAG, Replanning & 5-Bot Subset Allocation (`2 -> 5` Bots)
+- Validate mixed-capability subset selection (e.g. `2` miners + `1` builder + `1` guard while `1` distant low-durability bot stays idle), container deposit verification, two-bot `transferId` handoffs, and `ReplanRequestV1` recovery when a tool breaks or vein depletes.
 
-## 5. Stage 3 — five bots
+### Stage 4 — Multi-Worker Coordination & Pressure Soak (`5 -> 10` Bots across `>= 2` WorkerHosts)
+- Run `>= 2` authorised `WorkerHost` machines connected over TLS to Master on Samsung Galaxy A06 (`NODE_OPTIONS="--max-old-space-size=256"`, `termux-wake-lock`); run 60-minute soak + induced `constrained`/`critical` `WorkloadGovernor` drill (`0` tasks lost, `0` OOM kills).
 
-Must pass:
-- Global and per-worker slot limits.
-- Quota split among 1–5 candidates with exact integer total.
-- Scheduler does not always use all five.
-- Spatial exploration partitions are disjoint.
-- Resource contention is measured and penalised.
-- Load, SSE, database, heartbeat and network-partition tests pass.
-- Phone coordinator retains compact state only.
+### Stage 5 — Full Authorised Swarm Ceiling (`10 -> 20` Bots across `2..4` WorkerHosts)
+- Scale `enabledBots` stepwise `10 -> 15 -> 20` only after each step passes `G-01..G-18`, per-host RAM/CPU budgets, and operator server approval. Verify `21st` bot slot request is deterministically rejected (`CAPACITY_EXCEEDED`).
 
-Exit gate: five-bot soak and fault-injection evidence; no correctness regression from stage 2.
+---
 
-## 6. Stage 4 — ten bots
+## 3. Authoritative Unresolved Decisions (`U-01 .. U-14`)
 
-Must pass:
-- Multiple authorised worker hosts.
-- Worker registration and independent revocation.
-- Reconnection jitter avoids synchronized reconnect storm.
-- One slow worker does not block all workers.
-- Command/event throughput remains bounded.
-- Database reconciliation and recovery succeed under concurrent worker failures.
-- Dashboard remains usable and bounded.
+Per Chief Architect governance, unresolved deployment choices are isolated behind `loadConfig` and **never** silently invented:
 
-Exit gate: ten-bot soak, benchmark and security review.
-
-## 7. Stage 5 — twenty bots
-
-Must pass:
-- Twenty bot identities distributed across authorised worker devices.
-- Configured server connection cap is respected; if the server cap is lower than twenty, the stage cannot be tested on that server and must use a separate authorised test environment.
-- Master rejects bot 21.
-- No phone-side Mineflayer sessions required.
-- Scheduling evaluates only feasible bots and uses all twenty only when the measured improvement is beneficial.
-- Worker failures and reconnects do not duplicate assignments or progress.
-- All task, security, performance and persistence tests pass.
-- Actual per-device resource results are documented.
-
-Exit gate: twenty-bot controlled soak, full regression, recovery evidence, server/operator authorisation and signed-off compatibility matrix.
-
-## 8. Release readiness checklist
-
-- [ ] Master context and all spec docs are consistent.
-- [ ] All open decisions have an owner and status.
-- [ ] Node and package lockfile are committed.
-- [ ] Exact Minecraft protocol compatibility is proven.
-- [ ] Database driver works on Termux and has tested backup/restore.
-- [ ] Dashboard, CLI and chat adapter share Coordinator.
-- [ ] Worker auth and revocation are tested.
-- [ ] Minecraft account credentials remain on worker devices.
-- [ ] Ollama endpoint is private and no paid fallback is configured.
-- [ ] Shared target and resource ledger invariants pass.
-- [ ] Failure/reconnection tests pass.
-- [ ] Performance results come from the actual Galaxy A06.
-- [ ] No placeholder functions remain in implemented modules.
-- [ ] All required tests pass; skipped tests are listed as blockers.
-- [ ] Security review has no unresolved critical/high issues.
-
-## 9. Explicit unresolved decisions
-
-| ID | Decision | Required resolution |
-|---|---|---|
-| U-01 | Exact Minecraft Java server version | Select private authorised target and verify protocol tuple |
-| U-02 | Mineflayer and plugin package versions | Pin exact versions after connection/action tests |
-| U-03 | SQLite driver for Termux | Benchmark built-in node:sqlite versus maintained package; verify crash recovery and Android filesystem |
-| U-04 | Initial worker hardware and OS | Name worker hosts and set per-host bot limits |
-| U-05 | Server max connections | Set operator-approved explicit cap |
-| U-06 | Online auth provider/flow | Verify legitimate Mineflayer auth implementation for pinned package |
-| U-07 | Remote Ollama model and hardware | Test free model schema adherence, planning quality, latency and stability |
-| U-08 | High-risk task approval policy | Define hazards and approval thresholds |
-| U-09 | Chat allowlist and prefix | Configure player UUIDs and allowed verbs per server |
-| U-10 | Human dashboard administrator bootstrap/MFA | Define first-admin provisioning and recovery |
-| U-11 | Worker transport identity | Decide bearer-only versus mutual TLS plus bearer |
-| U-12 | Performance SLOs and thresholds | Derive from on-device benchmark; do not invent |
-| U-13 | Worker local checkpoint durability | Select local store format and test crash recovery |
-| U-14 | Multi-bot server behaviour | Verify server permits multiple authorised accounts and independent sessions |
-
-No unresolved item may be silently converted into a production assumption.
-
-## 10. Definition of done
-
-The project is done only when:
-- every global criterion G-01 through G-18 passes;
-- each requested scale stage has passed its exit gate or is explicitly marked unsupported with evidence;
-- exact dependency and Minecraft compatibility are documented;
-- no known critical correctness/security issue remains;
-- measured resource performance is acceptable on the actual controller and worker hardware;
-- the source implementation has no placeholder methods, fake success responses or untested compatibility claims.
-
-A written specification alone does not satisfy implementation acceptance.
-
+| ID | Decision Required from Operator / Lead Developer | Safe Default Until Resolved | Blocking Stage |
+|---|---|---|---|
+| `U-01` | Target Minecraft Java version(s) & protocol support matrix | Pin single configured version (`1.20.4`) per server profile | Stage 2 |
+| `U-02` | Minecraft authentication mode (`offline` LAN test vs `microsoft` online) | `offline` on isolated local test server only | Stage 2 |
+| `U-03` | Physical Galaxy A06 Termux check (`node:sqlite` availability & idle `MemAvailable` after Android 16 boot) | Run `npm run check:termux` on device before Stage 1 sign-off | Stage 1 / Stage 4 |
+| `U-04` | Remote Ollama host hardware, LAN/VPN URL, and model tag (`qwen2.5:7b-instruct` vs `llama3.1:8b`) | Require explicit `SWARM_OLLAMA_BASE_URL`; fast-path works without Ollama | Stage 2C |
+| `U-05` | Private PKI / mTLS vs WireGuard / Tailscale overlay for Master <-> Worker & Ollama TLS | Require HTTPS cert/key paths for any non-loopback bind | Stage 2 |
+| `U-06` | Hardware specs & `maxBotSlots` per remote `WorkerHost` (`2..4` hosts for 20 bots) | Conservative `maxBotSlots = 5` per worker host | Stage 4 / Stage 5 |
+| `U-07` | Target Minecraft server concurrency, anti-cheat rate limits, and connection-throttle spacing | `enabledBots = 2`, staggered login spacing `>= 2,500 ms` | Stage 2+ |
+| `U-08` | Default `allowExistingStock` policy when operator says `"collect X"` without qualifier | `false` (`newly_collected` delta required unless explicitly requested) | Resolved by default; configurable |
+| `U-09` | Item equivalence policy (`oak_planks` vs any `#minecraft:planks`, `cobblestone` vs `cobbled_deepslate`) | Exact registry ID match unless objective sets `allowTagEquivalents: true` | Stage 2 |
+| `U-10` | Build blueprint format (`schem`/JSON block list vs parameterized templates like shelter/wall/torch-grid) | Parameterized deterministic templates in v1; arbitrary schematics deferred | Stage 3 |
+| `U-11` | In-game chat command authorisation mode (disabled vs static UUID/username allowlist + `!swarm` prefix) | Chat commands **disabled by default** (`chatCommandsEnabled: false`) | Stage 2C |
+| `U-12` | Device-calibrated `ResourceMonitor` `MemAvailable` thresholds on physical Galaxy A06 | Calibrate from `npm run check:termux` + `npm run bench` on phone | Stage 4 |
+| `U-13` | Completed-task & audit retention window before SQLite pruning/archival | Retain `7 days` or `1,000` terminal tasks, whichever comes first | Stage 3 |
+| `U-14` | Protected-area / world-modification guard coordinates (bases/chests bots must never mine) | Require explicit `protectedRegions` list in server profile before `mine`/`build` on shared servers | Stage 2 |

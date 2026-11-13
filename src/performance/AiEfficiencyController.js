@@ -5,6 +5,15 @@ const http = require('node:http');
 const https = require('node:https');
 const { BoundedCache } = require('./BoundedCache');
 const { sanitizeValue } = require('./BoundedLogger');
+const {
+  PROGRESSION_KITS,
+  resolveSmartResourceId,
+  parseExtendedZeroAiIntent
+} = require('../commands/ZeroAiCommandDeck');
+const {
+  AI_PROVIDER_CATALOG,
+  createCloudProviderAdapter
+} = require('../ai/AiProviderRegistry');
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -90,8 +99,8 @@ const TASK_PLAN_V1_SCHEMA = Object.freeze({
     clarificationQuestion: { type: ['string', 'null'], maxLength: 500 },
     objectives: {
       type: 'array',
-      minItems: 1,
-      maxItems: 20
+      minItems: 0,
+      maxItems: 16
     },
     riskLevel: { enum: ['low', 'medium', 'high'] },
     notes: { type: 'array', maxItems: 10 }
@@ -106,14 +115,20 @@ function normalizeIntentText(text) {
 }
 
 function canonicalizeResourceName(rawName) {
-  const cleaned = String(rawName || '')
-    .trim()
+  const rawStr = String(rawName || '').trim();
+  if (!rawStr) return null;
+  if (rawStr.includes(':')) {
+    const cleanedNs = rawStr.toLowerCase().replace(/[^a-z0-9_:/.-]/g, '');
+    return cleanedNs || null;
+  }
+  const smart = resolveSmartResourceId(rawStr);
+  if (smart) return smart;
+  const cleaned = rawStr
     .toLowerCase()
     .replace(/[^a-z0-9_: ]/g, '')
     .trim()
     .replace(/\s+/g, '_');
   if (!cleaned) return null;
-  // Common natural-language singular/alias normalization
   const aliases = {
     cobble: 'minecraft:cobblestone',
     cobblestones: 'minecraft:cobblestone',
@@ -198,12 +213,18 @@ function validateTaskPlanV1(plan, context = {}) {
     }
   }
 
-  if (
-    !Array.isArray(plan.objectives) ||
-    plan.objectives.length < 1 ||
-    plan.objectives.length > 20
-  ) {
-    errors.push('objectives must be an array of 1..20 items');
+  if (!Array.isArray(plan.objectives)) {
+    errors.push('objectives must be an array');
+    return { valid: false, errors };
+  }
+  if (plan.clarificationRequired === true) {
+    if (plan.objectives.length !== 0) {
+      errors.push('objectives must be empty ([]) when clarificationRequired is true');
+    }
+    return { valid: errors.length === 0, errors };
+  }
+  if (plan.objectives.length < 1 || plan.objectives.length > 16) {
+    errors.push('objectives must be an array of 1..16 items when clarificationRequired is false');
     return { valid: false, errors };
   }
 
@@ -305,18 +326,33 @@ function validateTaskPlanV1(plan, context = {}) {
       }
     }
 
-    // Dependencies format check
-    if (!Array.isArray(obj.dependencies) || obj.dependencies.length > 20) {
-      errors.push(`objectives[${i}].dependencies must be array <= 20`);
+    // Dependencies format check (supports string shorthand or { localId, edgeType } per HIGH-03c)
+    if (!Array.isArray(obj.dependencies) || obj.dependencies.length > 16) {
+      errors.push(`objectives[${i}].dependencies must be array <= 16`);
     } else {
       const seenDeps = new Set();
       for (const dep of obj.dependencies) {
-        if (typeof dep !== 'string' || !LOCAL_ID_REGEX.test(dep)) {
+        let depId = null;
+        if (typeof dep === 'string') {
+          depId = dep;
+        } else if (dep && typeof dep === 'object' && !Array.isArray(dep)) {
+          depId = dep.localId;
+          const allowedDepKeys = new Set(['localId', 'edgeType']);
+          for (const dk of Object.keys(dep)) {
+            if (!allowedDepKeys.has(dk)) {
+              errors.push(`objectives[${i}] dependency unknown key: ${dk}`);
+            }
+          }
+          if (dep.edgeType !== 'finish_to_start' && dep.edgeType !== 'start_with') {
+            errors.push(`objectives[${i}] invalid dependency edgeType: ${dep.edgeType}`);
+          }
+        }
+        if (typeof depId !== 'string' || !LOCAL_ID_REGEX.test(depId)) {
           errors.push(`objectives[${i}] invalid dependency ID`);
-        } else if (seenDeps.has(dep)) {
-          errors.push(`objectives[${i}] duplicate dependency: ${dep}`);
+        } else if (seenDeps.has(depId)) {
+          errors.push(`objectives[${i}] duplicate dependency: ${depId}`);
         } else {
-          seenDeps.add(dep);
+          seenDeps.add(depId);
         }
       }
     }
@@ -354,7 +390,8 @@ function validateTaskPlanV1(plan, context = {}) {
       adj.set(id, []);
     }
     for (const obj of plan.objectives) {
-      for (const dep of obj.dependencies) {
+      for (const rawDep of obj.dependencies) {
+        const dep = typeof rawDep === 'string' ? rawDep : rawDep.localId;
         if (dep === obj.localId) {
           errors.push(`Self-dependency in objective ${obj.localId}`);
         } else if (!localIds.has(dep)) {
@@ -382,6 +419,26 @@ function validateTaskPlanV1(plan, context = {}) {
       }
       if (visited !== localIds.size) {
         errors.push('Objective dependency graph contains a cycle');
+      }
+    }
+
+    // Prevent duplicate parallel objectives targeting the exact same resource/region & verification
+    if (errors.length === 0) {
+      const seenSignatures = new Set();
+      for (const obj of plan.objectives) {
+        const canonRes = obj.target?.resourceId
+          ? canonicalizeResourceName(obj.target.resourceId)
+          : '';
+        const depSig = (obj.dependencies || [])
+          .map((d) => (typeof d === 'string' ? `fs:${d}` : `${d.edgeType}:${d.localId}`))
+          .sort()
+          .join(',');
+        const sig = `${obj.kind}|${canonRes}|${obj.target?.regionLabel || ''}|${obj.verification}|${depSig}`;
+        if (seenSignatures.has(sig)) {
+          errors.push(`Duplicate parallel objective detected for ${obj.kind} ${canonRes || obj.localId}`);
+        } else {
+          seenSignatures.add(sig);
+        }
       }
     }
   }
@@ -448,7 +505,7 @@ function buildDeterministicPlan(requestId, rawUserText) {
               regionLabel: 'base',
               description: `Guard construction perimeter during ${structure} build`
             },
-            dependencies: [],
+            dependencies: [{ localId: 'obj_build_1', edgeType: 'start_with' }],
             parallelism: 'role_based',
             workerCountHint: 1,
             constraints: defaultConstraints,
@@ -535,13 +592,70 @@ function buildDeterministicPlan(requestId, rawUserText) {
     }
   }
 
+  // Pattern C2: Combined shared quantity + individual guard role ("mine 100 cobblestone while one bot guards")
+  const mineGuardMatch =
+    /^(mine|collect|gather)\s+(\d+)\s+([a-z0-9_: ]{2,48}?)\s+while\s+(?:one|a|1)\s+bot\s+guards\.?$/i.exec(
+      norm
+    );
+  if (mineGuardMatch) {
+    const objKind = mineGuardMatch[1].toLowerCase() === 'mine' ? 'mine' : 'collect';
+    const qty = Number(mineGuardMatch[2]);
+    const resourceId = canonicalizeResourceName(mineGuardMatch[3]);
+    if (Number.isSafeInteger(qty) && qty >= 1 && qty <= 1_000_000 && resourceId) {
+      return {
+        matched: true,
+        plan: {
+          schemaVersion: 1,
+          requestId: reqId,
+          intentSummary: `${objKind} ${qty} ${resourceId} with dedicated guard`,
+          clarificationRequired: false,
+          clarificationQuestion: null,
+          objectives: [
+            {
+              localId: `obj_${objKind}_1`,
+              kind: objKind,
+              target: {
+                resourceId,
+                quantity: qty,
+                regionLabel: null,
+                description: `Aggregate target: ${objKind} ${qty} ${resourceId}`
+              },
+              dependencies: [],
+              parallelism: 'partitionable',
+              workerCountHint: qty < 16 ? 1 : Math.min(19, Math.ceil(qty / 40)),
+              constraints: defaultConstraints,
+              verification: 'newly_collected'
+            },
+            {
+              localId: 'obj_guard_1',
+              kind: 'guard',
+              target: {
+                resourceId: null,
+                quantity: null,
+                regionLabel: 'mining_perimeter',
+                description: `Guard ${objKind} team perimeter`
+              },
+              dependencies: [{ localId: `obj_${objKind}_1`, edgeType: 'start_with' }],
+              parallelism: 'role_based',
+              workerCountHint: 1,
+              constraints: defaultConstraints,
+              verification: 'role_duration'
+            }
+          ],
+          riskLevel: 'low',
+          notes: ['deterministic_shared_plus_role']
+        }
+      };
+    }
+  }
+
   // Pattern D: Single or multi-resource mine/collect ("mine 100 cobblestone", "collect 100 cobblestone and 40 coal")
   const verbMatch = /^(mine|collect|gather)\s+(.+?)\.?$/i.exec(norm);
   if (verbMatch && !norm.includes(' while ') && !norm.includes(' if ') && !norm.includes(' after ')) {
     const verb = verbMatch[1] === 'mine' ? 'mine' : 'collect';
     const clauses = verbMatch[2].split(/\s*(?:,|\band\b)\s*/i).filter(Boolean);
     if (clauses.length >= 1 && clauses.length <= 10) {
-      const objectives = [];
+      const coalescedByKey = new Map();
       let allValid = true;
       for (let i = 0; i < clauses.length; i += 1) {
         const m = /^(?:(mine|collect|gather)\s+)?(\d+)\s+([a-z0-9_: ]{2,48})$/i.exec(
@@ -558,24 +672,32 @@ function buildDeterministicPlan(requestId, rawUserText) {
           break;
         }
         const objKind = m[1] ? (m[1].toLowerCase() === 'mine' ? 'mine' : 'collect') : verb;
-        objectives.push({
-          localId: `obj_${objKind}_${i + 1}`,
-          kind: objKind,
+        const mergeKey = `${objKind}|${resourceId}`;
+        const prev = coalescedByKey.get(mergeKey);
+        if (prev) {
+          prev.qty = Math.min(1_000_000, prev.qty + qty);
+        } else {
+          coalescedByKey.set(mergeKey, { objKind, resourceId, qty });
+        }
+      }
+
+      if (allValid && coalescedByKey.size > 0) {
+        const objectives = Array.from(coalescedByKey.values()).map((entry, idx) => ({
+          localId: `obj_${entry.objKind}_${idx + 1}`,
+          kind: entry.objKind,
           target: {
-            resourceId,
-            quantity: qty,
+            resourceId: entry.resourceId,
+            quantity: entry.qty,
             regionLabel: null,
-            description: `Aggregate target: ${objKind} ${qty} ${resourceId}`
+            description: `Aggregate target: ${entry.objKind} ${entry.qty} ${entry.resourceId}`
           },
           dependencies: [],
           parallelism: 'partitionable',
-          workerCountHint: 1,
+          workerCountHint: entry.qty < 16 ? 1 : Math.min(20, Math.ceil(entry.qty / 40)),
           constraints: defaultConstraints,
           verification: 'newly_collected'
-        });
-      }
+        }));
 
-      if (allValid && objectives.length > 0) {
         return {
           matched: true,
           plan: {
@@ -593,6 +715,15 @@ function buildDeterministicPlan(requestId, rawUserText) {
     }
   }
 
+  // Pattern E: Extended 1,370+ Zero-AI Command & Natural Alias Parser
+  const extendedPlan = parseExtendedZeroAiIntent(text, reqId);
+  if (extendedPlan) {
+    return {
+      matched: true,
+      plan: extendedPlan
+    };
+  }
+
   return {
     matched: false,
     clarificationPlan: {
@@ -602,23 +733,7 @@ function buildDeterministicPlan(requestId, rawUserText) {
       clarificationRequired: true,
       clarificationQuestion:
         'Remote AI planner is unavailable or throttled and this complex request cannot be safely decomposed deterministically. Please specify exact item quantities or step-by-step objectives.',
-      objectives: [
-        {
-          localId: 'obj_clarify_1',
-          kind: 'inspect',
-          target: {
-            resourceId: null,
-            quantity: null,
-            regionLabel: null,
-            description: 'Awaiting operator clarification'
-          },
-          dependencies: [],
-          parallelism: 'single',
-          workerCountHint: 1,
-          constraints: defaultConstraints,
-          verification: 'operator_review'
-        }
-      ],
+      objectives: [],
       riskLevel: 'low',
       notes: ['deterministic_clarification_fallback']
     }
@@ -675,17 +790,44 @@ function validateOllamaEndpointPolicy(rawUrl, options = {}) {
 function buildCompactAiInput({ requestId, userText, compactContext = {}, maxInputBytes = 6144 }) {
   const safeUserText = String(userText || '').trim().slice(0, 500);
   const candidates = Array.isArray(compactContext.candidates)
-    ? compactContext.candidates.slice(0, 20).map((b) => ({
-        botId: String(b.botId || '').slice(0, 48),
-        status: String(b.status || 'ready').slice(0, 16),
-        dimension: String(b.dimension || 'minecraft:overworld').slice(0, 48),
-        healthBand: String(b.healthBand || 'unknown').slice(0, 16),
-        foodBand: String(b.foodBand || 'unknown').slice(0, 16),
-        tool: b.activeTool ? String(b.activeTool.name || b.activeTool).slice(0, 48) : null,
-        capabilities: Array.isArray(b.capabilities)
-          ? b.capabilities.slice(0, 12).map((c) => String(c).slice(0, 32))
-          : []
-      }))
+    ? compactContext.candidates.slice(0, 20).map((b) => {
+        const primaryTool = b.activeTool
+          ? String(b.activeTool.name || b.activeTool).slice(0, 48)
+          : b.toolClasses && typeof b.toolClasses === 'object'
+            ? Object.values(b.toolClasses)[0]?.itemKey || null
+            : null;
+        const rawCaps = Array.isArray(b.capabilities)
+          ? b.capabilities
+          : Array.isArray(b.supportedActions)
+            ? b.supportedActions
+            : [];
+        const topItems = {};
+        if (b.itemCounts && typeof b.itemCounts === 'object') {
+          const entries = Object.entries(b.itemCounts).slice(0, 4);
+          for (const [k, v] of entries) {
+            topItems[String(k).slice(0, 40)] = Math.trunc(Number(v) || 0);
+          }
+        }
+        return {
+          botId: String(b.botId || '').slice(0, 48),
+          status: String(b.status || (b.busy ? 'busy' : b.connected === false ? 'disconnected' : 'ready')).slice(0, 16),
+          currentAction: b.currentAction ? String(b.currentAction).slice(0, 24) : null,
+          dimension: String(b.dimension || 'minecraft:overworld').slice(0, 48),
+          position:
+            b.position && Number.isFinite(b.position.x)
+              ? {
+                  x: Math.round(b.position.x),
+                  y: Math.round(b.position.y),
+                  z: Math.round(b.position.z)
+                }
+              : null,
+          healthBand: String(b.healthBand || 'unknown').slice(0, 16),
+          foodBand: String(b.foodBand || 'unknown').slice(0, 16),
+          tool: primaryTool ? String(primaryTool).slice(0, 48) : null,
+          items: topItems,
+          capabilities: rawCaps.slice(0, 12).map((c) => String(c).slice(0, 32))
+        };
+      })
     : [];
 
   const dto = sanitizeValue({
@@ -694,15 +836,18 @@ function buildCompactAiInput({ requestId, userText, compactContext = {}, maxInpu
     userObjective: safeUserText,
     maxBots: Math.min(20, Math.max(1, Number(compactContext.maxBots || 2))),
     serverRemainingSlots: Math.min(20, Math.max(0, Number(compactContext.serverRemainingSlots ?? 2))),
+    ...(compactContext.swarmState ? { swarmState: compactContext.swarmState } : {}),
     candidates
   });
 
   let encoded = JSON.stringify(dto);
   if (Buffer.byteLength(encoded, 'utf8') > maxInputBytes) {
-    // Trim candidate detail if near byte ceiling
-    dto.candidates = dto.candidates.slice(0, 5).map((c) => ({
+    // Trim candidate detail while preserving swarmState summary if near byte ceiling
+    dto.candidates = dto.candidates.slice(0, 6).map((c) => ({
       botId: c.botId,
       status: c.status,
+      position: c.position,
+      tool: c.tool,
       capabilities: c.capabilities.slice(0, 4)
     }));
     encoded = JSON.stringify(dto);
@@ -760,6 +905,46 @@ class AiEfficiencyController {
       typeof options.transportOverride === 'function' ? options.transportOverride : null;
     this._now = options.now || Date.now;
 
+    /** @type {Map<string, { apiKey: string|null, baseUrl: string|null, model: string|null }>} */
+    this._providerSettings = new Map();
+    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
+      const envKey = meta.envKeyName ? process.env[meta.envKeyName] || null : null;
+      this._providerSettings.set(meta.id, {
+        apiKey: (options.provider === meta.id && options.apiKey) ? String(options.apiKey) : envKey,
+        baseUrl:
+          options.provider === meta.id && options.providerBaseUrl
+            ? String(options.providerBaseUrl)
+            : meta.defaultBaseUrl,
+        model:
+          options.provider === meta.id && options.model && options.model !== 'unresolved'
+            ? String(options.model)
+            : meta.defaultModel
+      });
+    }
+
+    /** @type {Map<string, { name: string, invoke: Function, isAvailable: () => boolean }>} */
+    this._providers = new Map();
+    this.registerProvider('ollama', {
+      isAvailable: () => Boolean(this._endpoint || this._transportOverride),
+      invoke: ({ body, requestBytes, signal }) =>
+        this._transportOverride
+          ? this._transportOverride({ body, requestBytes, signal })
+          : this._httpPostOllama(requestBytes, signal)
+    });
+    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
+      if (meta.id === 'ollama') continue;
+      this.registerProvider(
+        meta.id,
+        createCloudProviderAdapter(meta, (pid) => this._providerSettings.get(pid) || {})
+      );
+    }
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const requestedProvider = String(options.provider || 'ollama').trim().toLowerCase();
+    this._activeProvider = providerAliases[requestedProvider] || requestedProvider;
+    if (!this._providers.has(this._activeProvider)) {
+      this._activeProvider = 'ollama';
+    }
+
     this._planCache = new BoundedCache({
       name: 'ai-plan-cache',
       maxEntries: options.cacheMaxEntries || 128,
@@ -806,6 +991,112 @@ class AiEfficiencyController {
 
   get cache() {
     return this._planCache;
+  }
+
+  get activeProvider() {
+    return this._activeProvider;
+  }
+
+  /**
+   * Register a pluggable AI inference provider (`ADR-006`).
+   * Every provider goes through identical compaction, concurrency caps, schema validation and fallback.
+   */
+  registerProvider(name, adapter) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) throw new TypeError('Provider name must be non-empty');
+    const invoke = typeof adapter === 'function' ? adapter : adapter?.invoke;
+    if (typeof invoke !== 'function') {
+      throw new TypeError(`Provider "${key}" must provide an invoke({ body, requestBytes, signal }) function`);
+    }
+    const isAvailable =
+      typeof adapter?.isAvailable === 'function' ? adapter.isAvailable : () => true;
+    this._providers.set(key, { name: key, invoke, isAvailable });
+    return this;
+  }
+
+  setProvider(name) {
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const raw = String(name || '').trim().toLowerCase();
+    const key = providerAliases[raw] || raw;
+    if (!this._providers.has(key)) {
+      throw new RangeError(`AI provider "${key}" is not registered`);
+    }
+    this._activeProvider = key;
+    return this._activeProvider;
+  }
+
+  /**
+   * Runtime hot-reconfiguration of any AI provider (Gemini, ChatGPT/OpenAI, Claude/Anthropic,
+   * Groq, OpenRouter, DeepSeek, xAI Grok, Mistral, Together, Cerebras, Fireworks, Perplexity,
+   * Cohere, LM Studio, Ollama, or `none` Zero-AI).
+   */
+  configureProvider({ provider, apiKey, model, baseUrl } = {}) {
+    const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
+    const raw = String(provider || this._activeProvider || 'ollama').trim().toLowerCase();
+    const key = providerAliases[raw] || raw;
+    if (!this._providers.has(key)) {
+      throw new RangeError(`Unsupported AI provider "${key}"`);
+    }
+
+    if (key === 'ollama') {
+      if (baseUrl !== undefined && baseUrl !== null && String(baseUrl).trim() !== '') {
+        this._endpoint = validateOllamaEndpointPolicy(String(baseUrl).trim(), {
+          enforceRemoteOnController: false
+        });
+      }
+      if (model && String(model).trim()) {
+        this._model = String(model).trim();
+      }
+    } else {
+      const prev = this._providerSettings.get(key) || {};
+      const meta = AI_PROVIDER_CATALOG[key] || {};
+      this._providerSettings.set(key, {
+        apiKey:
+          apiKey !== undefined && apiKey !== null && String(apiKey).trim() !== ''
+            ? String(apiKey).trim()
+            : prev.apiKey || null,
+        baseUrl:
+          baseUrl !== undefined && baseUrl !== null && String(baseUrl).trim() !== ''
+            ? String(baseUrl).trim()
+            : prev.baseUrl || meta.defaultBaseUrl || null,
+        model:
+          model !== undefined && model !== null && String(model).trim() !== ''
+            ? String(model).trim()
+            : prev.model || meta.defaultModel || 'default'
+      });
+    }
+
+    this._activeProvider = key;
+    this._planCache.clear();
+    return this.listProviders().find((p) => p.name === key);
+  }
+
+  listProviders() {
+    const out = [];
+    for (const [name, p] of this._providers.entries()) {
+      const meta = AI_PROVIDER_CATALOG[name] || null;
+      const cfg = this._providerSettings.get(name) || {};
+      const hasKey = Boolean(cfg.apiKey && String(cfg.apiKey).length >= 4);
+      const maskedKey = hasKey
+        ? `••••${String(cfg.apiKey).slice(-4)}`
+        : null;
+      out.push({
+        name,
+        label: meta ? meta.label : name,
+        active: name === this._activeProvider,
+        available: Boolean(p.isAvailable()),
+        requiresApiKey: Boolean(meta?.requiresApiKey),
+        hasApiKey: hasKey,
+        maskedApiKey: maskedKey,
+        model: name === 'ollama' ? this._model : (cfg.model || meta?.defaultModel || null),
+        suggestedModels: meta?.models || [],
+        baseUrl:
+          name === 'ollama'
+            ? (this._endpoint ? this._endpoint.toString() : null)
+            : (cfg.baseUrl || meta?.defaultBaseUrl || null)
+      });
+    }
+    return out;
   }
 
   /**
@@ -887,8 +1178,9 @@ class AiEfficiencyController {
       }
     }
 
-    // 4. Remote endpoint availability check
-    if (!this._endpoint && !this._transportOverride) {
+    // 4. Remote provider availability check
+    const activeProviderEntry = this._providers.get(this._activeProvider);
+    if (!activeProviderEntry || !activeProviderEntry.isAvailable()) {
       this._stats.fallbacksUsed += 1;
       if (this._monitor) this._monitor.recordAiEvent('fallback');
       return {
@@ -982,6 +1274,19 @@ class AiEfficiencyController {
         };
       } catch (err) {
         this._stats.fallbacksUsed += 1;
+        if (err && (err.code === 'AI_INVALID_MODEL_JSON' || err.code === 'AI_INVALID_RESPONSE')) {
+          this._stats.validationFailures += 1;
+          if (this._monitor) {
+            this._monitor.recordAiEvent('validationFailed');
+            this._monitor.recordAiEvent('fallback');
+          }
+          return {
+            source: 'schema_rejected_fallback',
+            validationErrors: [err.message || 'Invalid model JSON'],
+            plan: deterministic.matched ? deterministic.plan : deterministic.clarificationPlan,
+            llmCalled: true
+          };
+        }
         if (err && err.code === 'AI_TIMEOUT') {
           this._stats.timeouts += 1;
           if (this._monitor) this._monitor.recordAiEvent('timeout');
@@ -1119,30 +1424,37 @@ class AiEfficiencyController {
           err.code = 'AI_TIMEOUT';
           reject(err);
         }, this._timeoutMs);
-        if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
       });
 
-      const transportCall = this._transportOverride
-        ? this._transportOverride({
-            body: requestBodyObj,
-            requestBytes,
-            signal: timeoutController.signal
-          })
-        : this._httpPostOllama(requestBytes, timeoutController.signal);
+      const providerEntry = this._providers.get(this._activeProvider);
+      const transportCall = providerEntry.invoke({
+        body: requestBodyObj,
+        requestBytes,
+        signal: timeoutController.signal
+      });
 
       const rawResponse = await Promise.race([transportCall, timeoutPromise]);
-      if (typeof rawResponse === 'string') {
-        return JSON.parse(rawResponse);
+      let parsedPlan = null;
+      try {
+        if (typeof rawResponse === 'string') {
+          parsedPlan = JSON.parse(rawResponse);
+        } else if (rawResponse && typeof rawResponse.message?.content === 'string') {
+          parsedPlan = JSON.parse(rawResponse.message.content);
+        } else if (rawResponse && typeof rawResponse === 'object') {
+          parsedPlan = rawResponse;
+        }
+      } catch (parseErr) {
+        const err = new Error(`Malformed model JSON: ${parseErr.message}`);
+        err.code = 'AI_INVALID_MODEL_JSON';
+        throw err;
       }
-      if (rawResponse && typeof rawResponse.message?.content === 'string') {
-        return JSON.parse(rawResponse.message.content);
+
+      if (!parsedPlan || typeof parsedPlan !== 'object' || Array.isArray(parsedPlan)) {
+        const err = new Error('Model response must be a JSON object');
+        err.code = 'AI_INVALID_MODEL_JSON';
+        throw err;
       }
-      if (rawResponse && typeof rawResponse === 'object') {
-        return rawResponse;
-      }
-      const err = new Error('Malformed Ollama response structure');
-      err.code = 'AI_INVALID_RESPONSE';
-      throw err;
+      return parsedPlan;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       signal.removeEventListener('abort', onParentAbort);

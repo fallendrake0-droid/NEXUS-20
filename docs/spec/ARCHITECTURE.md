@@ -1,341 +1,414 @@
-# Architecture — Mineflayer AI Swarm
+# Architecture, Wire Protocol & Persistence Topology — Mineflayer AI Swarm
 
-**Specification:** 1.0.0  
-**Related:** MASTER_SPEC.md, MODULE_INTERFACES.md, AI_PROTOCOL.md
+**Document:** `docs/spec/ARCHITECTURE.md`  
+**Specification version:** 1.1.0  
+**Related:** `MASTER_SPEC.md`, `MODULE_INTERFACES.md`, `AI_PROTOCOL.md`, `SECURITY_PLAN.md`, `PERFORMANCE_PLAN.md`
 
-## 1. Deployment view
+---
 
-The Samsung Galaxy A06 is the single master controller. It owns durable task truth and makes allocation decisions. Remote worker hosts own Mineflayer connections and execute deterministic actions. A separate authorised device runs Ollama.
+## 1. Deployment Topology
+
+The system separates coordination, game simulation and LLM inference across three physical/logical roles so the 4 GB Samsung Galaxy A06 remains fast, deterministic and memory-stable:
+
+1. **Master Controller (Samsung Galaxy A06 — Android 16, Termux, Node.js):**
+   - Single Node.js CommonJS process launched under `termux-wake-lock` with `NODE_OPTIONS="--max-old-space-size=256"`.
+   - Hosts `Express` HTTPS API, `AuthService`, `Coordinator`, `TaskManager`, `TaskScheduler`, `InventoryLedger`, `WorkerRegistry`, `WorkerGateway`, `StateStore` (single-writer SQLite), `ReasoningEngine` + `AiEfficiencyController` + `OllamaClient`, `ResourceMonitor`, `WorkloadGovernor`, `SseCoalescer`, `EventBus` and `BoundedLogger`.
+   - **Never** loads `mineflayer`, `prismarine-world`, chunk columns, entity graphs or a local LLM.
+2. **Authorised Worker Hosts (`1..M` remote devices):**
+   - Each authorised worker device runs one `WorkerHost` Node.js process supervising `1..K_host` isolated `BotController` instances (`sum(K_host) <= 20`).
+   - Owns live Mineflayer TCP connections, worker-local Minecraft account credentials, deterministic `ActionExecutor` modules, `PathfindingGuard`, `BlockSearchCache`, `ChatHistoryGuard`, `ScopedListeners`, `BoundedByteQueue` and a bounded local crash-recovery checkpoint file.
+3. **Remote Ollama Host (Separate user-controlled LAN/VPN machine):**
+   - Reached strictly outbound from Master Controller (`POST /api/chat`, `stream: false`, JSON Schema `format`) over private LAN/VPN protected by TLS/authenticated proxy. Never exposed to the public internet, browser clients or workers.
 
 ~~~mermaid
 flowchart TB
-  subgraph Interfaces
-    CHAT[Minecraft chat adapter]
-    WEB[Express API + vanilla dashboard]
-    CLI[Termux CLI]
+  subgraph Ingress["Control Interfaces (Share Coordinator)"]
+    CHAT["Minecraft Chat (!swarm)<br/>UUID Allowlisted"]
+    WEB["Vanilla Web Dashboard<br/>HTTPS REST + Coalesced SSE"]
+    CLI["Termux CLI<br/>Loopback HTTPS REST"]
   end
 
-  subgraph PHONE[Galaxy A06 — Master controller]
-    AUTH[Authentication and policy]
-    COORD[Coordinator / application service]
-    TASK[Shared TaskManager]
-    SCHED[Deterministic TaskScheduler]
-    REG[Worker registry + lease manager]
-    STORE[(SQLite StateStore)]
-    MON[Resource monitor]
-    SSE[Dashboard SSE]
-    OCLIENT[Ollama client]
+  subgraph Phone["Samsung Galaxy A06 — Master Controller (4 GB RAM, Termux)"]
+    AUTH["AuthService + RBAC + CSRF"]
+    COORD["Coordinator (Single Use-Case Boundary)"]
+    GOV["ResourceMonitor + WorkloadGovernor"]
+    AI["ReasoningEngine + AiEfficiencyController + OllamaClient"]
+    TM["TaskManager + InventoryLedger"]
+    SCHED["Deterministic TaskScheduler"]
+    WG["WorkerRegistry + WorkerGateway"]
+    SSE["SseCoalescer (1 Hz Single-Pass Buffer)"]
+    DB[("SQLite StateStore<br/>Single Writer, WAL")]
   end
 
-  subgraph WORKERS[Authorised worker devices]
-    W1[WorkerHost A]
-    W2[WorkerHost B]
-    BC1[BotController 1]
-    BC2[BotController 2]
-    BC3[BotController N]
-    EXEC[Deterministic action modules]
+  subgraph Workers["Authorised Worker Devices (LAN / VPN)"]
+    WH1["WorkerHost 1<br/>BoundedByteQueue + Checkpoint"]
+    WH2["WorkerHost M"]
+    BC1["BotController 1<br/>(Mineflayer + ScopedListeners)"]
+    BC2["BotController 2"]
+    BCN["BotController N (N <= 20)"]
+    ACT["ActionExecutor<br/>PathfindingGuard + BlockSearchCache + ChatHistoryGuard"]
   end
 
-  subgraph AI[Private LAN / VPN]
-    OLLAMA[Remote Ollama model]
+  subgraph RemoteAI["Private LAN / VPN Inference Host"]
+    OLLAMA["Remote Ollama Server<br/>(Schema-Constrained JSON)"]
   end
 
-  CHAT --> COORD
+  CHAT -->|Forwarded allowlisted ChatIntent| WG
+  WG -->|submitIntent| COORD
   WEB --> AUTH --> COORD
-  CLI --> AUTH
-  CLI --> COORD
-  COORD --> TASK
-  TASK --> SCHED
-  SCHED --> REG
-  TASK <--> STORE
-  REG <--> STORE
-  MON --> COORD
+  CLI --> AUTH --> COORD
+
+  GOV <--> COORD
+  COORD <--> AI
+  AI <-->|HTTPS POST /api/chat| OLLAMA
+  COORD <--> TM
+  TM <--> SCHED
+  TM <--> DB
+  WG <--> DB
+  SCHED --> WG
   COORD --> SSE --> WEB
-  COORD <--> OCLIENT <--> OLLAMA
-  REG <-->|HTTPS: heartbeat, long poll, events| W1
-  REG <-->|HTTPS: heartbeat, long poll, events| W2
-  W1 --> BC1
-  W1 --> BC2
-  W2 --> BC3
-  BC1 --> EXEC
-  BC2 --> EXEC
-  BC3 --> EXEC
+
+  WG <-->|HTTPS: register, heartbeat, long-poll, ack, events| WH1
+  WG <-->|HTTPS: register, heartbeat, long-poll, ack, events| WH2
+  WH1 --> BC1
+  WH1 --> BC2
+  WH2 --> BCN
+  BC1 --> ACT
+  BC2 --> ACT
+  BCN --> ACT
 ~~~
 
-## 2. Process ownership
+---
 
-### 2.1 Master process — phone
+## 2. Inter-Component Communication Contracts
 
-One Node.js CommonJS process runs:
+### 2.1 Common HTTP Wire Conventions
+- **Content-Type:** `application/json; charset=utf-8` on all REST requests/responses (`text/event-stream; charset=utf-8` on `/api/v1/events`).
+- **Correlation Headers:**
+  - `X-Request-Id`: UUID v4 (generated by server if absent; echoed in response).
+  - `X-Schema-Version`: `"1"` (also embedded in JSON body `schemaVersion: 1`).
+  - `X-Idempotency-Key`: UUID v4 required on state-mutating `POST` routes (`/api/v1/tasks`, `/api/v1/tasks/:id/*`, `/api/v1/bots/:id/safe-stop`).
+- **Standard Error Envelope (all `4xx`/`5xx` responses):**
+  ~~~json
+  {
+    "schemaVersion": 1,
+    "requestId": "6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+    "error": {
+      "code": "CONFLICT",
+      "message": "Task state cannot transition from completed to paused",
+      "retryable": false,
+      "details": {}
+    }
+  }
+  ~~~
 
-- Express HTTP(S) server and API routes.
-- Coordinator application service.
-- TaskManager and TaskScheduler.
-- WorkerRegistry, lease manager and WorkerGateway.
-- AuthService and policy checks.
-- StateStore connection.
-- OllamaClient and bounded inference queue.
-- ResourceMonitor and bounded telemetry.
-- SSE publisher and dashboard assets.
-- CLI API surface and chat-intent API surface.
+### 2.2 Worker Control-Plane API (`/worker/v1/*`)
+Authenticated exclusively via `Authorization: Bearer <workerToken>` (except `/worker/v1/register`, which presents a single-use `bootstrapToken`). Worker tokens are rejected on `/api/v1/*`.
 
-Only this process can commit task, objective, lease or resource-ledger changes. There must be one active writer for the SQLite database. Do not run multiple coordinator replicas against the same local database.
+| Method & Path | Body Cap | Request Body Fields | Response Body Fields (`200`/`201`) |
+|---|---:|---|---|
+| `POST /worker/v1/register` | `32 KiB` | `{ schemaVersion: 1, messageId, bootstrapToken, workerId, hostname, nodeVersion, supportedSchemaVersions: [1], maxBotSlots, configuredBots: [{ botId, username, serverId, authMode }] }` | `{ schemaVersion: 1, workerId, workerToken, heartbeatIntervalMs, leaseDurationMs, maxEventBatchSize, acceptedBotIds }` |
+| `POST /worker/v1/heartbeat` | `64 KiB` | `{ schemaVersion: 1, messageId, workerSequence, sentAt, hostMetrics: { rssBytes, heapUsedBytes, cpuPercent, eventLoopP95Ms, outboundQueueLen }, botSnapshots: BotSnapshot[] }` | `{ schemaVersion: 1, serverTime, ackedSequence, renewedLeaseIds: string[], expiredLeaseIds: string[], governorDirectives: { state, maxBlockSearchRadius, allowNonEssentialScanning, scanIntervalMultiplier } }` |
+| `GET /worker/v1/commands` | `0 B` | Query: `?after_seq=<int>&wait_ms=<0..25000>` *(at most ONE active long-poll per `workerId`; newer poll cancels/replaces stale socket)* | `{ schemaVersion: 1, serverTime, commands: CommandEnvelopeV1[] }` *(empty array on timeout)* |
+| `POST /worker/v1/commands/ack` | `16 KiB` | `{ schemaVersion: 1, messageId, workerSequence, commandId, commandSequence, leaseId, allocationEpoch, decision: 'accepted'\|'rejected', rejectionCode: string\|null, baselineSnapshot: InventorySnapshot\|null }` | `{ schemaVersion: 1, commandId, status: 'recorded'\|'duplicate'\|'stale_rejected' }` |
+| `POST /worker/v1/events` | `128 KiB` | `{ schemaVersion: 1, batchId, events: DomainEventEnvelopeV1[] }` *(max `100` events/batch, strictly monotonic `workerSequence`)* | `{ schemaVersion: 1, results: [{ messageId, workerSequence, status: 'accepted'\|'duplicate'\|'rejected', rejectionCode: string\|null }] }` |
+| `POST /worker/v1/snapshots` | `64 KiB` | `{ schemaVersion: 1, messageId, workerSequence, checkpointReason: 'startup_reconcile'\|'periodic'\|'lease_fencing', activeLeases: [{ assignmentId, leaseId, allocationEpoch, localState }], botSnapshots: BotSnapshot[], inventorySnapshots: InventorySnapshot[] }` | `{ schemaVersion: 1, reconcileActions: [{ assignmentId, directive: 'continue'\|'stop_and_fence' }] }` |
+| `POST /worker/v1/chat-intents` | `8 KiB` | `{ schemaVersion: 1, messageId, workerSequence, serverId, senderUuid, senderName, commandVerb, argumentText, observedAt }` *(forwarded ONLY after passing `ChatHistoryGuard` on worker)* | `{ schemaVersion: 1, accepted: boolean, taskId: string\|null, replyCode: string }` |
+| `POST /worker/v1/unregister` | `8 KiB` | `{ schemaVersion: 1, messageId, workerSequence, reason }` | `{ schemaVersion: 1, unregistered: true, releasedLeases: number }` |
 
-### 2.2 Worker process — remote device
+### 2.3 Operator, Dashboard & CLI API (`/api/v1/*`)
+Authenticated via `__Host-swarm_session` cookie (+ `X-CSRF-Token` & `Origin` check on `POST`/`DELETE` for browsers) OR `Authorization: Bearer <cliOperatorToken>` on loopback (`127.0.0.1`) for the Termux CLI.
 
-A WorkerHost process runs independently on each authorised device. It:
+| Method & Path | Min Role | Body Cap | Purpose & Contract |
+|---|---|---:|---|
+| `POST /api/v1/auth/login` | Public (rate-limited) | `4 KiB` | Verify password (`crypto.scrypt` / Argon2id), rotate session ID, set `__Host-swarm_session` + return `{ principal, csrfToken }`. |
+| `POST /api/v1/auth/logout` | `viewer` | `2 KiB` | Invalidate server-side session row immediately. |
+| `GET /api/v1/session` | `viewer` | `0 B` | Return `{ schemaVersion: 1, principal: { id, username, role }, csrfToken }`. |
+| `GET /api/v1/snapshot` | `viewer` | `0 B` | Initial compact `DashboardSnapshot` (system health, governor state, worker summaries, active task summaries, recent alerts). |
+| `GET /api/v1/events` | `viewer` | `0 B` | Authenticated SSE stream managed by `SseCoalescer` (`1 Hz` normal, `0.33 Hz` constrained, `0.2 Hz` critical; emits `event: summary` and `event: reload_required`). |
+| `POST /api/v1/tasks` | `operator` | `16 KiB` | Submit `{ schemaVersion: 1, text, allowExistingStock?: boolean, priority?: 'high'\|'normal'\|'low' }` -> calls `Coordinator.submitIntent` -> returns `TaskSummary` (`201`). |
+| `GET /api/v1/tasks` | `viewer` | `0 B` | Paginated query `?state=&limit=20&cursor=` -> `{ items: TaskSummary[], nextCursor }`. |
+| `GET /api/v1/tasks/:taskId` | `viewer` | `0 B` | Full `TaskDetail` (objectives, DAG edges, `verifiedQuantity`, `reservedQuantity`, `remainingQuantity`, assignments, decision trace). |
+| `POST /api/v1/tasks/:taskId/clarify` | `operator` | `8 KiB` | Supply answer to `clarification_required` task and resume planning. |
+| `POST /api/v1/tasks/:taskId/pause` | `operator` | `4 KiB` | Transition task to `paused` and issue `assignment.pause` commands to active workers. |
+| `POST /api/v1/tasks/:taskId/resume` | `operator` | `4 KiB` | Transition `paused` task back to `ready`/`running` and schedule remaining work. |
+| `POST /api/v1/tasks/:taskId/cancel` | `operator` | `4 KiB` | Transition task to `cancelled`, revoke active leases, reconcile verified stock so far. |
+| `GET /api/v1/workers` | `viewer` | `0 B` | List `WorkerSummary[]` and per-bot compact status summaries. |
+| `POST /api/v1/workers/bootstrap` | `admin` | `4 KiB` | Mint single-use short-lived `bootstrapToken` (`TTL <= 10 min`) for registering a new worker host. |
+| `POST /api/v1/workers/:workerId/revoke` | `admin` | `4 KiB` | Immediately revoke worker credential, mark `disabled`, fence all active leases. |
+| `POST /api/v1/bots/:botId/safe-stop` | `operator` | `4 KiB` | Priority `safety` stop command bypassing optional queues even in `critical` governor state. |
+| `GET /api/v1/diagnostics` | `viewer` | `0 B` | Return `ResourceMonitor.getWindow()`, `WorkloadGovernor` state/reports, `AiEfficiencyController.stats()`, compatibility tuple & DB health. |
 
-- Authenticates to the master using its own worker identity.
-- Registers its configured bot identities.
-- Sends heartbeats and capability summaries.
-- Long-polls for bounded command batches.
-- Creates and supervises one BotController per active bot session.
-- Enforces local bot slot limits and server-specific configuration.
-- Runs deterministic action modules.
-- Emits sequenced evidence, completion and failure events.
-- Maintains only bounded local checkpoints needed for safe reconnect.
+---
 
-A WorkerHost may supervise several BotControllers in one process. BotController state is isolated by bot ID; mutable bot state is never shared across controllers. Process-per-bot isolation is an optional later topology, not required for the first release.
-
-### 2.3 Ollama process — separate device
-
-Ollama runs on the user's own/controlled device, not on the Galaxy A06. It must be reachable only over a private LAN or VPN and protected by firewall/TLS or an authenticated reverse proxy. The coordinator sends a compact JSON context and a JSON Schema-constrained request. Ollama cannot call the coordinator, inspect the Minecraft world or dispatch work.
-
-## 3. Communication paths
-
-### 3.1 Interface-to-coordinator
-
-- Dashboard requests: authenticated HTTPS REST to Express.
-- Dashboard live view: authenticated SSE stream. Events are summaries, not complete bot world state.
-- CLI: loopback API request with a dedicated local operator credential. It does not write the database.
-- Minecraft chat: WorkerHost forwards only allowlisted, prefixed command intents with sender UUID, server ID and message ID. Coordinator verifies the allowlist and parses an explicit command grammar. Chat is never an unauthenticated admin channel.
-
-All ingress paths call the same Coordinator methods: submitIntent, pauseTask, resumeTask, cancelTask, inspectStatus and controlBot (only for allowlisted safe controls).
-
-### 3.2 Coordinator-to-worker
-
-Use versioned HTTPS REST and one outstanding long-poll request per worker host:
-
-1. Worker authenticates and registers.
-2. Worker posts a heartbeat and compact capability snapshot.
-3. Worker calls the command endpoint with its last accepted sequence and waits for up to the configured long-poll duration.
-4. Coordinator returns a bounded command batch, or an empty response on timeout.
-5. Worker acknowledges command acceptance before execution.
-6. Worker submits progress/evidence/failure events with unique message IDs and monotonic per-worker sequence numbers.
-7. Coordinator deduplicates, validates lease epoch and writes durable changes before returning success.
-
-Long polling avoids a mandatory broker and avoids constant rapid polling. HTTP keep-alive may be enabled. Workers reconnect with exponential backoff and jitter. Commands are leases with expiry and fencing epochs; they are not fire-and-forget messages.
-
-### 3.3 Worker-to-coordinator event flow
+## 3. End-to-End Execution & Reconciliation Sequence
 
 ~~~mermaid
 sequenceDiagram
-  participant W as WorkerHost
-  participant G as WorkerGateway
-  participant T as TaskManager
-  participant DB as StateStore
-  W->>G: heartbeat + capabilities
-  G->>DB: persist worker status
-  W->>G: long-poll(nextSequence)
-  G->>T: request eligible leased commands
-  T->>DB: commit offer/lease
-  DB-->>T: committed
-  T-->>G: command envelope
-  G-->>W: command
-  W->>G: accepted(commandId, epoch)
-  G->>T: acknowledge lease
-  W->>W: execute deterministic action
-  W->>G: event(evidence, seq, lease)
-  G->>T: verify evidence and deduplicate
-  T->>DB: ledger + state transaction
-  DB-->>T: committed
-  T-->>G: accepted / rejected
-  G-->>W: event acknowledgement
+  participant Op as Dashboard / CLI / Chat
+  participant C as Coordinator
+  participant AI as ReasoningEngine + AiEfficiencyController
+  participant TM as TaskManager + InventoryLedger
+  participant S as TaskScheduler
+  participant DB as SQLite StateStore
+  participant WG as WorkerGateway
+  participant WH as WorkerHost + BotController
+
+  Op->>C: submitIntent({ actor, text, idempotencyKey })
+  C->>TM: createTask(queued -> planning)
+  TM->>DB: BEGIN IMMEDIATE ... COMMIT
+  C->>AI: createPlan({ requestId, userText, compactContext })
+  Note over AI: 1. Deterministic template check (0 LLM calls)<br/>2. BoundedCache check<br/>3. In-flight dedup & Governor check<br/>4. Remote Ollama POST /api/chat + Schema/DAG validation
+  AI-->>C: TaskPlanV1 (or clarificationRequired)
+  C->>TM: savePlan(objectives + DAG edges -> ready)
+  TM->>DB: Atomic transaction
+  C->>S: scheduleReadyObjectives(taskId)
+  Note over S: Filter eligible bots -> Estimate T_p50/T_p90<br/>Marginal benefit search (favour 1 bot unless >=10% gain)<br/>Largest-remainder non-overlapping splitQuota
+  S->>TM: commitAssignments(objectiveId, quotas, expectedVersion)
+  TM->>DB: Persist leases (offered, epoch=1) + reserve quotas
+  WH->>WG: GET /worker/v1/commands (long-poll)
+  WG-->>WH: CommandEnvelopeV1 (assignment.start)
+  WH->>WG: POST /worker/v1/commands/ack (accepted + baselineSnapshot)
+  WG->>TM: startAssignment (store baseline inventory)
+  WH->>WH: Deterministic execution (PathfindingGuard + BlockSearchCache)
+  WH->>WG: POST /worker/v1/events (TaskCompletionReportV1 / progress delta)
+  WG->>TM: applyWorkerEvent(workerId, event)
+  Note over TM: Check messageId dedup + workerSequence<br/>Check lease active & allocationEpoch === 1<br/>Verify inventory/world delta vs baseline & quota
+  TM->>DB: Credit verifiedQuantity + append ledger receipt
+  TM-->>C: objective.completed -> unlock dependent DAG nodes
 ~~~
 
-## 4. Task execution flow
+### Lost Acknowledgement & Crash Reconciliation Rule
+1. **Master crash/restart:** On startup, `Coordinator.recover()` loads all non-terminal tasks, objectives, active leases and `worker_dedup_watermarks` from `StateStore`. Leases past `expiresAt` enter `fencing_reconciliation`: no unverified quota is reassigned until either the worker submits `/worker/v1/snapshots` (`checkpointReason: 'startup_reconcile'`) or `leaseGraceMs` elapses, at which point `allocationEpoch` increments and old leases are fenced (`expired`).
+2. **Worker crash/network drop:** If a worker loses contact with Master and cannot renew its lease before `expiresAt`, `BotController` **must** halt active digging/placing/moving (`stopOnLeaseExpiry: true`), write its local checkpoint (last `commandSequence`, `workerSequence`, `assignmentId`, `allocationEpoch` and post-stop inventory snapshot), and wait to re-authenticate and call `/worker/v1/snapshots` before accepting new commands.
 
-1. An interface submits a natural-language objective.
-2. Coordinator authenticates the actor, applies rate and policy limits, creates a task record and stores the original bounded text.
-3. ReasoningEngine asks Ollama for a typed objective DAG when the task is complex or ambiguous. Simple commands may use deterministic intent templates.
-4. SchemaValidator validates the response. Semantic validation resolves item/block IDs using the worker/server registry, checks quantities, bounds, dependencies and risk.
-5. TaskManager stores objectives and dependency edges.
-6. TaskScheduler takes current worker capabilities, resource snapshots, measured rates, travel estimates, server limits and active assignments.
-7. Scheduler enumerates candidate bot subsets and work partitions. It chooses the smallest subset with a material measured benefit.
-8. TaskManager creates non-overlapping leases and quota reservations transactionally.
-9. WorkerGateway offers assignments to workers.
-10. BotController verifies preconditions, snapshots baseline, executes deterministic actions, and reports evidence.
-11. TaskManager reconciles evidence and updates the aggregate ledger.
-12. A dependent objective becomes ready only after all prerequisite objectives are verified complete.
-13. Task completes only when all required objectives are verified complete.
+---
 
-~~~mermaid
-flowchart TD
-  A[Intent arrives] --> B[Authenticate and validate]
-  B --> C{Simple and unambiguous?}
-  C -- Yes --> D[Deterministic intent template]
-  C -- No --> E[Remote Ollama plan]
-  E --> F[Schema and semantic validation]
-  D --> F
-  F --> G[Persist objective DAG]
-  G --> H[Estimate candidate assignments]
-  H --> I[Choose subset and quotas]
-  I --> J[Commit leases]
-  J --> K[Worker executes]
-  K --> L[Evidence submitted]
-  L --> M[Verify and update ledger]
-  M --> N{Objective complete?}
-  N -- No --> H
-  N -- Yes --> O[Unlock dependent objectives]
-  O --> P{All objectives complete?}
-  P -- No --> H
-  P -- Yes --> Q[Complete task]
+## 4. Normative SQLite Persistence Schema (`StateStore`)
+
+`StateStore` encapsulates all SQL behind parameterized `StatementSync` / prepared statements with `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`, `PRAGMA busy_timeout = 3000`, `PRAGMA wal_autocheckpoint = 500`, `PRAGMA journal_size_limit = 8388608`, `PRAGMA temp_store = MEMORY`, and `PRAGMA cache_size = -4096`. Other modules **never** access the SQLite handle directly.
+
+~~~sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS principals (
+  principal_id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('viewer', 'operator', 'admin')),
+  mfa_secret_enc TEXT,
+  disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id_hash TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE CASCADE,
+  csrf_token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  idle_expires_at TEXT NOT NULL,
+  absolute_expires_at TEXT NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS workers (
+  worker_id TEXT PRIMARY KEY,
+  token_verifier_hash TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('alive', 'degraded', 'unreachable', 'disabled')),
+  max_bot_slots INTEGER NOT NULL CHECK (max_bot_slots BETWEEN 0 AND 20),
+  last_heartbeat_at TEXT,
+  last_command_seq INTEGER NOT NULL DEFAULT 0,
+  last_event_seq INTEGER NOT NULL DEFAULT 0,
+  registered_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bots (
+  bot_id TEXT PRIMARY KEY,
+  worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  server_id TEXT NOT NULL,
+  auth_mode TEXT NOT NULL CHECK (auth_mode IN ('online_microsoft', 'private_offline_test')),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  connection_state TEXT NOT NULL CHECK (connection_state IN ('disconnected', 'connecting', 'ready', 'degraded')),
+  compact_snapshot_json TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  task_id TEXT PRIMARY KEY,
+  idempotency_key TEXT UNIQUE,
+  actor_id TEXT NOT NULL,
+  source_interface TEXT NOT NULL CHECK (source_interface IN ('dashboard', 'cli', 'chat')),
+  raw_text TEXT NOT NULL,
+  intent_summary TEXT,
+  state TEXT NOT NULL CHECK (state IN (
+    'queued', 'planning', 'clarification_required', 'ready', 'running',
+    'paused', 'blocked', 'completed', 'failed', 'cancelled'
+  )),
+  priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('survival', 'safety', 'high', 'normal', 'low')),
+  risk_level TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low', 'medium', 'high')),
+  plan_version INTEGER NOT NULL DEFAULT 0,
+  clarification_question TEXT,
+  pause_reason TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS objectives (
+  objective_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+  local_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'mine', 'collect', 'craft', 'build', 'explore', 'guard', 'transfer', 'repair', 'inspect'
+  )),
+  resource_id TEXT,
+  target_quantity INTEGER CHECK (target_quantity IS NULL OR (target_quantity BETWEEN 1 AND 1000000)),
+  verified_quantity INTEGER NOT NULL DEFAULT 0 CHECK (verified_quantity >= 0),
+  reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+  region_label TEXT,
+  description TEXT NOT NULL,
+  parallelism TEXT NOT NULL CHECK (parallelism IN ('single', 'partitionable', 'spatial', 'role_based', 'serial')),
+  worker_count_hint INTEGER NOT NULL DEFAULT 1 CHECK (worker_count_hint BETWEEN 1 AND 20),
+  verification_policy TEXT NOT NULL CHECK (verification_policy IN (
+    'newly_collected', 'held_stock', 'deposited_stock', 'crafted_output',
+    'block_state', 'region_visited', 'role_duration', 'operator_review'
+  )),
+  constraints_json TEXT NOT NULL,
+  allocation_epoch INTEGER NOT NULL DEFAULT 1 CHECK (allocation_epoch >= 1),
+  state TEXT NOT NULL CHECK (state IN (
+    'pending', 'ready', 'assigned', 'running', 'verifying', 'completed', 'blocked', 'failed', 'cancelled'
+  )),
+  version INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (task_id, local_id),
+  CHECK (target_quantity IS NULL OR verified_quantity + reserved_quantity <= target_quantity)
+);
+
+CREATE TABLE IF NOT EXISTS objective_dependencies (
+  objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
+  depends_on_objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
+  edge_type TEXT NOT NULL DEFAULT 'finish_to_start' CHECK (edge_type IN ('finish_to_start', 'start_with')),
+  PRIMARY KEY (objective_id, depends_on_objective_id),
+  CHECK (objective_id <> depends_on_objective_id)
+);
+
+CREATE TABLE IF NOT EXISTS assignments (
+  assignment_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+  objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
+  worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+  bot_id TEXT NOT NULL REFERENCES bots(bot_id),
+  allocation_epoch INTEGER NOT NULL CHECK (allocation_epoch >= 1),
+  lease_id TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN (
+    'offered', 'accepted', 'running', 'reporting', 'verifying', 'completed', 'failed', 'revoked', 'expired'
+  )),
+  action_type TEXT NOT NULL,
+  item_key TEXT,
+  quota_quantity INTEGER CHECK (quota_quantity IS NULL OR quota_quantity >= 1),
+  credited_quantity INTEGER NOT NULL DEFAULT 0 CHECK (credited_quantity >= 0),
+  baseline_quantity INTEGER,
+  baseline_snapshot_json TEXT,
+  scope_json TEXT NOT NULL,
+  constraints_json TEXT NOT NULL,
+  lease_ttl_ms INTEGER NOT NULL DEFAULT 30000 CHECK (lease_ttl_ms BETWEEN 5000 AND 120000),
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  completed_at TEXT,
+  CHECK (quota_quantity IS NULL OR credited_quantity <= quota_quantity)
+);
+
+CREATE TABLE IF NOT EXISTS command_outbox (
+  command_id TEXT PRIMARY KEY,
+  worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+  command_sequence INTEGER NOT NULL,
+  command_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  acked_at TEXT,
+  issued_at TEXT NOT NULL,
+  UNIQUE (worker_id, command_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS worker_inbound_messages (
+  message_id TEXT PRIMARY KEY,
+  worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+  worker_sequence INTEGER NOT NULL,
+  response_json TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  UNIQUE (worker_id, worker_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS ledger_transactions (
+  transaction_id TEXT PRIMARY KEY,
+  evidence_id TEXT NOT NULL UNIQUE,
+  transfer_id TEXT,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  objective_id TEXT NOT NULL REFERENCES objectives(objective_id),
+  assignment_id TEXT NOT NULL REFERENCES assignments(assignment_id),
+  bot_id TEXT NOT NULL REFERENCES bots(bot_id),
+  item_key TEXT,
+  delta_quantity INTEGER NOT NULL,
+  policy TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_decisions (
+  decision_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+  objective_id TEXT NOT NULL REFERENCES objectives(objective_id) ON DELETE CASCADE,
+  allocation_epoch INTEGER NOT NULL,
+  selected_bot_ids_json TEXT NOT NULL,
+  quotas_json TEXT NOT NULL,
+  single_bot_p90_sec REAL,
+  selected_subset_p90_sec REAL,
+  marginal_gain REAL,
+  decision_reason TEXT NOT NULL,
+  trace_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS action_rate_samples (
+  sample_id TEXT PRIMARY KEY,
+  server_id TEXT NOT NULL,
+  dimension TEXT NOT NULL,
+  action_key TEXT NOT NULL,
+  tool_class TEXT,
+  bot_id TEXT NOT NULL,
+  units_completed REAL NOT NULL CHECK (units_completed >= 0),
+  duration_sec REAL NOT NULL CHECK (duration_sec > 0),
+  observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  audit_id TEXT PRIMARY KEY,
+  occurred_at TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_id TEXT,
+  outcome TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_state_created ON tasks(state, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_objectives_task_state ON objectives(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_assignments_obj_state ON assignments(objective_id, state);
+CREATE INDEX IF NOT EXISTS idx_assignments_bot_active ON assignments(bot_id, state);
+CREATE INDEX IF NOT EXISTS idx_assignments_expires ON assignments(state, expires_at);
+CREATE INDEX IF NOT EXISTS idx_commands_worker_seq ON command_outbox(worker_id, acked_at, command_sequence);
+CREATE INDEX IF NOT EXISTS idx_rate_lookup ON action_rate_samples(server_id, dimension, action_key, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_task ON ledger_transactions(task_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_objective ON ledger_transactions(objective_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_assignment ON ledger_transactions(assignment_id);
+CREATE INDEX IF NOT EXISTS idx_inbound_received ON worker_inbound_messages(received_at);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
 ~~~
 
-## 5. State ownership
-
-| State | Authoritative owner | Replicated where |
-|---|---|---|
-| User tasks and intent | TaskManager | Dashboard summaries |
-| Objective DAG | TaskManager | Worker gets only assigned objective details |
-| Assignment leases and epochs | TaskManager | Current worker lease |
-| Worker registration/status | WorkerRegistry | Dashboard summary |
-| Bot game session | BotController on worker | Compact heartbeat snapshot |
-| Raw nearby entities/chunks | Mineflayer worker only | Never copied to master by default |
-| Inventory snapshot | BotController observation | Compact item counts sent to master |
-| Verified resource ledger | TaskManager | Dashboard totals |
-| Strategic plan proposal | ReasoningEngine response | Persist schema-valid plan and version |
-| AI model/session state | Ollama host | Not required on phone |
-| Runtime metrics | ResourceMonitor | Bounded recent summary |
-
-Workers may cache their own observations, but they may not decide that a shared task is complete. The master does not maintain a second copy of the full Minecraft world.
-
-## 6. Persistence model
-
-SQLite is the initial durable store, behind a StateStore interface:
-
-- users and role/permission records;
-- workers and credential hashes;
-- bot registrations and server profiles;
-- tasks, objectives and dependency edges;
-- assignments, leases, epochs and quotas;
-- worker event deduplication watermarks;
-- evidence records and resource ledger transactions;
-- measured action rates and travel samples;
-- audit events and configuration versions.
-
-State transitions and their event records are committed atomically. Store schema version and use forward-only migrations with a tested backup/restore path. Use WAL only after verifying it on the target Android filesystem. The driver choice remains an explicit decision; never assume an SQLite native package works in Termux.
-
-Operational logs and dashboard telemetry are not the source of truth and must be bounded.
-
-## 7. Network/API shape
-
-All application APIs are under /api/v1. Worker endpoints are separately namespaced under /worker/v1. Each request has:
-
-- protocol version;
-- message/request ID;
-- authenticated principal;
-- server receive timestamp;
-- bounded JSON body;
-- schema validation;
-- idempotency/deduplication policy.
-
-Proposed worker endpoints:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | /worker/v1/register | Bootstrap and register worker host |
-| POST | /worker/v1/heartbeat | Liveness and compact capability update |
-| GET | /worker/v1/commands?after_seq=&wait_ms= | Long poll for commands |
-| POST | /worker/v1/commands/ack | Accept/reject offered lease |
-| POST | /worker/v1/events | Submit sequenced event batch |
-| POST | /worker/v1/snapshots | Submit compact inventory/status snapshot |
-| POST | /worker/v1/unregister | Graceful worker shutdown |
-
-The worker API is not the human dashboard API. Worker credentials cannot log in to the dashboard or invoke administrative routes.
-
-Dashboard endpoints are authenticated separately:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /api/v1/session | Current human principal |
-| POST | /api/v1/tasks | Submit intent |
-| GET | /api/v1/tasks | List task summaries |
-| GET | /api/v1/tasks/:id | Task and objective detail |
-| POST | /api/v1/tasks/:id/pause | Pause task safely |
-| POST | /api/v1/tasks/:id/resume | Resume task |
-| POST | /api/v1/tasks/:id/cancel | Cancel task |
-| GET | /api/v1/workers | Worker summaries |
-| GET | /api/v1/events | SSE dashboard stream |
-| POST | /api/v1/bots/:id/safe-stop | Request controlled stop |
-
-CLI commands call these same endpoints. Routes are illustrative contracts and must be captured in an OpenAPI file during implementation.
-
-## 8. Dashboard
-
-The dashboard is a light Express-served vanilla HTML/CSS/JS application. It displays:
-
-- coordinator health and memory/CPU;
-- registered workers and heartbeat age;
-- bots and connection status;
-- tasks, objectives, aggregate verified/target quantities;
-- assignment state, quota and lease expiry;
-- recent warnings/failures and audit actions;
-- Ollama reachable/unavailable status and last inference duration.
-
-It does not display or expose raw credentials, complete world state, private auth data or unbounded logs. SSE events are coalesced and client queues are capped. If a browser disconnects, it reconnects and obtains a fresh compact snapshot.
-
-## 9. CLI
-
-The CLI is a thin authenticated client. It must support at least:
-
-- status;
-- workers list;
-- bots list;
-- task submit <natural-language objective>;
-- task show <id>;
-- task pause/resume/cancel <id>;
-- bot safe-stop <id>;
-- diagnostics;
-- version and compatibility report.
-
-CLI and dashboard do not have different business logic. CLI authentication uses a local token or OS-protected credential file, never a Minecraft account password.
-
-## 10. Chat interface
-
-The chat adapter accepts a single configured prefix and strict allowlist. It ignores bot-originated messages and messages from users not mapped to an authorised player UUID. It supports a small command grammar such as help, status, task, pause, resume and cancel. Natural-language text is accepted only after the sender has passed authorization and coordinator rate limits. The adapter responds with short status identifiers and never reveals tokens, internal file paths or private configuration.
-
-## 11. Failure domains
-
-| Failure | Expected containment |
-|---|---|
-| Ollama down | Deterministic parser/planner continues for supported tasks; complex ambiguous task is marked needs-clarification or queued |
-| Worker down | Worker marked unreachable; lease grace expires; evidence reconciled before reassignment |
-| One bot disconnects | Only its BotController and assignment are affected |
-| Master restarts | SQLite restores tasks, leases and event watermarks; worker re-registration reconciles state |
-| Dashboard disconnects | No task execution impact |
-| CLI exits | No task execution impact |
-| Bad AI schema | Proposal rejected; no assignment created |
-| DB unavailable | Coordinator enters read-only/safe-stop mode; no new leases |
-| Memory pressure | Stop accepting work, reduce telemetry and inference, pause safe tasks if thresholds require |
-| Server rejects login | No auth bypass; classify reason and wait/operator action |
-
-## 12. Scaling model
-
-| Stage | Bots | Worker topology | Gate |
-|---|---:|---|---|
-| 0 | 0 | Coordinator and fake worker | API, persistence, scheduler and recovery tests |
-| 1 | 1 | One authorised worker host | Full one-bot acceptance suite |
-| 2 | 2 | One or two worker hosts | Shared objective, concurrency and failure tests |
-| 3 | 5 | Multiple authorised hosts | Load, server limit and resource budgets |
-| 4 | 10 | Multiple authorised hosts | Fault injection and recovery |
-| 5 | 20 | Multiple authorised hosts | Full soak, security and aggregate verification gates |
-
-Global capacity must be configured no higher than 20. Each worker host and Minecraft server has a lower independently configured capacity. A stage is not approved merely because bots can connect; all task correctness and resource gates must pass.
-
-## 13. Observability
-
-Use structured logs with correlation fields: taskId, objectiveId, assignmentId, workerId, botId and messageId. Do not log secrets or full chat conversations by default. Metrics include worker heartbeat age, queue depth, inference latency/timeout, assignment latency, task ETA error, verified progress, stale events, reconnect count, RSS, heap, external memory, system available memory and event-loop lag.
-
-The ResourceMonitor samples at a configured low frequency and never scans world data. It records a rolling bounded window only.
-
+Notice the database-level `CHECK (target_quantity IS NULL OR verified_quantity + reserved_quantity <= target_quantity)` and `CHECK (quota_quantity IS NULL OR credited_quantity <= quota_quantity)` constraints: even a bug in application logic is rejected atomically by SQLite before corrupting aggregate progress!

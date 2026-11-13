@@ -1,219 +1,118 @@
-# Performance Plan — Galaxy A06 Coordinator and Distributed Workers
+# Low-Memory Performance Architecture — Samsung Galaxy A06 (4 GB RAM)
 
-**Specification:** 1.0.0  
-**Target controller:** Samsung Galaxy A06, Android 16, Termux, 4 GB RAM.  
-**Core requirement:** the phone is a lightweight coordinator and must not run the local LLM or twenty Mineflayer clients.
+**Document:** `docs/spec/PERFORMANCE_PLAN.md`  
+**Specification version:** 1.1.0  
+**Evidence Baseline:** `PERFORMANCE_REPORT.md` & `benchmarks/results/latest-benchmark.json` (empirical Node v22 measurements)  
+**Implemented Primitives (`main`):** `src/monitoring/ResourceMonitor.js`, `src/monitoring/WorkloadGovernor.js`, `src/events/EventBus.js`, `src/performance/*.js`
 
-## 1. Performance model
+---
 
-The physical RAM label is not the memory available to the Termux process. Android, the kernel, services and other applications consume memory. The coordinator must measure actual process and system conditions on the device before setting production thresholds.
+## 1. Hardware Reality & Non-Negotiable Constraints
 
-Remote Mineflayer bots consume memory on their worker hosts. The phone holds only bounded summaries and durable state. Do not ship chunk columns, full entity maps, full packet buffers, pathfinder state or Mineflayer objects to the phone.
+The Master Controller runs inside Termux on a **Samsung Galaxy A06 (4 GB total system RAM, Android 16, ARM64)**:
 
-## 2. Capacity policy
+1. **Shared OS memory:** Android 16 kernel, GPU carve-outs, System UI, Launcher and background services consume a majority of the 4 GB total RAM before Termux starts. **Never** assume 4 GB is available to Node.js, and **never** invent guaranteed device memory numbers — measure on the target device (`npm run check:termux`, `npm run bench`) and report unavailable OS files as `'unavailable'`.
+2. **V8 default heap trap (proven empirically):** On a 4 GB host, Node 22 defaults `v8.getHeapStatistics().heap_size_limit` to **`1,954 MiB`** (`~2 GB`), allowing V8 lazy GC to balloon RSS until Android `lmkd` kills Termux (`SIGKILL`).
+   - **Mandatory launch flag on Galaxy A06:** `NODE_OPTIONS="--max-old-space-size=256"`.
+3. **Zero `mineflayer` / `minecraft-data` on the phone (proven empirically):**
+   - `minecraft-data@3.119.0` unpacks to **`499 MiB`** on disk (`1,344` files) and adds **`+23.5 to +45.4 MiB`** RSS when loaded; `mineflayer + pathfinder` adds **`+37.9 MiB`** RSS.
+   - The phone **never** installs or `require()`s `mineflayer`, `prismarine-world`, `mineflayer-pathfinder` or full `minecraft-data`. Only remote `WorkerHost` machines load Mineflayer, and each `WorkerHost` shares **one** immutable `minecraft-data` instance across its local bots.
+4. **Termux / Android Bionic native addon reality:**
+   - Audited npm releases of `better-sqlite3@13.0.3`, `argon2@0.45.2`, `bcrypt@6.0.0`, and `sqlite3@6.0.1` ship **zero** `android-arm64` Bionic prebuilds.
+   - Built-in **`node:sqlite` (`DatabaseSync`)** (`+2.21 MiB` RSS, `0.025 ms` p50 WAL commit, native `sqlite.backup`) and concurrency-1 **`node:crypto.scrypt`** (`73.5 ms`, `32 MiB` bounded `N=32768, r=8, p=1, maxmem=36 MiB`) require zero C++ addon compilation (subject to physical Galaxy A06 verification `U-03`).
+5. **Android 16 Phantom Process Killer & Doze rules:**
+   - Run `termux-wake-lock` while Master is active.
+   - Store SQLite WAL databases strictly inside Termux `$HOME` (`~/.local/share/mineflayer-ai-swarm/`), **never** on `/sdcard` or `/storage/emulated/0` FUSE mounts (broken `mmap`/POSIX locks + 10x–50x I/O latency).
+   - Keep phone process count to **1 persistent Node.js daemon** (`0` worker child processes, `0` background shell pollers).
 
-| Limit | Initial policy |
-|---|---|
-| Global registered bots | Hard cap 20 |
-| Initial enabled bots | 2 |
-| Phone-local bot slots | 0 by default |
-| Per-worker bot slots | Explicit per-host config; benchmark before increasing |
-| Server bot slots | Operator-approved server-specific cap; never exceed |
-| Concurrent Ollama requests | 1 by default |
-| Ollama pending queue | Small bounded queue; initial maximum 3 |
-| Worker long polls | One outstanding request per worker host |
-| Event batch | Bounded; initial maximum 100 events/request |
-| HTTP body | Strict configured size cap per route |
-| Dashboard SSE | Bounded clients and per-client queue |
-| Task plan | Maximum 20 objectives per plan |
-| Active objective count | Configurable bounded cap; start low and benchmark |
+---
 
-Twenty bots is architectural capacity across authorised worker machines, not a claim that the Galaxy A06 can host twenty Mineflayer sessions or that a Minecraft server allows twenty connections.
+## 2. Empirical Baseline vs Optimised Architecture (`benchmarks/results/latest-benchmark.json`)
 
-## 3. Memory and CPU measurement
+Measured across real separate OS processes (`1` Master + `1..4` WorkerHost processes, `0 -> 1 -> 2 -> 5 -> 10 -> 20` bots, `20/20` tasks and `1,396/1,396` verified units completed in both modes):
 
-Sample at a low, configurable frequency (initial target: every 5 seconds) and record:
+| Metric (20-Bot `4×5` Swarm) | Naive Baseline | Optimised Architecture | Measured Delta | Design Target |
+|---|---:|---:|---:|---|
+| Master Peak RSS | `84.76 MiB` | **`62.47 MiB`** | **`-26.3%`** | `< 140 MiB` normal, `< 180 MiB` constrained |
+| Master Post-GC Heap Used | `13.20 MiB` | **`6.30 MiB`** | **`-52.3%`** | Flat `O(active_bots)`, zero leak slope |
+| Master Total CPU Time | `599.4 ms` | **`299.6 ms`** | **`-50.0%`** | Minimal coordinator serialization |
+| Master DB Commit `p95` | `1.039 ms` | **`0.321 ms`** | **`-69.1%`** | `< 10 ms` normal |
+| Master Inbound / Outbound Wire | `4,809 / 17,111 KB` | **`138.7 / 83.5 KB`** | **`-97.1%` / `-99.5%`** | Compact DTOs + coalesced SSE |
+| Dashboard SSE Frames (3 clients) | `2,388` | **`3`** | **`-99.9%`** | `<= 1 Hz` normal |
+| Remote AI Calls (`20` intents) | `20` | **`1`** | **`-95.0%`** | Fast-path + cache + dedupe |
+| Worker Hosts Sum Peak RSS (`4` hosts) | `373.60 MiB` | **`255.15 MiB`** | **`-31.7%`** | Shared `mcData` + `viewDistance: 4` |
+| Worker Hosts Sum CPU | `3,698.0 ms` | **`1,029.4 ms`** | **`-72.2%`** | `PathfindingGuard` + `BlockSearchCache` |
+| Voxels Scanned (`20` tasks) | `26,512,000` | **`2,112,000`** | **`-92.0%`** | Cached chunk-local lookup |
+| Leaked Bot Listeners / Timers | `240` / `20` | **`0` / `0`** | **`-100%`** | `ScopedListeners` + `TimerRegistry` |
 
-- process RSS;
-- heapTotal and heapUsed;
-- external memory;
-- arrayBuffers;
-- process uptime;
-- operating-system total and available memory when the platform exposes a meaningful value;
-- CPU usage delta over a sampling interval;
-- event-loop delay;
-- active worker count;
-- bot count (remote summary only);
-- active HTTP requests and SSE clients;
-- inference queue depth;
-- command/event queue sizes;
-- state-store query/transaction latency.
+Master RSS remains virtually flat across scale (**`61.5 MiB` at 1 bot -> `62.5 MiB` at 20 bots**).
 
-Node's process.memoryUsage() reports RSS, heap, external and array-buffer memory in bytes. RSS is not the same as V8 heap. process.memoryUsage.rss() can be used for a cheaper RSS-only sample. Platform metrics unavailable on Android must be marked unavailable, never reported as zero.
+---
 
-Reference: https://nodejs.org/api/process.html
+## 3. Continuous Runtime Measurement (`ResourceMonitor`)
 
-Use a small rolling sample buffer and aggregate p50/p95/max. Avoid frequent full process-memory snapshots if RSS-only measurement is sufficient.
+`src/monitoring/ResourceMonitor.js` samples on a single `.unref()`'d timer (`2,000 ms` normal, `5,000 ms` constrained/critical) into a fixed-capacity `RingBuffer` (`120` samples max):
 
-## 4. Baseline and budget derivation
+1. **Process memory:** `rss`, `heapUsed`, `heapTotal`, `external`, `arrayBuffers`, `v8HeapLimit` (`process.memoryUsage()` + `v8.getHeapStatistics()`).
+2. **OS memory:** Linux/Android `/proc/meminfo` (`MemAvailable`, `MemTotal`) via pre-allocated `4 KB` scratch `Buffer`; reports `'unavailable'` when unreadable by Android SELinux.
+3. **CPU & Event Loop:** `process.cpuUsage()` utilization % and `perf_hooks.monitorEventLoopDelay` (`p50`, `p95`, `p99`, `max` in ms).
+4. **SQLite latency:** `p50`, `p95`, `max` ms per transaction.
+5. **Queues, caches, timers, listeners, network, AI & SSE:** Registered live probes with zero unbounded arrays.
 
-Before enabling workers:
+---
 
-1. Reboot the phone and record idle system memory and process baseline.
-2. Start coordinator only; measure after warm-up for at least 15 minutes.
-3. Exercise dashboard, CLI, DB writes, heartbeats and long polls.
-4. Run two remote bots and record phone plus worker host resource use.
-5. Ramp remote bot counts to five, ten and twenty while holding the same coordinator workload shape.
-6. Repeat with Ollama unreachable and with inference enabled (the model itself remains remote).
-7. Record memory and CPU p50/p95/max, event-loop lag, GC pauses where instrumented, DB latency and missed heartbeat rate.
-8. Repeat after Android background/foreground transitions and Termux process resume.
+## 4. Hard Memory, Cache, Log & Stream Bounds
 
-Set RSS warning and critical levels from the measured stable envelope and observed Android memory pressure. Configure a safety margin below the first repeatable OOM/LMK or latency-collapse point. Do not set thresholds solely as a fraction of 4 GB. Document the derived thresholds and evidence in PERFORMANCE_RESULTS.md.
+Every in-memory structure on Master and WorkerHost MUST use the bounded primitives in `src/performance/`:
 
-Suggested pass criteria are relative to a measured baseline:
-- no unbounded RSS growth during a 2-hour two-bot soak;
-- no unbounded queues or heap growth;
-- no lost committed task state;
-- no repeated event-loop stalls that cause heartbeat or lease expiry;
-- p95 coordinator API latency remains within the configured SLO under tested load;
-- critical memory pressure triggers safe mode before process termination.
+| Subsystem | Primitive (`src/performance/`) | Normal Cap | Constrained / Critical | Overflow / Eviction Policy |
+|---|---|---|---|---|
+| Plan & template cache | `BoundedCache` | `64` entries / `256 KiB`, TTL `10m` | `16` entries / `0` entries (flushed) | LRU + byte budget + TTL |
+| Scheduler rate cache | `BoundedCache` | `128` entries / `128 KiB`, TTL `5m` | `32` entries / `16` entries | LRU + byte budget |
+| Diagnostics log ring | `BoundedLogger` | `200` entries (`info` level) | `warn` level in critical | Overwrite oldest in memory; rotate `5 MiB × 3` JSONL files |
+| Worker outbound event queue | `BoundedByteQueue` | `256` msgs / `512 KiB` | Pause non-survival bot intake (`pause_and_checkpoint`) | Never drop completion/failure evidence |
+| Dashboard live stream | `SseCoalescer` | `1,000 ms` (`1 Hz`), max `4` clients | `3,000 ms` (`0.33 Hz`) / `5,000 ms` (`0.2 Hz`) | Keyed state overwrite per `botId`/`taskId`; drop slow socket > `64 KiB` buffered (`res.writableNeedDrain`) |
+| Worker telemetry heartbeat | `CompactSnapshotCodec` | `5,000 ms` (`<= 2.5 KiB`/bot) | `10,000 ms` / `15,000 ms` | Latest compact snapshot overwrites prior |
+| Bot Mineflayer world | `BotController` config | `viewDistance: 4` | `viewDistance: 3` on host pressure | Distant chunks unloaded by Mineflayer |
+| Bot block search | `BlockSearchCache` | `64` keys, radius `<= 32`, `4,096` blocks/scan | Radius `<= 16` | Dirty-chunk `(cx, cz)` invalidation |
+| Bot pathfinding | `PathfindingGuard` | `thinkTimeout <= 1,500 ms`, cooldown `1,000 ms` | `thinkTimeout <= 800 ms` | Single active run per bot; stuck detector (`3` windows -> abort) |
+| Bot chat filter | `ChatHistoryGuard` | `0` ambient chat lines retained (`maxRetained = 8`) | Same | Immediate `O(1)` prefix + allowlist drop |
 
-Exact numeric SLOs and memory caps remain to be filled from actual device benchmarks. The project must not invent guaranteed values.
+---
 
-## 5. Adaptive concurrency
+## 5. Adaptive Concurrency & Memory-Pressure Recovery (`WorkloadGovernor`)
 
-Use a WorkloadGovernor with states normal, constrained and critical.
+### 5.1 Pressure Thresholds (Default Galaxy A06 Profile)
 
-### Normal
-- accept work within configured global and worker caps;
-- allow normal bounded telemetry and one inference request;
-- schedule only eligible workers.
-
-### Constrained
-Triggered by measured memory/CPU/lag thresholds or persistent queue pressure:
-- stop admitting new optional tasks;
-- pause or reject non-essential AI inference;
-- reduce dashboard detail and telemetry cadence;
-- coalesce worker updates;
-- stop retaining high-cardinality event histories;
-- reduce new assignment concurrency;
-- continue durable state, heartbeats, lease safety and cancellation.
-
-### Critical
-- reject new tasks and new leases;
-- stop new AI inference;
-- close excess SSE clients;
-- preserve database writes required for safe stop and reconciliation;
-- send pause/stop commands to workers where transport is available;
-- workers stop beginning new actions if leases cannot be renewed;
-- keep local event log small;
-- emit one critical alert and enter controlled recovery.
-
-Recovery:
-- require measurements below recovery threshold for a configured cool-down window;
-- restore one level at a time;
-- do not automatically replay commands whose execution outcome is uncertain.
-
-Concurrency is bounded by the minimum of:
-- global configured bot cap;
-- server-specific available slots;
-- worker-host available slots;
-- capability-eligible bots;
-- WorkloadGovernor's current concurrency cap.
-
-The coordinator should never use memory pressure to silently increase bot concurrency.
-
-## 6. Cache and queue limits
-
-All caches use explicit maximum size and TTL; all queues use backpressure.
-
-Initial starting caps to benchmark:
-- bot/worker summary cache: 20 bot summaries + worker summaries;
-- recent UI event ring: 1,000 compact events;
-- per-client SSE queue: 100 events; on overflow disconnect and require a fresh snapshot;
-- dashboard history: 60 aggregated samples;
-- in-memory idempotency cache: 1,000 recent IDs, with durable deduplication in SQLite;
-- inference queue: 3 waiting requests and one active;
-- worker outbound local event queue: bounded by count and serialized byte size; overflow triggers safe pause and durable checkpoint, never unbounded buffering;
-- HTTP request body and event batch byte caps: configurable, strict and tested.
-
-Cache eviction must never evict authoritative ledger or task state. Cache loss must be recoverable from StateStore or worker snapshots.
-
-## 7. Log management
-
-- Structured, single-line logs.
-- Secret and credential redaction before serialization.
-- Default INFO or WARN; DEBUG only temporarily.
-- Rotate by size and keep a small configured number of files.
-- Initial candidate: 5 MiB per file and three files; validate filesystem behaviour and free-space margin on Termux.
-- Never log full world/chunk data, raw packets, password/token values, Microsoft credentials or full private chat.
-- Rate-limit repetitive errors and emit counters for suppressed events.
-- Audit logs for security and task state changes are durable separately from verbose diagnostics.
-
-## 8. Dashboard update strategy
-
-- Dashboard initial load: one compact snapshot.
-- Live updates: SSE, event-driven.
-- Coalesce high-frequency metrics into a summary at most once per second.
-- Worker liveness is based on heartbeat, not browser polling.
-- Send detailed task updates only when state/progress changes.
-- UI may render at 1–2 Hz; no need to repaint for every Minecraft movement.
-- If the browser cannot keep up, drop intermediate telemetry and let it reload a snapshot.
-- Use visibility handling to reduce client rendering when the dashboard tab is backgrounded.
-
-## 9. CPU and event-loop control
-
-- No large pathfinding computation on the phone.
-- No AI inference on the phone.
-- No synchronous file scans or large JSON serialization in request handlers.
-- Keep SQLite transactions short; no network calls while a transaction is open.
-- Paginate dashboard/task queries.
-- Debounce task replans and group related failure events.
-- Use event-driven Mineflayer observation on workers, not fast global polling.
-- Measure event-loop delay; if the phone stalls, reduce optional work and increase safe backpressure.
-
-## 10. Worker-side performance
-
-Each worker host reports its own resource metrics and per-bot slot capacity. It must bound:
-- number of active Mineflayer clients;
-- chunk/entity data retained by each client;
-- pathfinding CPU and timeout;
-- action retry loops;
-- inventory snapshots and event queue;
-- logs and reconnect attempts.
-
-Never infer that a device can host N bots from its RAM specification alone. Benchmark each worker model and server combination.
-
-## 11. Benchmark matrix
-
-| Test | Controller load | Worker load | Pass requirement |
+| Metric | `normal -> constrained` | `constrained -> critical` | Hysteresis Exit Rule |
 |---|---|---|---|
-| Idle baseline | coordinator only | none | stable baseline recorded |
-| API load | dashboard + CLI | none | bounded latency and queues |
-| Two bots | normal | two Mineflayer sessions | no correctness/resource regression |
-| Five bots | normal | distributed workers | cap and heartbeat correctness |
-| Ten bots | normal | distributed workers | stable bounded summaries |
-| Twenty bots | normal | multiple hosts | no phone-side world-state growth |
-| Ollama unavailable | fallback | tasks continue where supported | no paid fallback, no crash |
-| Memory pressure | constrained/critical | active tasks | safe admission and recovery |
-| Long soak | two then scale | stable scenario | no unbounded memory or queue growth |
-| Network partition | active leases | workers isolated | fenced leases and no duplicate credit |
+| Master RSS (`--max-old-space-size=256`) | `>= 175 MiB` | `>= 215 MiB` | Stay `<= 185 MiB` (`critical -> constrained`) / `<= 150 MiB` (`constrained -> normal`) for `recoveryCooldownMs` |
+| Heap ratio (`heapUsed / v8HeapLimit`) | `>= 0.70` | `>= 0.85` | Stepwise only: `critical -> constrained -> normal` (`<= 0.60` for `normal`) |
+| OS `MemAvailable` (`/proc/meminfo` only) | `<= 550 MiB` | `<= 350 MiB` | Ignored cleanly if `'unavailable'` or `node:os_memfree` (`CRIT-03`) |
+| Event-loop `p95` lag | `>= 60 ms` | `>= 180 ms` | Stay `<= 35 ms` for `normal` |
+| Task queue depth | `>= 25` | `>= 60` | Drains cleanly before restoring concurrency |
 
-## 12. Performance results requirement
+### 5.2 Deterministic Shedding & Recovery Sequence (`0` Tasks Silently Discarded)
 
-Every release candidate records:
-- device model, Android version, Termux version and Node version;
-- coordinator and worker process versions;
-- Minecraft/server/protocol tuple;
-- Ollama host/model/digest, if enabled;
-- bots and worker hosts;
-- duration, scenario and concurrency;
-- process/system memory p50/p95/max;
-- CPU and event-loop lag;
-- task time prediction error;
-- event/command queue maximum;
-- heartbeat misses and reconnect count;
-- DB latency and durable event counts.
+- **Entering `constrained`:**
+  1. Evict expired entries and shrink `BoundedCache` budgets to `25%`.
+  2. Throttle Dashboard `SseCoalescer` to `3,000 ms` (`0.33 Hz`) and Worker non-critical telemetry to `10,000 ms`.
+  3. Cap `TaskScheduler` subset candidate search width `K = 3` and reduce `effectiveBotConcurrency` to `ceil(0.5 * configuredCap)`.
+  4. Defer new `low`-priority tasks (`action: 'paused_and_queued'` in durable queue — **never discarded**) while allowing `survival`, `safety`, `high` and `normal` tasks.
+  5. Emit structured `workload.reduction` audit report.
+- **Entering `critical`:**
+  1. Clear **all** regenerable caches (`0` bytes retained; all persistent state remains safe in SQLite).
+  2. Reject new non-essential AI planning requests (`fast-path` / deterministic fallback only) and abort waiting low-priority AI queue items into `paused_and_queued`.
+  3. Throttle Dashboard SSE to `5,000 ms` (`0.2 Hz`), log level to `warn`, and pause all active `low`/`normal` non-safety objectives cleanly at next checkpoint (`effectiveBotConcurrency = 0` for non-safety work).
+  4. **Never shed:** bot survival (`eat_survival`, hazard escape), `safe_stop`, lease-expiry fencing, worker heartbeats, and SQLite durability commits.
+- **Recovery (`critical -> constrained -> normal`):**
+  - After `3` consecutive healthy samples and `cooldownMs`, `WorkloadGovernor` steps down one level and drains paused tasks in FIFO priority order via `drainResumableTasks`.
 
-If a metric is unavailable, label it unavailable. A successful load test on one worker machine does not prove all worker devices can host the same number of bots.
+---
 
+## 6. Galaxy A06 On-Device Benchmark Protocol (`U-03`, `U-12`)
+
+Before increasing `enabledBots` past `2` on the physical phone, the operator runs:
+1. `npm run check:termux` -> verifies Android kernel, `/proc/meminfo` visibility, `$HOME` SQLite WAL + backup, `crypto.scrypt` latency, and `--max-old-space-size=256`.
+2. `npm run test:leaks` -> verifies `< 2 MiB` post-GC heap retention across `20` connect/disconnect cycles, `600` SSE frames, and `100` task lifecycles.
+3. `npm run bench` -> records device-specific `benchmarks/results/galaxy-a06-benchmark.json` for `0, 1, 2, 5, 10, 20` simulated remote bots.

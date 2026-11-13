@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const os = require('node:os');
+const v8 = require('node:v8');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 const { RingBuffer } = require('../performance/RingBuffer');
 const { countEmitterListeners } = require('../performance/ScopedListeners');
@@ -46,8 +47,9 @@ function readSystemMemory() {
     if (Number.isFinite(total) && total > 0 && Number.isFinite(free) && free >= 0) {
       return {
         totalBytes: total,
-        availableBytes: free,
-        source: 'node:os'
+        availableBytes: 'unavailable',
+        rawFreeBytes: free,
+        source: 'node:os_memfree'
       };
     }
   } catch {
@@ -149,15 +151,21 @@ class ResourceMonitor {
 
     const t = options.thresholds || {};
     this._thresholds = {
-      warningRssBytes: t.warningRssBytes ?? 220 * 1024 * 1024,
-      criticalRssBytes: t.criticalRssBytes ?? 300 * 1024 * 1024,
+      warningRssBytes: t.warningRssBytes ?? 175 * 1024 * 1024,
+      criticalRssBytes: t.criticalRssBytes ?? 215 * 1024 * 1024,
       warningEventLoopLagMs: t.warningEventLoopLagMs ?? 60,
       criticalEventLoopLagMs: t.criticalEventLoopLagMs ?? 180,
       warningCpuPercent: t.warningCpuPercent ?? 75,
       criticalCpuPercent: t.criticalCpuPercent ?? 92,
-      warningSystemAvailableBytes: t.warningSystemAvailableBytes ?? 400 * 1024 * 1024,
-      criticalSystemAvailableBytes: t.criticalSystemAvailableBytes ?? 220 * 1024 * 1024
+      warningSystemAvailableBytes: t.warningSystemAvailableBytes ?? 550 * 1024 * 1024,
+      criticalSystemAvailableBytes: t.criticalSystemAvailableBytes ?? 350 * 1024 * 1024
     };
+
+    const heapStats = typeof v8.getHeapStatistics === 'function' ? v8.getHeapStatistics() : null;
+    this._v8HeapLimitBytes =
+      heapStats && typeof heapStats.heap_size_limit === 'number'
+        ? heapStats.heap_size_limit
+        : 256 * 1024 * 1024;
 
     this._cpuCount =
       typeof os.availableParallelism === 'function'
@@ -491,6 +499,7 @@ class ResourceMonitor {
         rssBytes: mem.rss,
         heapTotalBytes: mem.heapTotal,
         heapUsedBytes: mem.heapUsed,
+        v8HeapLimitBytes: this._v8HeapLimitBytes,
         externalBytes: mem.external,
         arrayBuffersBytes: mem.arrayBuffers,
         systemTotalBytes: sysMem.totalBytes,

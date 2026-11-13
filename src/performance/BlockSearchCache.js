@@ -215,26 +215,32 @@ class BlockSearchCache {
     const sx = Math.floor(pos.x) >> SECTOR_SHIFT;
     const sy = Math.floor(pos.y) >> SECTOR_SHIFT;
     const sz = Math.floor(pos.z) >> SECTOR_SHIFT;
+    const sectorReach = Math.max(1, Math.ceil(Math.max(this._defaultMaxRadius, this._governorMaxRadius) / 16));
+    const ySectorReach = Math.max(1, Math.ceil(this._verticalHalfSpan / 16));
     let removed = 0;
 
-    if (oldBlockId !== null && oldBlockId !== undefined) {
-      if (this._sectorCache.delete(sectorKey(dimension, oldBlockId, sx, sy, sz))) {
-        removed += 1;
-      }
-    }
-    if (newBlockId !== null && newBlockId !== undefined) {
-      if (this._sectorCache.delete(sectorKey(dimension, newBlockId, sx, sy, sz))) {
-        removed += 1;
-      }
-    }
+    const targetIds = [];
+    if (oldBlockId !== null && oldBlockId !== undefined) targetIds.push(String(oldBlockId));
+    if (newBlockId !== null && newBlockId !== undefined) targetIds.push(String(newBlockId));
 
-    // If caller didn't supply specific IDs, evict all entries for this 16^3 sector
-    if (oldBlockId === null && newBlockId === null) {
-      const suffix = `|${sx},${sy},${sz}`;
-      const prefix = `${dimension}|`;
-      for (const key of Array.from(this._sectorCache._store.keys())) {
-        if (key.startsWith(prefix) && key.endsWith(suffix)) {
-          this._sectorCache.delete(key);
+    const prefix = `${dimension}|`;
+    for (const key of Array.from(this._sectorCache._store.keys())) {
+      if (!key.startsWith(prefix)) continue;
+      const parts = key.split('|');
+      if (parts.length < 3) continue;
+      const cachedTarget = parts[1];
+      if (targetIds.length > 0 && !targetIds.includes(cachedTarget)) continue;
+
+      const coords = parts[2].split(',');
+      const kx = Number(coords[0]);
+      const ky = Number(coords[1]);
+      const kz = Number(coords[2]);
+      if (
+        Math.abs(kx - sx) <= sectorReach &&
+        Math.abs(ky - sy) <= ySectorReach &&
+        Math.abs(kz - sz) <= sectorReach
+      ) {
+        if (this._sectorCache.delete(key)) {
           removed += 1;
         }
       }

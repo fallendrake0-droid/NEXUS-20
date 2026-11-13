@@ -1,15 +1,26 @@
 {
   "name": "mineflayer-ai-swarm",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Distributed Mineflayer AI Swarm — lightweight Galaxy A06 master coordinator and bounded worker runtime",
+  "description": "NEXUS-20 Distributed Mineflayer AI Swarm — lightweight Galaxy A06 master coordinator, Central Brain, Control Centre UI & bounded WorkerHost runtime",
+  "main": "index.js",
   "type": "commonjs",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "node --test tests/performance/*.test.js",
-    "test:unit": "node --test tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
+    "start": "node index.js",
+    "setup": "node index.js setup",
+    "start:master": "node --max-old-space-size=256 index.js --role=master",
+    "start:worker": "node index.js --role=worker",
+    "check:config": "node index.js --check-config",
+    "cli:help": "node index.js --help",
+    "cli:mint-token": "node index.js mint-token",
+    "cli:backup": "node index.js backup",
+    "test": "node --test tests/foundation/*.test.js tests/adversarial/*.test.js tests/performance/*.test.js",
+    "test:foundation": "node --test tests/foundation/*.test.js",
+    "test:adversarial": "node --test tests/adversarial/*.test.js",
+    "test:unit": "node --test tests/foundation/*.test.js tests/adversarial/*.test.js tests/performance/modules.test.js tests/performance/governor-and-ai.test.js",
     "test:leaks": "node --expose-gc --test tests/performance/memory-leaks.test.js",
     "bench": "node --expose-gc benchmarks/run-benchmarks.js",
     "check:termux": "node benchmarks/termux-compatibility-check.js"

@@ -7,5 +7,12 @@ logs/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.json
+data/backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.pem
+*.key
 tmp/
 coverage/

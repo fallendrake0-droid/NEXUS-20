@@ -125,7 +125,13 @@ class PathfindingGuard {
       }
     }
 
-    const prevRetries = active && active.targetKey === targetOnlyKey ? active.retries : 0;
+    const lastForRetries = this._lastComputeByBot.get(botId);
+    const prevRetries =
+      active && active.targetKey === targetOnlyKey
+        ? active.retries
+        : lastForRetries && lastForRetries.targetKey === targetOnlyKey
+          ? lastForRetries.retries || 0
+          : 0;
     if (prevRetries >= this._maxStuckRetries) {
       return {
         status: 'NO_PATH',
@@ -149,7 +155,6 @@ class PathfindingGuard {
             err.code = 'PATH_TIMEOUT';
             reject(err);
           }, this._maxComputeMs);
-          if (typeof timer.unref === 'function') timer.unref();
         });
 
         const rawResult = await Promise.race([
@@ -182,15 +187,28 @@ class PathfindingGuard {
         const ttl =
           normalized.status === 'success' ? this._cacheTtlMs : this._negativeCacheTtlMs;
         this._routeCache.set(fullKey, normalized, ttl);
+        const nextRetries =
+          normalized.status !== 'success'
+            ? prevRetries + 1
+            : forceReplan
+              ? prevRetries + 1
+              : 0;
         this._lastComputeByBot.set(botId, {
           targetKey: targetOnlyKey,
           fullKey,
-          computedAt: this._now()
+          computedAt: this._now(),
+          retries: nextRetries
         });
         return normalized;
       } catch (err) {
         if (err && err.code === 'PATH_TIMEOUT') {
           this._timeouts += 1;
+          this._lastComputeByBot.set(botId, {
+            targetKey: targetOnlyKey,
+            fullKey,
+            computedAt: this._now(),
+            retries: prevRetries + 1
+          });
           return {
             status: 'timeout',
             failureCode: 'PATH_TIMEOUT',

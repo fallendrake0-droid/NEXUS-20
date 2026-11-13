@@ -1,166 +1,94 @@
-# Security Plan — Mineflayer AI Swarm
+# Security, Trust Boundaries & Operational Safety Plan
 
-**Specification:** 1.0.0  
-**Security posture:** private authorised environment, least privilege, fail closed.
+**Document:** `docs/spec/SECURITY_PLAN.md`  
+**Specification version:** 1.1.0  
+**Posture:** Secure-by-default, fail-closed, least-privilege, explicitly authorised servers & workers only.
 
-## 1. Threat model
+---
 
-Protect against:
-- unauthorised dashboard users;
-- stolen/replayed worker credentials;
-- malicious or compromised worker hosts;
-- spoofed/stale worker events;
-- duplicate commands and resource-credit inflation;
-- hostile chat input and prompt injection;
-- malicious or malformed Ollama output;
-- remote access to the Ollama API;
-- Minecraft account credential exposure;
-- denial of service through request, event, inference or SSE floods;
-- data loss or inconsistent state after restart;
-- accidental public-server use or excess server connections.
+## 1. Threat Model & Trust Boundaries
 
-Assume a worker can fail, disconnect or report incorrect evidence. The coordinator must not trust a worker's self-reported completion counters.
-
-## 2. Trust boundaries and principals
-
-| Principal | Authentication | Permissions |
+| Principal / Component | Trust Level | Security Controls |
 |---|---|---|
-| Dashboard human | Server-managed session, password and optional MFA | Role-based tasks, monitoring and admin controls |
-| Local CLI | Local operator credential or OS-protected secret | Explicit operator command set |
-| Minecraft chat actor | Allowlisted server + player UUID | Narrow chat command allowlist |
-| Worker host | Unique worker token, preferably TLS client identity where practical | Own bot heartbeats, leases, events and snapshots only |
-| Bot account | Legitimate Minecraft authentication local to worker | Game actions permitted by server and configured policy |
-| Ollama service | Private network + TLS/authenticated proxy boundary | Structured planning only; no direct control-plane write access |
+| Human Operator (`viewer` / `operator` / `admin`) | Authenticated human | Password hash (`scrypt`/`argon2id`), opaque server-side session, CSRF token + `Origin` check, RBAC, audit trail |
+| Local Termux CLI (`cli_operator`) | Authenticated local process | Dedicated `SWARM_CLI_TOKEN` (`0600` perms in `$HOME`) over loopback or TLS |
+| Remote `WorkerHost` (`worker`) | Semi-trusted execution node | One-time TTL `bootstrapToken` -> scoped `workerToken` (SHA-256 verifier only stored), bound to `workerId` + `allowedBotIds`, fenced by `allocationEpoch` |
+| Remote Ollama Server | Untrusted advisory model | Outbound-only to allowlisted LAN/VPN host; `PlanningContextV1 <= 8 KiB`; zero secrets/chunks; strict `SchemaValidator`; zero direct bot control |
+| Minecraft Server & In-Game Chat | Untrusted external input | `ChatHistoryGuard` drops unprefixed/bot/unlisted chat in `O(1)`; allowlisted commands pass through `Coordinator` RBAC (`chat_allowed` subset); zero shell/eval |
+| Local Filesystem (`$HOME`) | Restricted storage | `0700` data dir, `0600` SQLite WAL + config files, zero secrets in git/logs/SSE/AI |
 
-Do not reuse credentials across principals. A worker token must not authenticate as a dashboard user. A Minecraft token must never be sent to the coordinator or Ollama.
+---
 
-## 3. Human dashboard and CLI authentication
+## 2. Authentication, KDF & Session Security (`AuthService`)
 
-- Use server-managed sessions with opaque high-entropy identifiers.
-- Cookie: HttpOnly, Secure, SameSite=Lax or stricter where the deployment flow allows, Path=/, no Domain for __Host- prefixed cookies.
-- Rotate session ID after login and privilege change.
-- Enforce idle and absolute expiry.
-- CSRF protection on state-changing browser requests; validate Origin and a session-bound CSRF token.
-- Rate limit login by account and source, use generic failure responses and safe recovery.
-- Passwords hashed using a current OWASP-recommended password hashing configuration (Argon2id is preferred where correctly supported).
-- Do not store credentials or session IDs in localStorage/sessionStorage.
-- Use secure bootstrap to provision first administrator. Never commit a default admin password.
-- Roles: viewer, operator and admin. Every endpoint checks authorization server-side.
-- CLI uses a separate local operator credential stored with restrictive filesystem permissions. On Android/Termux, document the limitations of filesystem permissions and prefer user-private app storage.
-- Log authentication outcomes without passwords or tokens.
+### 2.1 Password Hashing (Termux-Safe & Memory-Bounded)
+- **Primary portable KDF (zero native C++ addon build on Android Bionic):** `node:crypto.scrypt` with `N = 32768`, `r = 8`, `p = 1`, `keylen = 32`, `salt = 16 random bytes`, `maxmem = 36 * 1024 * 1024` (`32 MiB` active block; measured `73.5 ms` per verification), serialized through a **concurrency-1 mutex** (max `4` waiting login requests; `429 RATE_LIMITED` beyond `4`) so login traffic can never spike phone RAM!
+- **Optional Argon2id profile:** `m = 19456 KiB`, `t = 2`, `p = 1` when verified prebuilt/compiled on host (`U-03`). PHC-formatted password hashes (`$scrypt$...` or `$argon2id$...`) self-identify their algorithm.
 
-## 4. Worker identity and bootstrap
+### 2.2 Browser Sessions & CSRF Protection
+- Cookie name: `__Host-swarm_session` (`HttpOnly; Secure; SameSite=Strict; Path=/`) over HTTPS (falls back to `swarm_session` with `HttpOnly; SameSite=Strict; Path=/` **only** when bound strictly to `127.0.0.1` local development).
+- Session token: `32` bytes `crypto.randomBytes(32)` base64url; SQLite `sessions.session_id_hash` stores **only** `SHA-256(rawSessionToken)`.
+- Idle timeout: `30 minutes`; absolute lifetime: `12 hours`; session rotated on login and privilege change.
+- **CSRF defence on all state-changing `/api/v1/*` (`POST`/`PUT`/`PATCH`/`DELETE`):**
+  1. Require `X-CSRF-Token` header matching session's `csrf_token_hash` via `crypto.timingSafeEqual`.
+  2. Require `Origin` (or `Referer` if `Origin` absent) to match configured Dashboard origin (`403 CSRF_INVALID` on mismatch).
+  3. Require `Content-Type: application/json`.
 
-- Each WorkerHost has an immutable workerId and unique secret.
-- Initial registration uses a one-time bootstrap credential provided out-of-band by an administrator.
-- Bootstrap token is short-lived, single-use and scoped to registration.
-- Coordinator generates a random high-entropy worker token after successful registration.
-- Display/return raw worker token once; store only a secure verifier/hash at master.
-- Worker stores its token in private local configuration with restrictive file permissions. Do not place it in source control, shared chat, command-line history or logs.
-- Support token rotation and immediate revocation.
-- Token revocation makes future heartbeat, poll and event requests fail and causes worker safe stop.
-- Worker credentials are limited to that worker ID and its registered bot IDs.
-- Require request replay protection with message IDs, worker sequence numbers, lease IDs and allocation epochs.
-- Use TLS; private LAN/VPN is required. Prefer mutual TLS where deployment and Termux certificate handling permit it, but unique bearer credentials remain required even inside a VPN.
+### 2.3 Login & Auth Rate Limiting
+- Per `(ip, username)` sliding window in bounded `BoundedCache`: max `5` failed logins per `15 minutes` -> `429 RATE_LIMITED` + audit event `auth.login_rate_limited`.
 
-## 5. Worker protocol security
+---
 
-- Validate method, path, content type, schema version and body size.
-- Authenticate before expensive parsing where possible.
-- Apply rate and payload limits by worker identity.
-- Reject unknown JSON properties and unsupported protocol versions.
-- Require monotonically increasing worker sequence numbers; deduplicate messageId.
-- Validate assignment ownership and allocationEpoch for every event.
-- Use server-side receive time for lease deadlines.
-- Workers may only acknowledge and report their own commands.
-- Worker cannot request arbitrary task IDs, bot IDs or another worker's snapshot.
-- Do not accept arbitrary URL, shell command, JavaScript or filesystem path from worker messages.
-- Treat all reported inventory and action results as evidence requiring validation.
+## 3. Endpoint RBAC Matrix
 
-## 6. Minecraft authentication and server authorisation
+| Endpoint / Action | `viewer` | `chat_allowed` | `operator` / `cli` | `admin` | `worker` |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `GET /api/v1/session`, `/snapshot`, `/diagnostics`, `/workers`, `/tasks`, `/events` | Allow | Deny | Allow | Allow | Deny |
+| `POST /api/v1/tasks` (low/medium risk allowlisted intents) | Deny | Allow (online-mode only) | Allow | Allow | Deny |
+| `POST /api/v1/tasks/:taskId/{clarify,pause,resume,cancel}` | Deny | Own/safe subset | Allow | Allow | Deny |
+| `POST /api/v1/bots/:botId/safe-stop` | Deny | Deny | Allow | Allow | Deny |
+| `POST /api/v1/workers/bootstrap` | Deny | Deny | Deny | Allow | Deny |
+| `POST /api/v1/workers/:workerId/revoke` | Deny | Deny | Deny | Allow | Deny |
+| `POST /api/v1/admin/backup` | Deny | Deny | Deny | Allow | Deny |
+| `POST /worker/v1/{heartbeat,commands/ack,events,snapshots,chat-intents,unregister}`, `GET /worker/v1/commands` | Deny | Deny | Deny | Deny | Own `workerId` only |
 
-- Offline-mode usernames are allowed only for a private test server under the project owner's control.
-- Online-mode use requires legitimate separately authenticated Microsoft/Minecraft accounts using the supported authentication flow for the pinned Mineflayer version.
-- Store authentication state only on the worker host that owns the bot.
-- Never bypass Microsoft login, server authentication, anti-cheat, CAPTCHA, access controls, player limits or server moderation.
-- Do not spoof identities or reuse another player's tokens.
-- Configure an explicit allowed server list and environment profile. Production mode refuses unknown hosts.
-- Require operator-confirmed per-server max connection count.
-- Rate-limit login/reconnect attempts and respect kick/ban/server responses. Repeated kick or authentication failure pauses the bot and alerts the operator rather than retrying indefinitely.
+**Worker ownership check:** On every `/worker/v1/*` request, `WorkerGateway` verifies `authWorker.workerId === payload.workerId` and every `botId` in the batch belongs to `authWorker.allowedBotIds`. Any cross-worker or cross-bot claim fails closed with `403 FORBIDDEN` and emits `security.worker_impersonation_blocked`.
 
-## 7. Chat-command security
+---
 
-- Require server profile + player UUID allowlist.
-- Bot-originated messages are ignored.
-- Strict command prefix and parser; no eval, shell, JavaScript, command blocks or arbitrary plugin dispatch.
-- Role-check actions: status may be read-only; task creation, pause and cancel require appropriate permission.
-- Per-player rate limit and maximum message length.
-- Natural-language task text remains untrusted and is passed as data to ReasoningEngine.
-- High-risk or ambiguous plans require clarification/operator approval.
-- Reply without leaking account IDs, tokens, filesystem paths or private settings.
+## 4. Worker Enrollment, Transport & Revocation Lifecycle
 
-## 8. Ollama security
+1. **Transport:** All non-loopback traffic (`WorkerHost <-> Master`, remote browser `<-> Master`, non-private-VPN `Master <-> Ollama`) MUST use **HTTPS / TLS 1.3** (private CA / mTLS or encrypted WireGuard/Tailscale overlay verified by config). Plaintext HTTP on `0.0.0.0` or LAN IP without TLS is rejected at startup by `loadConfig`.
+2. **Enrollment (`POST /worker/v1/register`):**
+   - Admin generates a single-use `bootstrapToken` (`32` random bytes, TTL `<= 10 minutes`, only `SHA-256` stored in `worker_bootstrap_tokens`).
+   - Worker presents `bootstrapToken` once and receives a unique `workerToken` (`32` random bytes, only `SHA-256` stored in `workers.token_verifier_hash`).
+   - Replaying a consumed or expired `bootstrapToken` returns `401 UNAUTHENTICATED` and logs `security.bootstrap_token_replay`.
+3. **Immediate Revocation (`POST /api/v1/workers/:workerId/revoke`):**
+   - Sets `workers.revoked_at`, increments `allocation_epoch` on all active objectives held by `workerId`, transitions its active assignments to `cancelled`, and causes all subsequent `/worker/v1/*` calls from that token to fail with `401`.
 
-- Ollama runs on a device controlled by the user, separate from the phone.
-- It is reachable only over private LAN/VPN and never directly exposed to the public internet.
-- Use TLS and authenticated reverse proxy or equivalent network protection; do not assume Ollama itself authenticates callers.
-- Firewall ingress to the model host and restrict caller to the coordinator.
-- Never send Minecraft, worker, dashboard or Microsoft credentials.
-- Send allowlisted compact snapshots only.
-- Validate model output against a strict JSON Schema and semantic policy.
-- Disable tools/function execution for planning requests unless a future reviewed design explicitly requires a safe, separately permissioned tool layer.
-- No paid fallback provider, cloud endpoint or hidden metered service.
-- If Ollama is unavailable, follow deterministic fallback rules.
+---
 
-## 9. Task and action safety
+## 5. Minecraft Account & Gameplay Ethics Controls
 
-- Only allowlisted action types can be dispatched.
-- Each assignment has action deadline, lease expiry, risk level, resource quota and scope.
-- Worker performs deterministic precondition checks before action.
-- Unsafe/unloaded/unknown terrain is not treated as safe.
-- Stop on death, disconnection, lease expiry, critical health/food, tool failure or server rejection according to policy.
-- Do not continue a task after the assignment lease expires.
-- Prevent two bots from mining/placing the same reserved coordinate or taking the same unique item without explicit coordination.
-- Build and transfer operations require bounds and verification.
-- A task cannot change its target quantity through worker messages.
-- AI cannot grant permissions, disable safety checks or set server connection limits.
+1. **Credential isolation:** Minecraft session/Microsoft OAuth caches stay strictly on the `WorkerHost` running that `BotController` (`0600` local directory) and are **never** transmitted to Master, Dashboard, SSE, logs or Ollama.
+2. **Explicit server authorisation:** `WorkerHost` connects **only** to `(host, port, version)` entries listed in operator-signed config with `serverApprovedByOperator: true`.
+3. **Anti-abuse & fair-play guardrails:**
+   - Hard global cap `<= 20` bots; default `enabledBots = 2`.
+   - Reconnect backoff (`2s -> 5s -> 15s -> 60s` + jitter); **immediate permanent stop** (`retryable: false`) on kick/ban/whitelist/auth messages so bots never hammer a server that rejected them.
+   - `safetyPolicy.allowPvp` is schema-locked to `false`; griefing, exploit packets, chat spam and unauthorised chunk loading are prohibited.
 
-## 10. Persistence and secret handling
+---
 
-- Store password hashes, worker credential verifiers and session metadata, not raw credentials.
-- Encrypt or otherwise protect sensitive local auth data at rest where the platform supports it.
-- Restrict filesystem permissions on Termux data directories.
-- Keep runtime secrets in a local secrets file or environment injection; exclude from Git.
-- Provide .env.example with dummy values only.
-- Redact secrets from structured logs, errors, diagnostics and support bundles.
-- Parameterize SQL; never concatenate user values into statements.
-- Use transactions for tasks, assignments, inventory ledger and idempotency records.
-- Back up the database; verify restore, not merely backup creation.
-- Do not include private task/player data in telemetry by default.
+## 6. Prompt-Injection & Untrusted Chat Containment
 
-## 11. HTTP and browser security
+1. In-game chat from non-allowlisted senders or without the command prefix (`!swarm`) is dropped at `O(1)` by `ChatHistoryGuard` and **never** reaches Master or Ollama.
+2. Even for allowlisted players, `ChatCommandAdapter` strips control characters, bounds length to `<= 240` chars, and treats text strictly as untrusted user data inside `PlanningContextV1.userIntent` — never concatenated into system instructions.
+3. Because `TaskPlanV1` is schema-locked to allowlisted `kind` enums and validated by `TaskManager` + `ActionExecutor`, a compromised or hallucinating Ollama response **cannot** execute shell commands, read files, alter RBAC, spawn extra bots, or bypass `safetyPolicy`.
 
-- HTTPS only for non-loopback network interfaces.
-- Bind only to the intended VPN/LAN interface, or bind broadly only with explicit firewall restrictions.
-- Restrict CORS to exact configured dashboard origins; avoid wildcard credentialed CORS.
-- Secure headers including CSP, frame restrictions, content-type sniffing protections and referrer policy.
-- CSRF protection for cookie-authenticated mutations.
-- Request body and upload limits; no arbitrary file upload in initial release.
-- Session invalidation and role checks on every protected request.
-- SSE authentication and bounded connections/queues.
-- Do not leak detailed stack traces to clients.
+---
 
-## 12. Incident and recovery procedure
+## 7. Security Incident Runbooks
 
-If a worker credential is suspected compromised:
-1. Revoke its worker identity immediately.
-2. Stop/revoke its active leases and fence its allocation epochs.
-3. Review recent task evidence and resource ledger transactions.
-4. Rotate any related secrets on the worker.
-5. Re-register it with a fresh bootstrap credential.
-6. Resume only after operator verification.
-
-If Minecraft authentication state is exposed, revoke the relevant account session using the legitimate account provider procedure; do not copy that state to the master.
-
-If Ollama is exposed publicly, close network ingress, rotate proxy credentials/certificates, review access logs and verify the endpoint is private before reconnecting.
-
+- **Suspected `workerToken` compromise:** Run `POST /api/v1/workers/:workerId/revoke` -> fences active leases (`allocationEpoch + 1`), drops worker traffic immediately, and preserves audit log.
+- **Runaway / unsafe swarm behaviour:** Click **Emergency Safe Stop** or run `swarm bot safe-stop --all` -> cancels active tasks, dispatches high-priority `safe_stop` to all workers, and halts non-survival actions within `1` poll cycle.
+- **Dashboard brute-force attempt:** Automatic `(ip, username)` lockout (`429`) + rotate admin password + inspect `audit_events`.
