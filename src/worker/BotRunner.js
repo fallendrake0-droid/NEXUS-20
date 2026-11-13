@@ -1291,6 +1291,17 @@ function createMineflayerDriver(options = {}) {
       if (!bot) return false;
       return combatEngine.autoFeedIfNeeded(bot, false);
     },
+    async huntForFoodIfNeeded() {
+      if (!bot || !bot.entity) return { acted: false, reason: 'bot_not_spawned' };
+      busyWorkSection = true;
+      try {
+        return await combatEngine.huntForFoodIfNeeded(bot, moveNearPosition);
+      } catch {
+        return { acted: false, reason: 'food_hunt_failed' };
+      } finally {
+        busyWorkSection = false;
+      }
+    },
     async gatherResource({ resourceId }) {
       if (!bot || !bot.entity) {
         return { ok: false, failureCode: 'BOT_DISCONNECTED', retryable: true, summary: 'Disconnected' };
@@ -1954,19 +1965,28 @@ class BotRunner extends EventEmitter {
       const wasPaused = this._activeLease ? this._activeLease.paused : false;
       if (this._activeLease) this._activeLease.paused = true;
 
-      const ate = await this._driver.eatFoodIfPossible();
+      let recovered = await this._driver.eatFoodIfPossible();
       const trigger = raw.health <= minHealth ? 'low_health' : 'starving';
+      if (!recovered && raw.food <= minFood && raw.health > minHealth && typeof this._driver.huntForFoodIfNeeded === 'function') {
+        const deadline = Date.now() + 18_000;
+        while (!recovered && Date.now() < deadline) {
+          const hunt = await this._driver.huntForFoodIfNeeded();
+          recovered = Boolean(hunt?.ate);
+          if (recovered || ['no_edible_animal_in_range', 'inventory_full', 'food_hunt_failed'].includes(hunt?.reason)) break;
+          if (!recovered) await new Promise((resolve) => setTimeout(resolve, 450));
+        }
+      }
       const overridePayload = {
         botId: this.botId,
         trigger,
         health: raw.health,
         food: raw.food,
-        recovered: ate,
+        recovered,
         assignmentId: this._activeLease?.assignment?.assignmentId || null
       };
       this.emit('survival_override', overridePayload);
 
-      if (ate && this._activeLease && !wasPaused) {
+      if (recovered && this._activeLease && !wasPaused) {
         this._activeLease.paused = false;
       }
       return overridePayload;

@@ -12,13 +12,15 @@
     noaiCategory: 'all',
     noaiSearch: '',
     noaiOffset: 0,
-    noaiLimit: 96,
+    noaiLimit: 24,
+    noaiRequestSeq: 0,
     skinsById: {},
     providersCache: [],
     aiFormInitialized: false,
     autocompleteDict: null,
     cmdHistory: [],
-    cmdHistoryIndex: -1
+    cmdHistoryIndex: -1,
+    lastStatus: null
   };
 
   const el = (id) => document.getElementById(id);
@@ -197,8 +199,42 @@
     return td;
   }
 
+  function nextWorkerId(workers) {
+    const ids = new Set((workers || []).map((worker) => String(worker.workerId)));
+    let index = 1;
+    while (ids.has('worker-' + index)) index += 1;
+    return 'worker-' + index;
+  }
+
+  function occupiedBotNumbers(bots) {
+    return new Set((bots || [])
+      .map((bot) => String(bot.botId || '').match(/(?:^|[-_])(\d+)$/))
+      .filter(Boolean)
+      .map((match) => Number(match[1]))
+      .filter((number) => Number.isSafeInteger(number) && number >= 1 && number <= 20));
+  }
+
+  function nextBotStartIndex(bots, count) {
+    const occupied = occupiedBotNumbers(bots);
+    const botCount = Math.max(1, Number(count) || 1);
+    for (let start = 1; start + botCount - 1 <= 20; start += 1) {
+      if (Array.from({ length: botCount }, (_, i) => start + i).every((n) => !occupied.has(n))) return start;
+    }
+    return '';
+  }
+
   function renderStatus(st) {
+    state.lastStatus = st;
     if (st.envProfile) state.envProfile = st.envProfile;
+    const workerInput = el('add-worker-id');
+    const knownWorkers = new Set((st.workers || []).map((worker) => String(worker.workerId)));
+    if (!workerInput.value || knownWorkers.has(workerInput.value.trim())) workerInput.value = nextWorkerId(st.workers);
+    const startInput = el('add-worker-start-index');
+    const count = Number(el('add-worker-count').value) || 1;
+    const occupied = occupiedBotNumbers(st.bots);
+    const start = Number(startInput.value);
+    const overlaps = Number.isInteger(start) && Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n));
+    if (!startInput.value || overlaps) startInput.value = nextBotStartIndex(st.bots, count);
     el('kpi-mode').textContent = st.operatingMode || 'HYBRID';
     el('kpi-governor').textContent = 'Governor: ' + st.governorState + ' (' + st.performanceProfile + ')';
     el('mode-select').value = st.operatingMode || 'HYBRID';
@@ -666,6 +702,7 @@
   }
 
   async function refreshZeroAiDeck() {
+    const requestSeq = ++state.noaiRequestSeq;
     try {
       const q =
         '/api/v1/commands?category=' +
@@ -677,11 +714,17 @@
         '&offset=' +
         state.noaiOffset;
       const deck = await api(q);
+      if (requestSeq !== state.noaiRequestSeq) return;
       el('noai-total-badge').textContent = String(deck.totalCatalogCommands || 1370);
       el('noai-matched-count').textContent = String(deck.matchedCount || 0);
+      const activeCategory = state.noaiCategory === 'all' ? 'all categories' : state.noaiCategory.replace(/_/g, ' ');
+      el('noai-active-filter').textContent = activeCategory;
+      el('noai-category-summary').textContent = activeCategory;
       const pageNum = Math.floor((deck.offset || 0) / state.noaiLimit) + 1;
-      const totalPages = Math.max(1, Math.ceil((deck.matchedCount || 1) / state.noaiLimit));
+      const totalPages = Math.max(1, Math.ceil((deck.matchedCount || 0) / state.noaiLimit));
       el('noai-page-label').textContent = 'Page ' + pageNum + ' / ' + totalPages;
+      el('noai-prev-btn').disabled = pageNum <= 1;
+      el('noai-next-btn').disabled = pageNum >= totalPages || (deck.matchedCount || 0) === 0;
 
       // Category chips
       const catBar = el('noai-category-bar');
@@ -743,8 +786,9 @@
         card.appendChild(foot);
         grid.appendChild(card);
       }
+      el('noai-empty-state').classList.toggle('hidden', (deck.commands || []).length > 0);
     } catch {
-      // ignore
+      // Keep the last rendered results if a transient search request fails.
     }
   }
 
@@ -1193,26 +1237,73 @@
     }
   });
 
-  el('mint-token-btn').addEventListener('click', async () => {
+  function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  el('add-worker-count').addEventListener('input', () => {
+    const status = state.lastStatus;
+    if (!status) return;
+    const count = Number(el('add-worker-count').value) || 1;
+    const input = el('add-worker-start-index');
+    const start = Number(input.value);
+    const occupied = occupiedBotNumbers(status.bots);
+    if (!Number.isInteger(start) || Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n))) {
+      input.value = nextBotStartIndex(status.bots, count);
+    }
+  });
+
+  el('add-worker-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
     try {
-      const out = await api('/api/v1/workers/bootstrap-token', { method: 'POST', body: {} });
+      const status = state.lastStatus || {};
+      const workerId = el('add-worker-id').value.trim();
+      const count = Number(el('add-worker-count').value);
+      const start = Number(el('add-worker-start-index').value);
+      const prefix = el('add-worker-prefix').value.trim();
+      const host = el('add-worker-mc-host').value.trim();
+      const port = Number(el('add-worker-mc-port').value);
+      const workerIds = new Set((status.workers || []).map((worker) => String(worker.workerId)));
+      const occupied = occupiedBotNumbers(status.bots);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(workerId) || workerIds.has(workerId)) throw new Error('Choose a unique Worker ID using letters, numbers, dot, underscore or hyphen.');
+      if (!Number.isInteger(count) || count < 1 || count > 20 || !Number.isInteger(start) || start < 1 || start + count - 1 > 20) throw new Error('Choose a bot count and number range that fit within bot-01 to bot-20.');
+      if (Array.from({ length: count }, (_, i) => start + i).some((n) => occupied.has(n))) throw new Error('That bot number range is already used. Choose the suggested free range.');
+      if (!/^[A-Za-z0-9_]{2,12}$/.test(prefix)) throw new Error('Minecraft name prefix must be 2–12 letters, numbers or underscores.');
+      if (!host || /\s/.test(host) || host.length > 255) throw new Error('Enter a Minecraft server hostname without spaces.');
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Server port must be from 1 to 65535.');
+      const existingCount = (status.bots || []).length;
+      if (existingCount + count > Number(status.enabledBotsCap || 0)) throw new Error('Increase Bot Cap to at least ' + (existingCount + count) + ' before adding these bots.');
+      if (existingCount + count > Number(status.globalMaxBots || 20)) throw new Error('This would exceed the Master global bot limit.');
+
+      const minted = await api('/api/v1/workers/bootstrap-token', { method: 'POST', body: {} });
+      const vars = [
+        ['SWARM_ROLE', 'worker'], ['SWARM_ENV_PROFILE', state.envProfile || 'private_offline_test'],
+        ['SWARM_MASTER_URL', window.location.origin], ['SWARM_BOOTSTRAP_TOKEN', minted.bootstrapToken],
+        ['SWARM_WORKER_ID', workerId], ['SWARM_WORKER_STATE_PATH', './data/' + workerId + '-state.json'],
+        ['SWARM_MC_HOST', host], ['SWARM_MC_PORT', port], ['SWARM_SPAWN_STAGGER_MS', 4000],
+        ['SWARM_BOT_NAME_PREFIX', prefix], ['SWARM_WORKER_BOT_COUNT', count], ['SWARM_WORKER_BOT_START_INDEX', start]
+      ];
+      const command = vars.map(([key, value]) => key + '=' + shellQuote(value)).join(' ') + ' npm run start:worker';
       const box = el('bootstrap-token-output');
       clearChildren(box);
-      const title = document.createElement('div');
-      title.textContent = 'Single-use Worker Bootstrap Token (expires ' + out.expiresAt + '): ' + out.bootstrapToken;
-      const cmd = document.createElement('code');
-      cmd.className = 'cmd-snippet';
-      cmd.textContent =
-        'SWARM_ROLE=worker SWARM_ENV_PROFILE=' +
-        (state.envProfile || 'private_offline_test') +
-        ' SWARM_MASTER_URL=' +
-        window.location.origin +
-        ' SWARM_BOOTSTRAP_TOKEN=' +
-        out.bootstrapToken +
-        ' SWARM_WORKER_ID=worker-1 SWARM_WORKER_STATE_PATH=./data/worker-1-state.json SWARM_MC_HOST=thebasement-wUr4.aternos.me SWARM_SPAWN_STAGGER_MS=4000 SWARM_BOT_NAME_PREFIX=Nexus SWARM_WORKER_BOT_COUNT=2 npm run start:worker';
-      box.appendChild(title);
-      box.appendChild(cmd);
+      const token = document.createElement('p');
+      token.textContent = 'Single-use bootstrap token (expires ' + minted.expiresAt + '): ' + minted.bootstrapToken;
+      const note = document.createElement('p');
+      note.textContent = 'Run this command from the project folder on a Node.js machine that can reach the Master and Minecraft server. Keep the token private.';
+      const code = document.createElement('code');
+      code.className = 'worker-launch-command';
+      code.textContent = command;
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn small';
+      copy.textContent = 'Copy launch command';
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(command); showToast('Launch command copied'); }
+        catch { showToast('Clipboard unavailable; select and copy the command manually.', true); }
+      });
+      box.append(token, note, code, copy);
       box.classList.remove('hidden');
+      showToast('Worker enrollment command generated.');
     } catch (err) {
       showToast(err.message, true);
     }
@@ -1289,6 +1380,14 @@
   });
 
   let searchTimer = null;
+  el('noai-clear-search').addEventListener('click', () => {
+    clearTimeout(searchTimer);
+    el('noai-search-input').value = '';
+    state.noaiSearch = '';
+    state.noaiOffset = 0;
+    refreshZeroAiDeck();
+    el('noai-search-input').focus();
+  });
   el('noai-search-input').addEventListener('input', (ev) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {

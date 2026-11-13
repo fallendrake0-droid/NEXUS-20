@@ -21,7 +21,8 @@ const {
   scoreArmorItem,
   scoreWeaponItem,
   scoreMiningToolItem,
-  CombatAndSurvivalEngine
+  CombatAndSurvivalEngine,
+  FOOD_MOBS
 } = require('../../src/combat/CombatAndSurvivalEngine');
 const { SchematicRegistry } = require('../../src/schematics/SchematicBuilder');
 
@@ -93,6 +94,35 @@ test('NEXUS-ZERO-AI: All 1,370+ catalog commands & natural user phrases resolve 
 
   const searchRes = listZeroAiCommands({ search: 'diamond', limit: 50 });
   assert.ok(searchRes.matchedCount >= 10);
+});
+
+test('NEXUS-FOOD-HUNT: Low-food bots hunt passive meat mobs, collect drops, and eat without targeting hostiles', async () => {
+  assert.deepEqual([...FOOD_MOBS].sort(), ['chicken', 'cow', 'mooshroom', 'pig', 'rabbit', 'sheep']);
+  const pos = (x) => ({ x, y: 64, z: 0, distanceTo(other) { return Math.hypot(this.x - other.x, this.y - other.y, this.z - other.z); } });
+  const pig = { id: 7, name: 'pig', position: pos(4), health: 10 };
+  const zombie = { id: 8, name: 'zombie', position: pos(1), health: 20 };
+  const nearby = { entity: { position: pos(0) }, entities: { 7: pig, 8: zombie } };
+  const engine = new CombatAndSurvivalEngine({ botId: 'bot-01', username: 'Nexus_01' });
+  assert.equal(engine.findNearestFoodMob(nearby, nearby.entity.position), pig);
+
+  let food = 5;
+  const inventoryItems = [];
+  const target = { id: 11, name: 'pig', position: pos(3), health: 10 };
+  const bot = {
+    entity: { position: pos(0) }, entities: { 11: target }, health: 20,
+    get food() { return food; }, inventory: { items: () => inventoryItems }, equip: async () => {},
+    consume: async () => { inventoryItems.splice(0, 1); food = 20; }
+  };
+  engine.engageTarget = async (_bot, mob) => {
+    delete bot.entities[mob.id];
+    inventoryItems.push({ name: 'porkchop', count: 1 });
+    return { acted: true };
+  };
+  const result = await engine.tick(bot, async () => true);
+  assert.equal(result.targetMob, 'pig');
+  assert.equal(result.foodCollected, 1);
+  assert.equal(result.ate, true);
+  assert.equal(food, 20);
 });
 
 test('NEXUS-PVP-SURVIVAL: Mace aerial smash, Axe shield-break, Spear reach, Enchanted Armor & Auto-Feed', async () => {
@@ -199,7 +229,12 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
   const cli = fs.readFileSync(path.join(__dirname, '../../index.js'), 'utf8');
   assert.equal(/\sstyle\s*=/.test(html), false, 'index.html must contain zero inline style="" attributes');
   assert.equal(/\.style\./.test(js), false, 'app.js must contain zero element.style.* mutations');
-  assert.match(html, /placeholder="Type a command and press \[Tab\].*mine diamond 64/);
+  assert.match(html, /placeholder="Type a command \(e\.g\. mine diamond 64\) · press Tab for suggestions"/);
+  assert.match(html, /id="noai-search-input" type="search"/);
+  assert.match(html, /Popular shortcuts/);
+  assert.match(html, /add-worker-form/);
+  assert.match(js, /requestSeq !== state\.noaiRequestSeq/);
+  assert.match(js, /noaiLimit: 24/);
   assert.doesNotMatch(html, /mc-slash-badge/);
   assert.match(cli, /prompt: 'nexus> '/);
   assert.match(cli, /principalId: 'cli:tty'/);
