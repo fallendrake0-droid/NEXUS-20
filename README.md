@@ -12,10 +12,10 @@ Run this from the repository folder on the machine that runs the Worker. It repo
 npm run diagnose:mc
 ```
 
-To capture the Worker console output while reproducing a disconnect, run these from the repository folder. If your setup prints the `[MC]` lines from a different launch command, use that command in place of `npm run start:worker`:
+Capture output from the command that prints the `[MC]` lines. For the saved **standalone (Master + bots)** setup, use `npm start`; for a separately enrolled Worker, use `npm run start:worker`:
 
-- **Linux / Termux:** `npm run start:worker 2>&1 | tee nexus-run.log`
-- **Windows Command Prompt:** `npm run start:worker > nexus-run.log 2>&1` (output is saved to the file rather than shown in that window).
+- **Linux / Termux:** `npm start 2>&1 | tee nexus-run.log` (or replace `npm start` with `npm run start:worker` for a separate Worker).
+- **Windows Command Prompt:** `npm start > nexus-run.log 2>&1` (or replace `npm start` with `npm run start:worker`; output is saved to the file rather than shown in that window).
 
 After the disconnect, in a second terminal at the repository folder, run:
 
