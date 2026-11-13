@@ -4,6 +4,27 @@ Distributed Mineflayer AI Swarm. The root [MASTER_PROJECT_CONTEXT.md](./MASTER_P
 
 > **Termux / Linux quick start:** See [`docs/TERMUX_LINUX_QUICKSTART.md`](docs/TERMUX_LINUX_QUICKSTART.md) for installation, Master/Worker setup, Control Centre access, and the Tab-autocomplete command console. The interactive terminal opens on a clean alternate screen and restores your previous terminal display and scrollback when you quit, press Ctrl+C, or close its input.
 
+## Minecraft connection diagnostics
+
+Run this from the repository folder on the machine that runs the Worker. It reports relevant Minecraft settings and checks DNS/TCP reachability without logging a bot in. The same npm command works in Linux shells and Windows Command Prompt:
+
+```sh
+npm run diagnose:mc
+```
+
+To capture the Worker console output while reproducing a disconnect, run these from the repository folder. If your setup prints the `[MC]` lines from a different launch command, use that command in place of `npm run start:worker`:
+
+- **Linux / Termux:** `npm run start:worker 2>&1 | tee nexus-run.log`
+- **Windows Command Prompt:** `npm run start:worker > nexus-run.log 2>&1` (output is saved to the file rather than shown in that window).
+
+After the disconnect, in a second terminal at the repository folder, run:
+
+```sh
+npm run diagnose:mc -- --log-file nexus-run.log
+```
+
+Share the full report. It does not intentionally include `.env` secrets, but does contain the Minecraft hostname/IP and bot usernames; review the report before sharing. The TCP check only tests whether the target port accepts a connection at that moment—it does not test Minecraft login or server plugins.
+
 ## Coding agent entry point
 
 All repository coding agents must follow [AGENTS.md](./AGENTS.md). For agents that do not automatically read repository instructions, provide [CODING_AGENT_BOOTSTRAP.md](./docs/spec/CODING_AGENT_BOOTSTRAP.md) as their first prompt. These instructions require reading the master specification, module contracts and AI protocol before implementation.

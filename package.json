@@ -14,6 +14,7 @@
     "start:master": "node --max-old-space-size=256 index.js --role=master",
     "start:worker": "node index.js --role=worker",
     "check:config": "node index.js --check-config",
+    "diagnose:mc": "node scripts/collect-mc-diagnostics.js",
     "cli:help": "node index.js --help",
     "cli:mint-token": "node index.js mint-token",
     "cli:backup": "node index.js backup",
