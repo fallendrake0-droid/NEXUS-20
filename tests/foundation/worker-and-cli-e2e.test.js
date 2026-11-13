@@ -72,6 +72,20 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
     assert.match(terminalOutput, /reconnect attempt 1 scheduled in \d+s/);
   });
 
+  it('watchdog schedules one reconnect if a disconnected driver misses its end event', async () => {
+    const runner = new BotRunner({
+      workerId: 'worker-watchdog-test',
+      botId: 'bot-watchdog-test',
+      driver: { connected: false, async disconnect() {} },
+      reconnectBaseMs: 500
+    });
+    assert.equal(runner.ensureConnected(), true);
+    assert.ok(runner._reconnectTimer);
+    assert.equal(runner.ensureConnected(), false, 'must not schedule duplicate retries');
+    await runner.stop('test_cleanup');
+    assert.equal(runner._reconnectTimer, null);
+  });
+
   it('keeps Master heartbeats moving while a survival food hunt is still in progress and coalesces overlapping ticks', async () => {
     let finishSurvival;
     const survivalPromise = new Promise((resolve) => { finishSurvival = resolve; });

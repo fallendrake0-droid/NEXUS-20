@@ -344,6 +344,8 @@ class WorkerHost {
     const botTacticalStates = {};
 
     for (const runner of this.bots.values()) {
+      // Retry if the transport went offline without Mineflayer delivering its lifecycle event.
+      if (typeof runner.ensureConnected === 'function') runner.ensureConnected();
       if (!runner.survivalCheckInFlight) {
         const reflexRun = runner.checkSurvivalReflexes();
         if (reflexRun && typeof reflexRun.catch === 'function') {

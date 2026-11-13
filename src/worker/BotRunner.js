@@ -1811,6 +1811,24 @@ class BotRunner extends EventEmitter {
     return Boolean(this._survivalCheckPromise);
   }
 
+  /**
+   * Watchdog fallback for drivers/servers that lose a socket without emitting `end`.
+   * Normal disconnects still enter the same guarded, rate-limited reconnect path.
+   */
+  ensureConnected() {
+    if (
+      this._stopped ||
+      this._kickedOrBanned ||
+      this._connecting ||
+      this._reconnectTimer ||
+      this._driver.connected
+    ) {
+      return false;
+    }
+    this._scheduleReconnect(this._lastConnectError || 'connection watchdog found bot offline');
+    return Boolean(this._reconnectTimer);
+  }
+
   async start() {
     this._stopped = false;
     this._kickedOrBanned = false;
