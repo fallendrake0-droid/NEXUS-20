@@ -25,6 +25,13 @@ npm run diagnose:mc -- --log-file nexus-run.log
 
 Share the full report. It does not intentionally include `.env` secrets, but does contain the Minecraft hostname/IP and bot usernames; review the report before sharing. The TCP check only tests whether the target port accepts a connection at that moment—it does not test Minecraft login or server plugins.
 
+If `npm start` exits with only the generic `INTERNAL_ERROR`, repeat once with startup stack output enabled so the underlying cause is visible:
+
+- **Linux / Termux:** `NEXUS_DEBUG_STARTUP=1 npm start 2>&1 | tee nexus-debug.log`
+- **Windows Command Prompt:** `set NEXUS_DEBUG_STARTUP=1 && npm start > nexus-debug.log 2>&1`
+
+This debug output can include local file paths and error details. Review it and remove anything private before sharing. The setting is opt-in and does not alter `.env` or bot configuration.
+
 ## Coding agent entry point
 
 All repository coding agents must follow [AGENTS.md](./AGENTS.md). For agents that do not automatically read repository instructions, provide [CODING_AGENT_BOOTSTRAP.md](./docs/spec/CODING_AGENT_BOOTSTRAP.md) as their first prompt. These instructions require reading the master specification, module contracts and AI protocol before implementation.

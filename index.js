@@ -787,6 +787,10 @@ if (require.main === module) {
       }
     },
     (err) => {
+      if (process.env.NEXUS_DEBUG_STARTUP === '1') {
+        const stack = err instanceof Error ? err.stack || err.message : String(err);
+        process.stderr.write(`[NEXUS_DEBUG_STARTUP] ${stack}\n`);
+      }
       const envelope = toErrorEnvelope(err, 'startup');
       process.stderr.write(`${JSON.stringify(envelope.body)}\n`);
       process.exit(1);
