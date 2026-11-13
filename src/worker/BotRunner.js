@@ -30,6 +30,10 @@ const {
  */
 const REAL_LOGIN_GATE_CHAIN = new Map();
 const REAL_LOGIN_LAST_MS = new Map();
+const SERVER_RECONNECT_STATE = new Map();
+const THROTTLE_COOLDOWN_MIN_MS = 60_000;
+const THROTTLE_COOLDOWN_MAX_MS = 5 * 60_000;
+const SERVER_RECONNECT_SPACING_MS = 12_000;
 
 async function waitRealLoginSlot(host, port, minSpacingMs) {
   const spacing = Number(minSpacingMs || 0);
@@ -1678,6 +1682,10 @@ class BotRunner extends EventEmitter {
     this.botId = String(options.botId);
     this.username = String(options.username || options.botId);
     this.serverId = String(options.serverId || 'survival-main');
+    const mcConfig = options.minecraftConfig || {};
+    const reconnectHost = String(mcConfig.minecraftHost || this.serverId).toLowerCase();
+    const reconnectPort = Number(mcConfig.minecraftPort || 25565);
+    this._reconnectServerKey = `${reconnectHost}:${reconnectPort}`;
     this.authMode = String(options.authMode || 'online_microsoft');
     this._logger = options.logger || null;
 
@@ -1715,6 +1723,7 @@ class BotRunner extends EventEmitter {
     this._stabilityTimer = null;
     this._spawnedAtMs = 0;
     this._reconnectAttempt = 0;
+    this._throttleReconnectAttempt = 0;
     this._lastConnectError = null;
     this._reconnectBaseMs = Math.max(500, Number(options.reconnectBaseMs || 8_000));
   }
@@ -1801,14 +1810,15 @@ class BotRunner extends EventEmitter {
       this._lastConnectError = null;
       this._connecting = false;
 
-      // Only reset reconnect backoff after 15s of stable in-game connection (prevents rapid join-leave flap loops!)
+      // Keep retry history until a full minute in-game; a short-lived spawn is not evidence the server throttle has cleared.
       if (this._stabilityTimer) clearTimeout(this._stabilityTimer);
       this._stabilityTimer = setTimeout(() => {
         this._stabilityTimer = null;
         if (!this._stopped && this._driver.connected) {
           this._reconnectAttempt = 0;
+          this._throttleReconnectAttempt = 0;
         }
-      }, 15_000);
+      }, 60_000);
       this._stabilityTimer.unref?.();
 
       if (!this._simulationMode && process.stdout?.isTTY) {
@@ -1851,18 +1861,57 @@ class BotRunner extends EventEmitter {
   _scheduleReconnect(reason = '') {
     if (this._stopped || this._kickedOrBanned || this._reconnectTimer) return;
     this._reconnectAttempt += 1;
+    const now = Date.now();
     const baseDelay = Math.min(45_000, this._reconnectBaseMs * Math.min(5, this._reconnectAttempt));
-    const needsThrottleCooldown =
+    const isRateLimited =
       !this._simulationMode &&
-      /throttled|wait before reconnecting|already connected|another location|duplicate/i.test(String(reason || ''));
-    const jitterMs = this._simulationMode ? 0 : Math.floor(Math.random() * 1_500);
-    const delayMs = Math.max(baseDelay, needsThrottleCooldown ? 9_000 : 0) + jitterMs;
+      /connection\s+throttled|throttled|wait before reconnecting|too many connections|already connected|another location|duplicate/i.test(
+        String(reason || '')
+      );
+    let delayMs = baseDelay + (this._simulationMode ? 0 : Math.floor(Math.random() * 1_500));
+
+    if (!this._simulationMode) {
+      let serverState = SERVER_RECONNECT_STATE.get(this._reconnectServerKey);
+      if (!serverState || (serverState.cooldownUntil <= now && serverState.nextConnectAt <= now)) {
+        serverState = { cooldownUntil: 0, nextConnectAt: 0 };
+      }
+
+      if (isRateLimited) {
+        this._throttleReconnectAttempt = Math.min(10, this._throttleReconnectAttempt + 1);
+        const throttleCooldownMs = Math.min(
+          THROTTLE_COOLDOWN_MAX_MS,
+          THROTTLE_COOLDOWN_MIN_MS * 2 ** Math.min(4, this._throttleReconnectAttempt - 1)
+        );
+        serverState.cooldownUntil = Math.max(serverState.cooldownUntil, now + throttleCooldownMs);
+      }
+
+      // A shared host:port gate prevents sibling bots from retrying together and
+      // extending an Aternos/Paper connection-throttle window for one another.
+      const retryAt = Math.max(
+        now + delayMs,
+        serverState.cooldownUntil,
+        serverState.nextConnectAt
+      );
+      const jitterMs = isRateLimited ? Math.floor(Math.random() * 10_000) : 0;
+      const scheduledAt = retryAt + jitterMs;
+      serverState.nextConnectAt = scheduledAt + (isRateLimited ? SERVER_RECONNECT_SPACING_MS : 4_500);
+      SERVER_RECONNECT_STATE.set(this._reconnectServerKey, serverState);
+      delayMs = Math.max(0, scheduledAt - now);
+    }
+
+    if (isRateLimited && process.stdout?.isTTY) {
+      process.stdout.write(
+        `  [MC] ${this.username}: server login throttle; retrying in ${Math.ceil(delayMs / 1000)}s with shared backoff.\n`
+      );
+    }
+
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._stopped && !this._kickedOrBanned) {
         this._attemptConnect().catch(() => {});
       }
     }, delayMs);
+    this._reconnectTimer.unref?.();
   }
 
   async stop(reason = 'worker_stopping') {

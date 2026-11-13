@@ -6,7 +6,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 
 - Node.js 20 or newer (Node 22/24 LTS recommended; the project uses Node's built-in SQLite module).
 - Git and network access to install the project dependencies.
-- For a real bot worker, a Minecraft server compatible with the configured version (defaults to 26.2), server access details, and a reachable Master URL.
+- For a real bot worker, a Minecraft server compatible with the configured version (defaults to 26.2), server access details, and a reachable Master URL. When a server responds with a login-throttle kick, bots now wait at least 60 seconds and stagger retries to avoid repeatedly triggering the server's rate limit.
 - For Termux, install Termux from a maintained F-Droid or official GitHub release source. Android battery optimization can stop long-running background sessions; disable it for Termux if you need the Master to stay online.
 
 ## Termux (Android)

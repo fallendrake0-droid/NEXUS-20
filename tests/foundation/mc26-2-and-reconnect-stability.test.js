@@ -269,7 +269,7 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     });
 
     await runner.start();
-    // Simulate rapid kick 20ms after spawn (before 15s stability window)
+    // Simulate rapid kick 20ms after spawn (before 60s stability window)
     flapDriver.connected = false;
     flapDriver.emit('end', nbtExtra);
     assert.equal(runner._reconnectAttempt, 1);
@@ -277,7 +277,40 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     await runner.stop();
   });
 
-  it('MC26-05: TTY terminal uses alternate screen and restores the prior shell screen on close', () => {
+  it('MC26-05: throttled Minecraft reconnects back off for a minute and stagger sibling bots per server', async () => {
+    const serverHost = `throttle-test-${Date.now()}.example.invalid`;
+    const makeRunner = (botId) => {
+      const driver = Object.assign(new EventEmitter(), {
+        connected: false,
+        async disconnect() {
+          this.connected = false;
+        }
+      });
+      const runner = new BotRunner({
+        workerId: 'w-throttle',
+        botId,
+        username: botId,
+        serverId: 'throttle-test',
+        minecraftConfig: { minecraftHost: serverHost, minecraftPort: 25565 },
+        driver,
+        reconnectBaseMs: 500
+      });
+      runner._simulationMode = false;
+      return runner;
+    };
+
+    const first = makeRunner('throttle-bot-1');
+    const second = makeRunner('throttle-bot-2');
+    first._scheduleReconnect('Kicked by server: Connection throttled! Please wait before reconnecting.');
+    second._scheduleReconnect('Kicked by server: Connection throttled! Please wait before reconnecting.');
+    const firstDelayMs = first._reconnectTimer?._idleTimeout || 0;
+    const secondDelayMs = second._reconnectTimer?._idleTimeout || 0;
+    assert.ok(firstDelayMs >= 60_000, `first retry should wait at least 60s, got ${firstDelayMs}ms`);
+    assert.ok(secondDelayMs > firstDelayMs, 'sibling bot retry should be staggered behind the first bot');
+    await Promise.all([first.stop(), second.stop()]);
+  });
+
+  it('MC26-06: TTY terminal uses alternate screen and restores the prior shell screen on close', () => {
     const writes = [];
     const stdout = {
       write(chunk) {
@@ -298,7 +331,7 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     assert.deepEqual(nonTtyWrites, [], 'non-TTY/test streams must not receive terminal control sequences');
   });
 
-  it('MC26-06: Minecraft Brigadier Tab autocomplete & slash-free commands work end-to-end across Web UI, API & CLI', async () => {
+  it('MC26-07: Minecraft Brigadier Tab autocomplete & slash-free commands work end-to-end across Web UI, API & CLI', async () => {
     const ctx = {
       players: ['DragonSlayer', 'Alex'],
       bots: ['bot-01', 'bot-02']
