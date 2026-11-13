@@ -702,7 +702,7 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
       await w2.stop();
       w2 = null;
 
-      // An explicit rename uses a fresh bootstrap token to update the Master canonical names too.
+      // Changing the prefix on the same offline worker uses a fresh bootstrap token to update Master names.
       const tok3 = master.botRegistry.createBootstrapToken({ createdBy: 'test-prefix-rename' });
       w3 = createWorker(
         loadConfig({
@@ -714,7 +714,6 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
             SWARM_BOOTSTRAP_TOKEN: tok3.bootstrapToken,
             SWARM_WORKER_STATE_PATH: path.join(tmpDir, 'pc2-state.json'),
             SWARM_BOT_NAME_PREFIX: 'Changed',
-            SWARM_FORCE_RENAME_BOTS: 'true',
             SWARM_WORKER_BOT_COUNT: '2',
             SWARM_SPAWN_STAGGER_MS: '0',
             SWARM_WORKER_SIMULATION: 'true',

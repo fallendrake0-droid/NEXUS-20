@@ -121,8 +121,21 @@ class WorkerHost {
         ? this._savedState.bots.map((b) => [String(b.botId), b])
         : []
     );
+    // On the same worker, a changed configured name is an explicit rename request for private
+    // offline identities. On a new device with no saved names, keep adopting Master's canonical
+    // names by default. Online Microsoft usernames come from the authenticated account profile.
+    const configuredOfflineRename = baseDefs.some((bot) => {
+      const prior = savedById.get(String(bot.botId));
+      const authMode = bot.authMode || prior?.authMode || wCfg.authMode || 'online_microsoft';
+      return (
+        Boolean(prior?.username) &&
+        String(prior.username) !== String(bot.username) &&
+        authMode === 'private_offline_test'
+      );
+    });
+    const usernameRenameRequested = Boolean(wCfg.forceRenameBots || configuredOfflineRename);
     let botDefs = baseDefs.map((b) => {
-      const prior = !wCfg.forceRenameBots ? savedById.get(String(b.botId)) : null;
+      const prior = !usernameRenameRequested ? savedById.get(String(b.botId)) : null;
       return {
         botId: b.botId,
         username: prior?.username || b.username,
@@ -147,7 +160,7 @@ class WorkerHost {
           workerId: wCfg.workerId,
           hostname: wCfg.hostname,
           maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
-          allowUsernameChange: Boolean(wCfg.forceRenameBots),
+          allowUsernameChange: usernameRenameRequested,
           configuredBots: botDefs
         }
       });
@@ -174,12 +187,12 @@ class WorkerHost {
             const canonical = canonicalById.get(String(bot.botId));
             return canonical && canonical.username !== bot.username;
           });
-          const renameRequested = Boolean(wCfg.forceRenameBots && usernameMismatch);
+          const renameRequested = Boolean(usernameRenameRequested && usernameMismatch);
 
           if (!rosterMatches || renameRequested) {
             if (!wCfg.bootstrapToken) {
               const message = renameRequested
-                ? 'SWARM_FORCE_RENAME_BOTS=true found configured usernames that differ from the Master, but no fresh SWARM_BOOTSTRAP_TOKEN is available. Mint a new one-time token on the Master and restart the worker to apply the prefix.'
+                ? 'The configured offline bot prefix differs from the Master, but no fresh SWARM_BOOTSTRAP_TOKEN is available. Mint a new one-time token on the Master and restart the worker to apply the rename.'
                 : `Configured bot roster (${configuredIds.join(', ') || 'empty'}) does not match the Master's enrolled roster (${canonicalIds.join(', ') || 'empty'}). Re-enroll this worker with a fresh bootstrap token to change its bot roster.`;
               throw new DomainError(renameRequested ? 'BOT_RENAME_REQUIRES_BOOTSTRAP' : 'BOT_ROSTER_MISMATCH', message);
             }
@@ -194,7 +207,7 @@ class WorkerHost {
                 workerId: wCfg.workerId,
                 hostname: wCfg.hostname,
                 maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
-                allowUsernameChange: Boolean(wCfg.forceRenameBots),
+                allowUsernameChange: usernameRenameRequested,
                 configuredBots: botDefs
               }
             });
@@ -231,7 +244,7 @@ class WorkerHost {
               workerId: wCfg.workerId,
               hostname: wCfg.hostname,
               maxBotSlots: Math.max(wCfg.maxBotSlots, botDefs.length),
-              allowUsernameChange: Boolean(wCfg.forceRenameBots),
+              allowUsernameChange: usernameRenameRequested,
               configuredBots: botDefs
             }
           });
