@@ -375,7 +375,8 @@
     for (const bot of st.bots || []) {
       const botId = String(bot.botId || '');
       const tactical = bot.tacticalState || {};
-      if (tactical.mode !== 'goto' || !tactical.targetPosition || !bot.snapshot?.position) {
+      if (!window.NexusBotMetrics.isTelemetryFresh(bot.connectionState, bot.updatedAt, nowMs) ||
+          tactical.mode !== 'goto' || !tactical.targetPosition || !bot.snapshot?.position) {
         if (state.gotoEtaByBot.has(botId)) state.gotoEtaByBot.delete(botId);
         continue;
       }
@@ -405,6 +406,10 @@
     for (const botId of state.gotoEtaByBot.keys()) {
       if (!activeGotoIds.has(botId)) state.gotoEtaByBot.delete(botId);
     }
+  }
+
+  function botTelemetryIsFresh(bot, nowMs = Date.now()) {
+    return window.NexusBotMetrics.isTelemetryFresh(bot?.connectionState, bot?.updatedAt, nowMs);
   }
 
   function formatTelemetryAge(updatedAt) {
@@ -479,6 +484,7 @@
     for (const bot of bots) {
       const botId = String(bot.botId || 'unknown');
       const snap = bot.snapshot || {};
+      const telemetryFresh = botTelemetryIsFresh(bot);
       const card = document.createElement('article');
       card.className = 'bot-detail-card';
       const header = document.createElement('div');
@@ -487,15 +493,16 @@
       title.textContent = bot.username ? bot.username + ' · ' + botId : botId;
       const status = document.createElement('span');
       status.className = 'bot-state-badge ' + String(bot.connectionState || 'unknown').toLowerCase();
-      status.textContent = String(bot.connectionState || 'unknown') + (bot.enabled ? '' : ' · disabled');
+      status.textContent = String(bot.connectionState || 'unknown') + (bot.enabled ? '' : ' · disabled') +
+        (telemetryFresh ? '' : ' · telemetry stale');
       header.append(title, status);
       card.appendChild(header);
 
       const vitals = document.createElement('div');
       vitals.className = 'bot-vitals-grid';
       for (const vital of [
-        { name: 'Health', value: snap.health, band: snap.healthBand, unit: 'HP' },
-        { name: 'Hunger', value: snap.food, band: snap.foodBand, unit: '/ 20' }
+        { name: 'Health', value: telemetryFresh ? snap.health : null, lastBand: snap.healthBand, unit: 'HP' },
+        { name: 'Hunger', value: telemetryFresh ? snap.food : null, lastBand: snap.foodBand, unit: '/ 20' }
       ]) {
         const wrap = document.createElement('div');
         wrap.className = 'bot-vital';
@@ -513,7 +520,9 @@
           wrap.appendChild(bar);
         }
         const band = document.createElement('small');
-        band.textContent = 'Condition: ' + String(vital.band || 'unknown');
+        band.textContent = telemetryFresh
+          ? 'Condition: ' + String(vital.lastBand || 'unknown')
+          : (vital.lastBand && vital.lastBand !== 'unknown' ? 'Last report: ' + String(vital.lastBand) : 'No current reading');
         wrap.appendChild(band);
         vitals.appendChild(wrap);
       }
@@ -522,18 +531,20 @@
       const metrics = document.createElement('div');
       metrics.className = 'bot-detail-metrics';
       const position = snap.position;
-      appendBotMetric(metrics, 'Position', position
+      appendBotMetric(metrics, telemetryFresh ? 'Position' : 'Last known position', position
         ? formatBotCoordinate(position.x) + ', ' + formatBotCoordinate(position.y) + ', ' + formatBotCoordinate(position.z)
-        : 'Unknown', String(snap.dimension || 'Dimension unknown'));
+        : 'Unknown', String(snap.dimension || 'Dimension unknown') + ' · ' + formatTelemetryAge(bot.updatedAt));
       appendBotMetric(metrics, 'Worker / server', String(bot.workerId || 'unknown'), String(bot.serverId || 'server unknown'));
-      appendBotMetric(metrics, 'Current action', assignments.get(botId)
+      const lastAction = assignments.get(botId)
         ? String(assignments.get(botId).actionType || 'working') + (assignments.get(botId).resourceId ? ' · ' + assignments.get(botId).resourceId : '')
-        : (bot.tacticalState?.mode && bot.tacticalState.mode !== 'idle' ? String(bot.tacticalState.mode) : 'Idle'),
-      assignments.has(botId) ? 'Verified progress ' + String(assignments.get(botId).creditedQuantity ?? 0) +
-        (assignments.get(botId).quotaQuantity !== null ? ' / ' + assignments.get(botId).quotaQuantity : '') : 'No active task lease');
+        : (bot.tacticalState?.mode && bot.tacticalState.mode !== 'idle' ? String(bot.tacticalState.mode) : 'Idle');
+      appendBotMetric(metrics, telemetryFresh ? 'Current action' : 'Last known action', telemetryFresh ? lastAction : 'Unavailable · ' + lastAction,
+        telemetryFresh && assignments.has(botId) ? 'Verified progress ' + String(assignments.get(botId).creditedQuantity ?? 0) +
+          (assignments.get(botId).quotaQuantity !== null ? ' / ' + assignments.get(botId).quotaQuantity : '')
+          : (telemetryFresh ? 'No active task lease' : 'Not current; bot telemetry is stale'));
       const tool = snap.activeTool;
-      appendBotMetric(metrics, 'Held tool', tool ? String(tool.name || tool.itemKey || 'unknown') : 'None reported',
-        tool ? 'Durability: ' + String(tool.durabilityBand || (Number.isFinite(tool.remainingDurability) ? tool.remainingDurability + ' remaining' : 'unknown')) : '');
+      appendBotMetric(metrics, telemetryFresh ? 'Held tool' : 'Last reported tool', tool ? String(tool.name || tool.itemKey || 'unknown') : 'None reported',
+        tool ? (telemetryFresh ? 'Durability: ' : 'Last reported durability: ') + String(tool.durabilityBand || (Number.isFinite(tool.remainingDurability) ? tool.remainingDurability + ' remaining' : 'unknown')) : '');
       appendBotMetric(metrics, 'Inventory space', Number.isFinite(snap.freeSlots) ? snap.freeSlots + ' free slots' : 'Unknown',
         Number.isFinite(snap.occupiedSlots) ? snap.occupiedSlots + ' occupied slots' : '');
       appendBotMetric(metrics, 'Telemetry', formatTelemetryAge(bot.updatedAt), 'Connection: ' + String(bot.connectionState || 'unknown'));
@@ -546,7 +557,7 @@
       const inventory = document.createElement('div');
       inventory.className = 'bot-inventory-summary';
       const inventoryHeading = document.createElement('strong');
-      inventoryHeading.textContent = 'Inventory snapshot';
+      inventoryHeading.textContent = telemetryFresh ? 'Inventory snapshot' : 'Last reported inventory · stale';
       const inventoryText = document.createElement('p');
       inventoryText.textContent = items.length ? items.map(([name, count]) => String(name).replace(/^minecraft:/, '') + ' × ' + count).join(' · ') : 'No item counts reported';
       inventory.append(inventoryHeading, inventoryText);
@@ -557,10 +568,14 @@
         const navigation = document.createElement('div');
         navigation.className = 'bot-goto-countdown';
         const label = document.createElement('strong');
-        label.textContent = ' /goto → ' + [target.x, target.y, target.z].map(formatBotCoordinate).join(', ');
+        label.textContent = (telemetryFresh ? ' /goto → ' : 'Last /goto → ') + [target.x, target.y, target.z].map(formatBotCoordinate).join(', ');
         const countdown = document.createElement('span');
-        countdown.dataset.gotoCountdownBot = botId;
-        countdown.textContent = gotoCountdownText(botId);
+        if (telemetryFresh) {
+          countdown.dataset.gotoCountdownBot = botId;
+          countdown.textContent = gotoCountdownText(botId);
+        } else {
+          countdown.textContent = 'No live ETA · bot disconnected or telemetry stale';
+        }
         navigation.append(label, countdown);
         card.appendChild(navigation);
       }
@@ -734,9 +749,10 @@
         botTd.appendChild(createSkinHeadCanvas(skinObj.preview, 3));
       }
       const nameSpan = document.createElement('span');
+      const botTelemetryFresh = botTelemetryIsFresh(b);
       const tacLabel =
         b.tacticalState && b.tacticalState.mode && b.tacticalState.mode !== 'idle'
-          ? ' [' + b.tacticalState.mode + (b.tacticalState.targetPlayer ? ':' + b.tacticalState.targetPlayer : '') + ']'
+          ? ' [' + (botTelemetryFresh ? '' : 'last: ') + b.tacticalState.mode + (b.tacticalState.targetPlayer ? ':' + b.tacticalState.targetPlayer : '') + ']'
           : '';
       nameSpan.textContent = b.botId + ' (' + b.username + ')' + tacLabel;
       botTd.appendChild(nameSpan);
@@ -746,7 +762,12 @@
       tr.appendChild(tdText(b.connectionState));
       const snap = b.snapshot || {};
       const posStr = snap.position ? (snap.position.x + ',' + snap.position.y + ',' + snap.position.z) : '—';
-      tr.appendChild(tdText(posStr + ' | H:' + (snap.healthBand || '?') + ' F:' + (snap.foodBand || '?')));
+      const healthBand = snap.healthBand || 'unknown';
+      const foodBand = snap.foodBand || 'unknown';
+      const vitalsText = botTelemetryFresh
+        ? 'H:' + healthBand + ' F:' + foodBand
+        : 'Last H:' + healthBand + ' F:' + foodBand + ' · ' + formatTelemetryAge(b.updatedAt);
+      tr.appendChild(tdText((botTelemetryFresh ? '' : 'Last known ') + posStr + ' | ' + vitalsText));
 
       const ctrlTd = document.createElement('td');
       const grp = document.createElement('div');

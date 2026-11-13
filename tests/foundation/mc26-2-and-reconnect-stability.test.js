@@ -449,6 +449,9 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
       assert.match(servedAppText, /Answer clarification/);
       assert.match(servedAppText, /Estimated arrival in/);
       assert.match(servedAppText, /sampleBotMovement/);
+      assert.match(servedAppText, /Last \/goto/);
+      assert.match(servedAppText, /Last H:/);
+      assert.match(servedAppText, /telemetry stale/);
       assert.match(servedAppText, /add-worker-master-url/);
       assert.match(servedAppText, /worker cannot use localhost/);
       const servedDashboard = await fetch(`http://127.0.0.1:${port}/`, {

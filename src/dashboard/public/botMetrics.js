@@ -17,6 +17,14 @@
     return Math.hypot(values[0] - values[3], values[1] - values[4], values[2] - values[5]);
   }
 
+  function isTelemetryFresh(connectionState, updatedAt, nowMs = Date.now(), maxAgeMs = 15_000) {
+    if (connectionState !== 'ready') return false;
+    const timestamp = Date.parse(updatedAt || '');
+    if (!Number.isFinite(timestamp) || !Number.isFinite(nowMs) || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) return false;
+    const ageMs = nowMs - timestamp;
+    return ageMs >= -5_000 && ageMs <= maxAgeMs;
+  }
+
   function formatCountdown(totalSeconds) {
     if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '—';
     let seconds = Math.ceil(totalSeconds);
@@ -54,5 +62,5 @@
     return { status: 'estimated', seconds: distance / speed, speed };
   }
 
-  return { distance3D, formatCountdown, deriveGotoEta };
+  return { distance3D, formatCountdown, deriveGotoEta, isTelemetryFresh };
 });
