@@ -4,7 +4,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 
 ## Requirements
 
-- Node.js 20 or newer (Node 22/24 LTS recommended; the project uses Node's built-in SQLite module).
+- Node.js 22.5.0 or newer (Node 22/24 LTS recommended; the project uses Node's built-in SQLite module).
 - Git and network access to install the project dependencies.
 - For a real bot worker, a Minecraft server compatible with the configured version (defaults to 26.2), server access details, and a reachable Master URL. When a server responds with a login-throttle kick, bots now wait at least 60 seconds and stagger retries to avoid repeatedly triggering the server's rate limit.
 - For Termux, install Termux from a maintained F-Droid or official GitHub release source. Android battery optimization can stop long-running background sessions; disable it for Termux if you need the Master to stay online.
@@ -18,7 +18,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
    pkg install nodejs-lts git
    ```
 
-   Check the runtime. `node -v` must be at least `v20`; `npm -v` should work too.
+   Check the runtime. `node -v` must be `v22.5.0` or newer; `npm -v` should work too.
 
 2. Clone NEXUS-20 and install dependencies:
 
@@ -39,10 +39,10 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 4. Start the Master:
 
    ```sh
-   npm start
+   npm run start:master
    ```
 
-   The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus>` prompt. Type a command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly). The interactive prompt uses a clean alternate terminal screen; quitting, Ctrl+C, or closing its input restores the previous terminal display and scrollback.
+   This uses the Master's required 256 MiB V8 heap cap. The terminal prints the Control Centre address, normally `http://127.0.0.1:3000` unless you chose another port. Open that URL in the phone browser. The interactive terminal also displays a `nexus>` prompt. Type a command and press **Tab** to complete it; use `Tab` repeatedly to cycle suggestions, **Shift+Tab** to cycle backward, and Enter to dispatch. Type `help` for examples and `quit` to close the prompt (the Master process then shuts down cleanly). The interactive prompt uses a clean alternate terminal screen; quitting, Ctrl+C, or closing its input restores the previous terminal display and scrollback.
 
    For the dashboard to be reachable from another device on your Wi-Fi, configure the Master bind host as `0.0.0.0`, allow the chosen port through the host firewall, and open `http://<phone-LAN-IP>:<port>` from the other device. Only expose the Control Centre to trusted networks; use the project's TLS/reverse-proxy options for public access.
 
@@ -58,7 +58,7 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 
 ## Linux (Debian/Ubuntu example)
 
-1. Install Node.js 20+ and Git. Use your distribution's Node.js package if it is 20 or newer, or install a current Node.js LTS release by your preferred trusted package source. Then verify:
+1. Install Node.js 22.5.0+ and Git. Use your distribution's Node.js package if it is 22.5.0 or newer, or install a current Node.js LTS release by your preferred trusted package source. Then verify:
 
    ```sh
    node --version
@@ -92,10 +92,14 @@ NEXUS-20 can run the lightweight Master Controller and Web Control Centre on an 
 Use the Web Control Centre's always-visible command bar, or the interactive Master terminal:
 
 ```text
-food
-hunt
+food 16
+hunt food
 mine diamond 64
-collect oak_log 32
+gather 64 logs
+gather 32 stone
+gather 20 ores
+gather 16 food
+harvest 24 crops
 craft diamond_pickaxe 1
 smelt iron_ingot 32
 kit full_iron_kit
@@ -107,7 +111,9 @@ mode HYBRID
 stop
 ```
 
-Press Tab after a partial token—for example `mi`, `mine di`, or `kill Steve ma`. Tab inserts a suggested token; repeated Tab cycles matches, and adding a space advances to suggestions for the next argument. In the web interface the visible `⇥ Tab` button provides the same completion for touch devices. Commands that are not one of the direct command actions are submitted to the deterministic Zero-AI/task intent engine. Enter commands exactly as shown, without a leading slash.
+`gather <count> logs|stone|ores|food` honors the requested quantity. Generic ore counts are divided across common iron, coal, copper, and gold targets; `gather food` hunts animals for raw beef. `harvest <count> crops` targets ripe wheat, while `harvest <count> carrots` and other named crops target that crop. The standalone `food <count>` tactical command targets that many food drops per bot. Targets still depend on nearby resources, safe pathing, and the required tools.
+
+Press Tab after a partial token—for example `mi`, `mine di`, or `kill Steve ma`.  Tab inserts a suggested token; repeated Tab cycles matches, and adding a space advances to suggestions for the next argument. In the web interface the visible `⇥ Tab` button provides the same completion for touch devices. Commands that are not one of the direct command actions are submitted to the deterministic Zero-AI/task intent engine. Enter commands exactly as shown, without a leading slash.
 
 ## Non-interactive / service launch
 

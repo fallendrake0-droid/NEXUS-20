@@ -678,17 +678,16 @@
         </div>
       </section>
 
-      <!-- TAB 9: AI BRAIN (16+ PROVIDERS), PERFORMANCE, LOGS, CONFIG & SECURITY -->
+      <!-- TAB 9: AI BRAIN, PERFORMANCE, LOGS, CONFIG & SECURITY -->
       <section id="tab-system" class="tab-panel hidden">
         <div class="panel crimson-panel">
-          <h2>Multi-Provider AI API Hub (Gemini, ChatGPT, Claude, Groq, OpenRouter, DeepSeek, Grok, Mistral, Ollama &amp; Zero-AI)</h2>
-          <p class="muted compact-sub">Switch AI planning providers live at any time — or select Zero-AI Offline Mode to run 100% deterministically with £0 cost.</p>
+          <h2>Private AI Planner (Remote Ollama or Zero-AI)</h2>
+          <p class="muted compact-sub">Use remote self-hosted Ollama over a trusted LAN/VPN, or select Zero-AI deterministic mode. Paid/cloud inference providers are disabled by project policy.</p>
           <form id="ai-provider-form" class="inline-form">
             <select id="ai-provider-select"></select>
-            <input id="ai-model-input" type="text" list="ai-model-suggestions" placeholder="Model ID (e.g. gemini-2.5-flash / gpt-4o-mini / claude-sonnet-4-20250514)" />
+            <input id="ai-model-input" type="text" list="ai-model-suggestions" placeholder="Ollama model ID" />
             <datalist id="ai-model-suggestions"></datalist>
-            <input id="ai-apikey-input" type="password" placeholder="API Key (leave blank to keep existing)" />
-            <input id="ai-baseurl-input" type="text" placeholder="Base URL (optional / Ollama URL)" />
+            <input id="ai-baseurl-input" type="text" placeholder="Remote Ollama URL (LAN/VPN)" />
             <button type="submit" class="btn primary">Save &amp; Activate Provider</button>
           </form>
           <div id="ai-provider-status" class="muted small-label"></div>

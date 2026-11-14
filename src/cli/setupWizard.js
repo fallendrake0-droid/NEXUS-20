@@ -405,62 +405,25 @@ async function runSetupWizard({
       prevPerf
     );
 
-    // 9. AI BRAIN (Zero-AI / Gemini / ChatGPT / Claude / Groq / OpenRouter / DeepSeek / Grok / Ollama)
-    const prevProvider = existing.SWARM_AI_PROVIDER || (existing.SWARM_AI_ENABLED === 'true' ? 'ollama' : 'no');
+    // 9. AI BRAIN (remote self-hosted Ollama only, or deterministic Zero-AI)
+    const configuredProvider = String(existing.SWARM_AI_PROVIDER || '').trim().toLowerCase();
+    const prevProvider = ['ollama', 'none'].includes(configuredProvider)
+      ? configuredProvider
+      : existing.SWARM_AI_ENABLED === 'true'
+        ? 'ollama'
+        : 'none';
     const aiRaw = (
-      await ask(
-        '\n9. ai (no = deterministic commands, or: gemini / chatgpt / claude / groq / openrouter / deepseek / grok / ollama)',
-        prevProvider
-      )
+      await ask('\n9. ai (ollama = remote self-hosted inference; none = deterministic mode)', prevProvider)
     )
       .trim()
       .toLowerCase();
 
-    const cloudAliases = {
-      chatgpt: 'openai',
-      openai: 'openai',
-      gemini: 'gemini',
-      claude: 'anthropic',
-      anthropic: 'anthropic',
-      groq: 'groq',
-      openrouter: 'openrouter',
-      deepseek: 'deepseek',
-      grok: 'xai',
-      xai: 'xai',
-      mistral: 'mistral',
-      together: 'together',
-      cerebras: 'cerebras',
-      cohere: 'cohere',
-      perplexity: 'perplexity'
-    };
-
     let aiEnabled = false;
     let aiProvider = 'none';
-    let aiApiKey = existing.SWARM_AI_API_KEY || '';
-    let aiModel = existing.SWARM_AI_MODEL || '';
     let ollamaUrl = existing.SWARM_OLLAMA_URL || '';
     let ollamaModel = existing.SWARM_OLLAMA_MODEL || 'qwen2.5:3b';
 
-    if (cloudAliases[aiRaw]) {
-      aiEnabled = true;
-      aiProvider = cloudAliases[aiRaw];
-      aiApiKey = await ask(`   9a. api_key (${aiProvider.toUpperCase()} API Key)`, aiApiKey);
-      const defaultCloudModel =
-        aiProvider === 'gemini'
-          ? 'gemini-2.5-flash'
-          : aiProvider === 'openai'
-            ? 'gpt-4o-mini'
-            : aiProvider === 'anthropic'
-              ? 'claude-sonnet-4-20250514'
-              : aiProvider === 'groq'
-                ? 'llama-3.3-70b-versatile'
-                : aiProvider === 'openrouter'
-                  ? 'meta-llama/llama-3.3-70b-instruct:free'
-                  : aiProvider === 'deepseek'
-                    ? 'deepseek-chat'
-                    : 'grok-3-mini';
-      aiModel = await ask('   9b. ai_model (Model ID)', aiModel || defaultCloudModel);
-    } else if (aiRaw === 'ollama' || isYes(aiRaw, false)) {
+    if (aiRaw === 'ollama' || isYes(aiRaw, false)) {
       aiEnabled = true;
       aiProvider = 'ollama';
       ollamaUrl = await ask(
@@ -496,9 +459,6 @@ async function runSetupWizard({
       SWARM_AI_PROVIDER: aiProvider,
       ...(aiEnabled && aiProvider === 'ollama' && ollamaUrl
         ? { SWARM_OLLAMA_URL: ollamaUrl, SWARM_OLLAMA_MODEL: ollamaModel }
-        : {}),
-      ...(aiEnabled && aiProvider !== 'ollama' && aiApiKey
-        ? { SWARM_AI_API_KEY: aiApiKey, SWARM_AI_MODEL: aiModel }
         : {}),
       SWARM_DB_PATH: existing.SWARM_DB_PATH || defaultDbPath,
       SWARM_BACKUP_DIR: existing.SWARM_BACKUP_DIR || defaultBackupDir,

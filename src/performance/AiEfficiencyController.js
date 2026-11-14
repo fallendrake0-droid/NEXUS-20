@@ -10,10 +10,7 @@ const {
   resolveSmartResourceId,
   parseExtendedZeroAiIntent
 } = require('../commands/ZeroAiCommandDeck');
-const {
-  AI_PROVIDER_CATALOG,
-  createCloudProviderAdapter
-} = require('../ai/AiProviderRegistry');
+const { AI_PROVIDER_CATALOG } = require('../ai/AiProviderRegistry');
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -917,19 +914,15 @@ class AiEfficiencyController {
     this._now = options.now || Date.now;
 
     /** @type {Map<string, { apiKey: string|null, baseUrl: string|null, model: string|null }>} */
+    // The project policy permits only deterministic mode and a self-hosted remote Ollama.
+    // In particular, do not even load cloud API keys into runtime provider settings.
     this._providerSettings = new Map();
-    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
-      const envKey = meta.envKeyName ? process.env[meta.envKeyName] || null : null;
-      this._providerSettings.set(meta.id, {
-        apiKey: (options.provider === meta.id && options.apiKey) ? String(options.apiKey) : envKey,
-        baseUrl:
-          options.provider === meta.id && options.providerBaseUrl
-            ? String(options.providerBaseUrl)
-            : meta.defaultBaseUrl,
-        model:
-          options.provider === meta.id && options.model && options.model !== 'unresolved'
-            ? String(options.model)
-            : meta.defaultModel
+    for (const id of ['none', 'ollama']) {
+      const meta = AI_PROVIDER_CATALOG[id];
+      this._providerSettings.set(id, {
+        apiKey: null,
+        baseUrl: meta.defaultBaseUrl,
+        model: meta.defaultModel
       });
     }
 
@@ -942,13 +935,7 @@ class AiEfficiencyController {
           ? this._transportOverride({ body, requestBytes, signal })
           : this._httpPostOllama(requestBytes, signal)
     });
-    for (const meta of Object.values(AI_PROVIDER_CATALOG)) {
-      if (meta.id === 'ollama') continue;
-      this.registerProvider(
-        meta.id,
-        createCloudProviderAdapter(meta, (pid) => this._providerSettings.get(pid) || {})
-      );
-    }
+    this.registerProvider('none', { isAvailable: () => false, invoke: async () => null });
     const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
     const requestedProvider = String(options.provider || 'ollama').trim().toLowerCase();
     this._activeProvider = providerAliases[requestedProvider] || requestedProvider;
@@ -1030,7 +1017,13 @@ class AiEfficiencyController {
     const raw = String(name || '').trim().toLowerCase();
     const key = providerAliases[raw] || raw;
     if (!this._providers.has(key)) {
-      throw new RangeError(`AI provider "${key}" is not registered`);
+      const err = new RangeError(
+        AI_PROVIDER_CATALOG[key]
+          ? `AI provider "${key}" is prohibited by policy; use remote Ollama or deterministic mode`
+          : `AI provider "${key}" is not registered`
+      );
+      if (AI_PROVIDER_CATALOG[key]) err.code = 'AI_PAID_PROVIDER_FORBIDDEN';
+      throw err;
     }
     this._activeProvider = key;
     return this._activeProvider;
@@ -1046,7 +1039,13 @@ class AiEfficiencyController {
     const raw = String(provider || this._activeProvider || 'ollama').trim().toLowerCase();
     const key = providerAliases[raw] || raw;
     if (!this._providers.has(key)) {
-      throw new RangeError(`Unsupported AI provider "${key}"`);
+      const err = new RangeError(
+        AI_PROVIDER_CATALOG[key]
+          ? `AI provider "${key}" is prohibited by policy; use remote Ollama or deterministic mode`
+          : `Unsupported AI provider "${key}"`
+      );
+      if (AI_PROVIDER_CATALOG[key]) err.code = 'AI_PAID_PROVIDER_FORBIDDEN';
+      throw err;
     }
 
     if (key === 'ollama') {

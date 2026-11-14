@@ -35,6 +35,18 @@ const { WorkloadGovernor } = require('./src/monitoring/WorkloadGovernor');
 const { ResourceMonitor } = require('./src/monitoring/ResourceMonitor');
 const performance = require('./src/performance');
 
+function normalizeStartupError(err) {
+  if (!err || err.code !== 'EADDRINUSE') return err;
+  const address = String(err.address || 'requested address').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 100);
+  const port = Number.isSafeInteger(err.port) ? err.port : null;
+  const endpoint = port === null ? address : `${address}:${port}`;
+  return new DomainError(
+    'CONFLICT',
+    `NEXUS-20 cannot bind ${endpoint}: the address is already in use. Stop the existing controller or service, or configure a different bind address/port.`,
+    { details: { address, port } }
+  );
+}
+
 function createWorker(config, options = {}) {
   // Lazy require preserves G-01 zero-Mineflayer isolation on Master Controller
   // eslint-disable-next-line global-require
@@ -97,6 +109,8 @@ function printHelp(stdout = process.stdout) {
       '  node --max-old-space-size=256 index.js [--no-wizard]     Start Master Controller & Web UI',
       '  node index.js console                                     Start Master + interactive Tab-completing prompt',
       '  node index.js --role=worker [--simulation]               Start Distributed WorkerHost',
+      '  gather [count] <logs|stone|ores|food>  harvest [count] <crop>',
+      '  food [count] [bot]                    Hunt animals for food',
       '',
       'Diagnostics:',
       '  node index.js --check-config                             Validate & print redacted config',
@@ -289,8 +303,9 @@ function startMasterTtyCommandConsole(master, uiUrl, stdin, stdout, onQuit) {
     if (trimmed === 'help' || trimmed === '/help' || trimmed === '?') {
       stdout.write(
         '  Commands (press [Tab] after any word to auto-complete!):\n' +
-          '    mine <ore_or_block> [count]     tree [count]  collect <resource> [count]\n' +
-          '    food [bot]  mobs [bot]           goto <x> <y> <z> [bot]\n' +
+      '    mine <ore_or_block> [count]     gather [count] <logs|stone|ores|food>\n' +
+      '    harvest [count] <crop>           tree [count]  collect <resource> [count]\n' +
+      '    food [count] [bot]  mobs [bot]   goto <x> <y> <z> [bot]\n' +
           '    craft <item> [count]            smelt <item> [count]\n' +
           '    kit <progression_kit>           build <schematic> [bot]\n' +
           '    kill <player> [weapon] [bot]    follow <player>  protect <player>\n' +
@@ -791,7 +806,7 @@ if (require.main === module) {
         const stack = err instanceof Error ? err.stack || err.message : String(err);
         process.stderr.write(`[NEXUS_DEBUG_STARTUP] ${stack}\n`);
       }
-      const envelope = toErrorEnvelope(err, 'startup');
+      const envelope = toErrorEnvelope(normalizeStartupError(err), 'startup');
       process.stderr.write(`${JSON.stringify(envelope.body)}\n`);
       process.exit(1);
     }
@@ -842,6 +857,7 @@ module.exports = {
   parseCliArgs,
   runCli,
   runCliEntry,
+  normalizeStartupError,
   enterTerminalAlternateScreen,
   SkinManager,
   SchematicRegistry,

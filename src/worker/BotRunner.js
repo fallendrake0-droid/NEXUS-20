@@ -486,6 +486,8 @@ class SimulatedBotDriver extends EventEmitter {
       mode,
       targetPlayer: order.targetPlayer || null,
       targetPosition: mode === 'goto' ? targetPosition : null,
+      targetCount: mode === 'hunt_food' ? Number(order.targetCount) || 8 : null,
+      foodCollected: 0,
       preferredWeaponStyle: order.preferredWeaponStyle || 'auto',
       updatedAt: new Date().toISOString()
     };
@@ -533,6 +535,30 @@ async function resolveMinecraftSrvEndpoint(host, port) {
     // Fall back to direct host:port when no SRV record exists
   }
   return { host: cleanHost, port };
+}
+
+const FOOD_MOBS_BY_DROP = Object.freeze({
+  beef: ['cow', 'mooshroom'],
+  porkchop: ['pig'],
+  mutton: ['sheep'],
+  chicken: ['chicken'],
+  rabbit: ['rabbit']
+});
+
+const CROP_MAX_AGE = Object.freeze({
+  wheat: 7,
+  carrots: 7,
+  potatoes: 7,
+  beetroots: 3,
+  sweet_berry_bush: 3
+});
+
+function isMatureCropBlock(block) {
+  const maxAge = CROP_MAX_AGE[block?.name];
+  if (maxAge === undefined) return true;
+  const properties = typeof block.getProperties === 'function' ? block.getProperties() : null;
+  const rawAge = properties?.age ?? block.metadata?.age ?? block.age;
+  return rawAge === undefined || rawAge === null || Number(rawAge) >= maxAge;
 }
 
 const BLOCK_SOURCES_BY_ITEM = Object.freeze({
@@ -1372,6 +1398,70 @@ function createMineflayerDriver(options = {}) {
       busyWorkSection = true;
       try {
         const bareName = String(resourceId || '').replace(/^minecraft:/, '');
+        const animalNames = FOOD_MOBS_BY_DROP[bareName];
+        if (animalNames) {
+          if (Number(bot.health) > 0 && Number(bot.health) <= 8) {
+            return { ok: false, failureCode: 'PATH_BLOCKED', retryable: true, summary: 'Too hurt to hunt animals safely' };
+          }
+          if (combatEngine.findNearestHostileThreat(bot, bot.entity.position, 8)) {
+            return { ok: false, failureCode: 'PATH_BLOCKED', retryable: true, summary: 'Nearby hostile threat; pausing food hunt' };
+          }
+          const candidates = Object.values(bot.entities || {}).filter((entity) => {
+            const name = String(entity?.name || entity?.mobType || '').replace(/^minecraft:/, '').toLowerCase();
+            return entity?.position && entity !== bot.entity && entity.isBaby !== true && animalNames.includes(name);
+          });
+          const target = candidates.sort((a, b) =>
+            bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)
+          )[0];
+          if (!target) {
+            return { ok: false, failureCode: 'RESOURCE_NOT_FOUND', retryable: true, summary: `No ${animalNames.join('/')} nearby to hunt for ${bareName}` };
+          }
+
+          const countBefore = (bot.inventory?.items?.() || [])
+            .filter((item) => item.name === bareName)
+            .reduce((sum, item) => sum + item.count, 0);
+          const reached = await moveNearPosition(target.position, 3.4, 14_000);
+          if (!reached) {
+            return { ok: false, failureCode: 'PATH_BLOCKED', retryable: true, summary: `Could not reach ${target.name || bareName}` };
+          }
+          const targetPresent = () => target.isValid !== false &&
+            !(target.health != null && Number(target.health) <= 0) &&
+            (target.id == null || !bot.entities || Boolean(bot.entities[target.id]));
+          const attackStartedAt = Date.now();
+          while (targetPresent() && Date.now() - attackStartedAt < 12_000) {
+            await combatEngine.engageTarget(bot, target, moveNearPosition);
+            if (targetPresent()) await new Promise((resolve) => setTimeout(resolve, 180));
+          }
+          if (typeof bot.clearControlStates === 'function') bot.clearControlStates();
+          if (target.position) {
+            await moveNearPosition(target.position, 1.3, 2_500).catch(() => false);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const countAfter = (bot.inventory?.items?.() || [])
+            .filter((item) => item.name === bareName)
+            .reduce((sum, item) => sum + item.count, 0);
+          const gained = Math.max(0, countAfter - countBefore);
+          if (gained <= 0) {
+            return { ok: false, failureCode: 'RESOURCE_NOT_FOUND', retryable: true, summary: `Hunted ${animalNames.join('/')} but collected no ${bareName}` };
+          }
+          return {
+            ok: true,
+            delta: gained,
+            observation: {
+              category: 'resource_location',
+              subjectKey: `minecraft:${bareName}`,
+              dimension: bot.game?.dimension || 'minecraft:overworld',
+              position: {
+                x: Math.floor(target.position.x),
+                y: Math.floor(target.position.y),
+                z: Math.floor(target.position.z)
+              },
+              reportedByBotId: options.botId,
+              data: { huntedMob: String(target.name || target.mobType || 'animal') }
+            }
+          };
+        }
+
         const candidateBlocks = new Set(BLOCK_SOURCES_BY_ITEM[bareName] || [bareName]);
 
         const countBefore = (bot.inventory?.items?.() || [])
@@ -1379,7 +1469,7 @@ function createMineflayerDriver(options = {}) {
           .reduce((acc, i) => acc + i.count, 0);
 
         const block = bot.findBlock?.({
-          matching: (b) => b && candidateBlocks.has(b.name),
+          matching: (b) => b && candidateBlocks.has(b.name) && isMatureCropBlock(b),
           maxDistance: 64
         });
         if (!block) {
@@ -2327,5 +2417,6 @@ module.exports = {
   createMineflayerDriver,
   probeMinecraftServer,
   formatDisconnectReason,
-  resolveMinecraftSrvEndpoint
+  resolveMinecraftSrvEndpoint,
+  isMatureCropBlock
 };

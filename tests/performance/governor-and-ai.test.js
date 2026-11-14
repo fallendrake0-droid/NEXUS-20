@@ -189,6 +189,14 @@ test('AiEfficiencyController blocks local phone Ollama and paid cloud endpoints'
   // Private LAN/VPN Ollama host is permitted
   const ok = validateOllamaEndpointPolicy('https://10.8.0.12:11434', { enforceRemoteOnController: true });
   assert.equal(ok.hostname, '10.8.0.12');
+
+  const ai = new AiEfficiencyController();
+  assert.deepEqual(ai.listProviders().map((provider) => provider.name).sort(), ['none', 'ollama']);
+  assert.throws(() => ai.configureProvider({ provider: 'openai', apiKey: 'sk-must-not-load' }), (err) => {
+    assert.equal(err.code, 'AI_PAID_PROVIDER_FORBIDDEN');
+    return true;
+  });
+  assert.throws(() => ai.setProvider('gemini'), (err) => err.code === 'AI_PAID_PROVIDER_FORBIDDEN');
 });
 
 test('AiEfficiencyController handles canonical intents with 0 LLM calls, deduplicates, caches, validates and falls back', async () => {

@@ -1535,14 +1535,12 @@
     const activeMeta = aiBrain.providers.find((p) => p.name === aiBrain.activeProvider);
     const aiControlStatus = el('ai-control-status');
     if (aiControlStatus) {
-      aiControlStatus.textContent = activeMeta?.available
-        ? activeMeta.name === 'ollama'
+      aiControlStatus.textContent = activeMeta?.name === 'none'
+        ? 'Ready: deterministic Zero-AI mode is active; supported tasks work without an LLM.'
+        : activeMeta?.available
           ? 'Ready: private Ollama is configured; AI planning requests are sent from the Master to your Ollama device.'
-          : activeMeta.name === 'none'
-            ? 'Ready: deterministic Zero-AI mode is active; supported tasks work without an LLM.'
-            : 'Ready: ' + (activeMeta.label || activeMeta.name) + ' · provider charges may apply.'
-        : 'AI not ready. Configure and activate Ollama under System & AI to use plain-language control.';
-      aiControlStatus.classList.toggle('ai-control-ready', Boolean(activeMeta?.available));
+          : 'AI not ready. Configure and activate Ollama under System & AI to use plain-language control.';
+      aiControlStatus.classList.toggle('ai-control-ready', Boolean(activeMeta?.available || activeMeta?.name === 'none'));
     }
     if (statusLine && activeMeta) {
       statusLine.textContent =
@@ -2215,7 +2213,7 @@
   });
   el('build-custom-sch-btn').addEventListener('click', () => saveCustomSchematic(true));
 
-  // Multi-Provider AI Switcher
+  // Private Ollama / deterministic AI mode switcher
   el('ai-provider-select').addEventListener('change', (ev) => {
     syncAiProviderFields(ev.target.value);
   });
@@ -2224,18 +2222,15 @@
     try {
       const provider = el('ai-provider-select').value;
       const model = el('ai-model-input').value.trim();
-      const apiKey = el('ai-apikey-input').value.trim();
       const baseUrl = el('ai-baseurl-input').value.trim();
       const out = await api('/api/v1/ai/config', {
         method: 'POST',
         body: {
           provider,
           model: model || undefined,
-          apiKey: apiKey || undefined,
           baseUrl: baseUrl || undefined
         }
       });
-      el('ai-apikey-input').value = '';
       showToast('Switched Active AI Brain -> ' + out.activeProvider + ' (' + (out.updated?.model || 'default') + ')');
       refreshStatusAndTasks();
     } catch (err) {

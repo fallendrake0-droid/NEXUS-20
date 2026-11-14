@@ -352,23 +352,24 @@ test('NEXUS-E2E-MEGA: HTTP Skins, 16+ AI Providers, Live Player PvP Orders, Cust
     });
     assert.equal(longChatRes.status, 400);
 
-    // 3. Switch AI Brain across Gemini, ChatGPT, Claude, Groq, OpenRouter & Zero-AI!
-    for (const [prov, key, model] of [
-      ['gemini', 'AIzaTestKey1234', 'gemini-2.5-flash'],
-      ['chatgpt', 'sk-testOpenAi9999', 'gpt-4o-mini'],
-      ['claude', 'sk-ant-testClaude8888', 'claude-sonnet-4-20250514'],
-      ['groq', 'gsk_testGroq7777', 'llama-3.3-70b-versatile'],
-      ['none', '', 'deterministic-v2']
-    ]) {
+    // 3. Remote Ollama and deterministic modes are available; cloud provider activation is blocked by policy.
+    for (const provider of ['ollama', 'none']) {
       const aiRes = await fetch(`${baseUrl}/api/v1/ai/config`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ provider: prov, apiKey: key, model })
+        body: JSON.stringify({ provider })
       });
       assert.equal(aiRes.status, 200);
       const aiJson = await aiRes.json();
-      assert.ok(aiJson.providers.length >= 16, 'All 16+ AI providers listed');
+      assert.deepEqual(aiJson.providers.map((item) => item.name).sort(), ['none', 'ollama']);
     }
+    const cloudAiRes = await fetch(`${baseUrl}/api/v1/ai/config`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ provider: 'openai', apiKey: 'sk-test-should-not-be-accepted' })
+    });
+    assert.equal(cloudAiRes.status, 400);
+    assert.equal((await cloudAiRes.json()).error.code, 'AI_PAID_PROVIDER_FORBIDDEN');
 
     // 4. Live Server Players detected from Worker heartbeat + PvP Kill / Protect / Drop-Loot orders!
     const plRes = await fetch(`${baseUrl}/api/v1/players`, { headers: { Cookie: cookie } });

@@ -165,6 +165,11 @@ const RESOURCE_SYNONYMS = Object.freeze({
 
   // Food & Crops
   wheat: 'minecraft:wheat',
+  wheats: 'minecraft:wheat',
+  crop: 'minecraft:wheat',
+  crops: 'minecraft:wheat',
+  'food crop': 'minecraft:wheat',
+  'food crops': 'minecraft:wheat',
   bread: 'minecraft:bread',
   carrot: 'minecraft:carrot',
   carrots: 'minecraft:carrot',
@@ -180,14 +185,29 @@ const RESOURCE_SYNONYMS = Object.freeze({
   'golden apples': 'minecraft:golden_apple',
   gapple: 'minecraft:golden_apple',
   gapples: 'minecraft:golden_apple',
+  meat: 'minecraft:beef',
+  'animal food': 'minecraft:beef',
+  'food from animals': 'minecraft:beef',
+  'raw beef': 'minecraft:beef',
+  beef: 'minecraft:beef',
   steak: 'minecraft:cooked_beef',
-  beef: 'minecraft:cooked_beef',
   'cooked beef': 'minecraft:cooked_beef',
-  porkchop: 'minecraft:cooked_porkchop',
+  porkchop: 'minecraft:porkchop',
+  'raw porkchop': 'minecraft:porkchop',
   'cooked porkchop': 'minecraft:cooked_porkchop',
-  chicken: 'minecraft:cooked_chicken',
-  mutton: 'minecraft:cooked_mutton',
-  salmon: 'minecraft:cooked_salmon',
+  'cooked porkchops': 'minecraft:cooked_porkchop',
+  chicken: 'minecraft:chicken',
+  'raw chicken': 'minecraft:chicken',
+  'cooked chicken': 'minecraft:cooked_chicken',
+  mutton: 'minecraft:mutton',
+  'raw mutton': 'minecraft:mutton',
+  'cooked mutton': 'minecraft:cooked_mutton',
+  salmon: 'minecraft:salmon',
+  'raw salmon': 'minecraft:salmon',
+  'cooked salmon': 'minecraft:cooked_salmon',
+  cod: 'minecraft:cod',
+  'raw cod': 'minecraft:cod',
+  'cooked cod': 'minecraft:cooked_cod',
   sugar: 'minecraft:sugar',
   'sugar cane': 'minecraft:sugar_cane',
   sugarcane: 'minecraft:sugar_cane',
@@ -197,7 +217,7 @@ const RESOURCE_SYNONYMS = Object.freeze({
   melon: 'minecraft:melon_slice',
   melons: 'minecraft:melon_slice',
   berries: 'minecraft:sweet_berries',
-  food: 'minecraft:bread'
+  food: 'minecraft:beef'
 });
 
 const DEFAULT_SMART_QUANTITIES = Object.freeze({
@@ -816,6 +836,25 @@ function parseExtendedZeroAiIntent(userText, requestId) {
     .trim();
   if (!norm) return null;
 
+  // Food commands target raw beef so worker collection can verify real animal drops.
+  const animalFoodMatch = /^(?:food|hunt food)(?:\s+(\d+))?$/.exec(norm);
+  if (animalFoodMatch) {
+    const quantity = animalFoodMatch[1] ? Number(animalFoodMatch[1]) : 8;
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10_000) return null;
+    return {
+      schemaVersion: 1,
+      requestId: reqId,
+      intentSummary: `Gather ${quantity} food items by hunting animals`,
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      objectives: [makeObjective('obj_food_1', 'collect', 'minecraft:beef', quantity, {
+        description: `Hunt animals and collect ${quantity} raw beef`
+      })],
+      riskLevel: 'low',
+      notes: ['zero_ai_animal_food']
+    };
+  }
+
   // Preserve complex conditional / strategy prompts for remote AI brain
   if (
     norm.includes(' if ') ||
@@ -939,8 +978,22 @@ function parseExtendedZeroAiIntent(userText, requestId) {
       itemPhrase = 'gold ingot';
     } else if ((verb === 'smelt' || verb === 'forge') && (itemPhrase === 'copper' || itemPhrase === 'raw copper')) {
       itemPhrase = 'copper ingot';
-    } else if (verb === 'cook' && itemPhrase === 'beef') {
-      itemPhrase = 'cooked beef';
+    } else if (verb === 'cook') {
+      const cookedName = {
+        beef: 'cooked beef',
+        'raw beef': 'cooked beef',
+        porkchop: 'cooked porkchop',
+        'raw porkchop': 'cooked porkchop',
+        chicken: 'cooked chicken',
+        'raw chicken': 'cooked chicken',
+        mutton: 'cooked mutton',
+        'raw mutton': 'cooked mutton',
+        salmon: 'cooked salmon',
+        'raw salmon': 'cooked salmon',
+        cod: 'cooked cod',
+        'raw cod': 'cooked cod'
+      }[itemPhrase];
+      if (cookedName) itemPhrase = cookedName;
     }
     const resourceId = resolveSmartResourceId(itemPhrase);
     const qty = !qtyRaw || qtyRaw === 'a' || qtyRaw === 'an' ? (verb === 'smelt' || verb === 'cook' ? 16 : 1) : Number(qtyRaw);
@@ -1034,18 +1087,40 @@ function parseExtendedZeroAiIntent(userText, requestId) {
           break;
         }
         const subVerb = m[1] ? m[1].toLowerCase() : leadVerb;
+        const qtyToken = m[2] || m[4];
+        let rawTarget = m[3].trim().toLowerCase();
+        if ((subVerb === 'harvest' || subVerb === 'farm') && rawTarget === 'food') rawTarget = 'wheat';
+        const requestedQty = qtyToken ? Number(qtyToken) : null;
+        if (requestedQty !== null &&
+            (!Number.isSafeInteger(requestedQty) || requestedQty < 1 || requestedQty > 1_000_000)) {
+          ok = false;
+          break;
+        }
+
+        // A generic ore request means this many ore drops total, spread across common mineable ores.
+        if (rawTarget === 'ore' || rawTarget === 'ores') {
+          const qty = requestedQty ?? 32;
+          const oreResources = ['minecraft:raw_iron', 'minecraft:coal', 'minecraft:raw_copper', 'minecraft:raw_gold'];
+          const base = Math.floor(qty / oreResources.length);
+          let remainder = qty % oreResources.length;
+          for (const resourceId of oreResources) {
+            const oreQty = base + (remainder-- > 0 ? 1 : 0);
+            if (oreQty <= 0) continue;
+            const key = `mine|${resourceId}`;
+            const prev = merged.get(key);
+            if (prev) prev.qty = Math.min(1_000_000, prev.qty + oreQty);
+            else merged.set(key, { kind: 'mine', resourceId, qty: oreQty });
+          }
+          continue;
+        }
+
         const kind = subVerb === 'mine' || subVerb === 'dig' ? 'mine' : defaultKind;
-        const resourceId = resolveSmartResourceId(m[3]);
+        const resourceId = resolveSmartResourceId(rawTarget);
         if (!resourceId) {
           ok = false;
           break;
         }
-        const qtyToken = m[2] || m[4];
-        const qty = qtyToken ? Number(qtyToken) : (DEFAULT_SMART_QUANTITIES[resourceId] || 32);
-        if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1_000_000) {
-          ok = false;
-          break;
-        }
+        const qty = requestedQty ?? DEFAULT_SMART_QUANTITIES[resourceId] ?? 32;
         const key = `${kind}|${resourceId}`;
         const prev = merged.get(key);
         if (prev) {

@@ -942,6 +942,7 @@ class MasterHttpServer {
         mode: body.mode,
         targetPlayer: body.targetPlayer || null,
         targetPosition: body.targetPosition || null,
+        targetCount: body.targetCount ?? null,
         botId: body.botId || '*',
         preferredWeaponStyle: body.preferredWeaponStyle || 'auto',
         itemFilter: body.itemFilter || null,

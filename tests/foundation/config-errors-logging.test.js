@@ -11,6 +11,7 @@ const {
   DomainError,
   toErrorEnvelope,
   createLogger,
+  normalizeStartupError,
   SchemaValidator,
   splitQuota,
   partitionRegion,
@@ -18,6 +19,24 @@ const {
 } = require('../../index');
 
 const { toCompactBotSnapshot } = performance;
+
+test('startup address-in-use errors explain how to recover without exposing stacks', () => {
+  const conflict = normalizeStartupError(
+    Object.assign(new Error('listen EADDRINUSE'), {
+      code: 'EADDRINUSE',
+      address: '100.115.92.26',
+      port: 8443
+    })
+  );
+  assert.ok(conflict instanceof DomainError);
+  assert.equal(conflict.code, 'CONFLICT');
+  assert.match(conflict.message, /100\.115\.92\.26:8443/);
+  assert.match(conflict.message, /Stop the existing controller or service/);
+  assert.deepEqual(conflict.details, { address: '100.115.92.26', port: 8443 });
+
+  const unrelated = new Error('database failed');
+  assert.equal(normalizeStartupError(unrelated), unrelated);
+});
 
 test('loadConfig enforces <=20 bot cap, TLS rules, remote-only £0 AI, POSIX DB path and offline chat lock', () => {
   // Valid loopback development config
@@ -60,9 +79,13 @@ test('loadConfig enforces <=20 bot cap, TLS rules, remote-only £0 AI, POSIX DB 
     (err) => err instanceof DomainError && err.code === 'AI_LOCAL_HOST_FORBIDDEN'
   );
 
-  // Paid cloud AI rejected (£0 requirement)
+  // Paid cloud AI endpoints and provider selections are rejected (£0 requirement)
   assert.throws(
     () => loadConfig({ SWARM_BIND_HOST: '127.0.0.1', SWARM_TLS_ENABLED: 'false', SWARM_OLLAMA_URL: 'https://api.openai.com/v1' }),
+    (err) => err instanceof DomainError && err.code === 'AI_PAID_PROVIDER_FORBIDDEN'
+  );
+  assert.throws(
+    () => loadConfig({ SWARM_BIND_HOST: '127.0.0.1', SWARM_TLS_ENABLED: 'false', SWARM_AI_PROVIDER: 'openai' }),
     (err) => err instanceof DomainError && err.code === 'AI_PAID_PROVIDER_FORBIDDEN'
   );
 

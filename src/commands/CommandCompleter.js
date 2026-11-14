@@ -47,9 +47,23 @@ const ROOT_COMMANDS = Object.freeze([
   },
   {
     name: 'food',
-    syntax: 'food [bot]',
+    syntax: 'food [count] [bot]',
     category: 'survival',
-    description: 'Hunt nearby edible animals for food; backs off when hurt or threatened',
+    description: 'Hunt nearby edible animals for the requested food count per bot; backs off when hurt or threatened',
+    hasArgs: true
+  },
+  {
+    name: 'gather',
+    syntax: 'gather [count] <logs|stone|ores|food|resource>',
+    category: 'gathering',
+    description: 'Gather an exact quantity of logs, stone or ores; gather food hunts animals',
+    hasArgs: true
+  },
+  {
+    name: 'harvest',
+    syntax: 'harvest [count] <crops|wheat|carrots|potatoes|beetroots>',
+    category: 'gathering',
+    description: 'Harvest ripe crops; generic crops/food means wheat',
     hasArgs: true
   },
   {
@@ -533,7 +547,16 @@ function getBrigadierCompletions(rawInput, contextOrDict = {}, maxSuggestions = 
     if (argIndex === 4) pool = botChoices;
   } else if (verb === 'tree') {
     if (argIndex === 1) pool = dict.stackCounts.map((n) => makeEntry(n, `Chop ${n} logs`, 'count', false));
-  } else if (verb === 'food' || verb === 'mobs' || verb === 'hunt' || verb === 'hunt_mobs') {
+  } else if (verb === 'food') {
+    if (argIndex === 1) {
+      pool = [
+        ...dict.stackCounts.map((n) => makeEntry(n, `Hunt for ${n} food items per bot`, 'count', true)),
+        ...botChoices
+      ];
+    } else if (argIndex === 2 && /^\d+$/.test(priorTokens[1])) {
+      pool = botChoices;
+    }
+  } else if (verb === 'mobs' || verb === 'hunt' || verb === 'hunt_mobs') {
     if (argIndex === 1) pool = botChoices;
   } else if (verb === 'collect' || verb === 'gather' || verb === 'chop' || verb === 'harvest') {
     if (argIndex === 1) {
@@ -816,8 +839,21 @@ function resolveUnifiedCommandExecution(rawText, knownSchematicIds = null) {
       }
     };
   }
+  const foodGatherMatch = /^hunt\s+(?:(\d+)\s+)?(?:animal\s+)?food(?:\s+(?:from animals|by hunting))?$/i.exec(clean);
+  if (foodGatherMatch) {
+    const targetCount = foodGatherMatch[1] ? Number(foodGatherMatch[1]) : 8;
+    if (!Number.isSafeInteger(targetCount) || targetCount < 1 || targetCount > 10_000) {
+      return { type: 'invalid_command', message: 'Food target count must be an integer from 1 to 10000 per bot.' };
+    }
+    return { type: 'player_action', payload: { mode: 'hunt_food', targetCount, botId: '*', preemptTask: true } };
+  }
   if (verb === 'food') {
-    return { type: 'player_action', payload: { mode: 'hunt_food', botId: parts[1] || '*', preemptTask: true } };
+    const targetCount = /^\d+$/.test(parts[1] || '') ? Number(parts[1]) : 8;
+    const botId = parts[1] && !/^\d+$/.test(parts[1]) ? parts[1] : parts[2] || '*';
+    if (!Number.isSafeInteger(targetCount) || targetCount < 1 || targetCount > 10_000) {
+      return { type: 'invalid_command', message: 'Food target count must be an integer from 1 to 10000 per bot.' };
+    }
+    return { type: 'player_action', payload: { mode: 'hunt_food', targetCount, botId, preemptTask: true } };
   }
   if (verb === 'tree') {
     const qty = /^\d+$/.test(parts[1] || '') ? parts[1] : '16';

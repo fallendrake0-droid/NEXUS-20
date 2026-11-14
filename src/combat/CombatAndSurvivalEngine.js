@@ -315,6 +315,8 @@ class CombatAndSurvivalEngine {
       targetPlayer: null,
       targetPosition: null,
       itemFilter: null,
+      targetCount: null,
+      foodCollected: 0,
       slotIndex: 0,
       slotTotal: 1,
       updatedAt: null
@@ -356,6 +358,8 @@ class CombatAndSurvivalEngine {
         targetPlayer: null,
         targetPosition: null,
         itemFilter: null,
+        targetCount: null,
+        foodCollected: 0,
         slotIndex: 0,
         slotTotal: 1,
         updatedAt: new Date().toISOString()
@@ -372,6 +376,12 @@ class CombatAndSurvivalEngine {
       targetPlayer: order.targetPlayer ? String(order.targetPlayer).trim() : null,
       targetPosition: mode === 'goto' ? targetPosition : null,
       itemFilter: order.itemFilter ? String(order.itemFilter).replace(/^minecraft:/, '').trim() : null,
+      targetCount: mode === 'hunt_food'
+        ? (Number.isSafeInteger(Number(order.targetCount)) && Number(order.targetCount) > 0
+          ? Math.min(10_000, Number(order.targetCount))
+          : 8)
+        : null,
+      foodCollected: 0,
       slotIndex: Number(order.slotIndex || 0),
       slotTotal: Math.max(1, Number(order.slotTotal || 1)),
       updatedAt: new Date().toISOString()
@@ -855,11 +865,20 @@ class CombatAndSurvivalEngine {
     }
 
     if (mode === 'hunt_food') {
-      if (this.foodItemCount(bot) > 0) {
+      const targetCount = this.tacticalState.targetCount || 8;
+      if (this.tacticalState.foodCollected >= targetCount) {
         this.setTacticalOrder({ mode: 'idle' });
-        return { mode: 'hunt_food', acted: false, reason: 'food_available' };
+        return { mode: 'hunt_food', acted: false, reason: 'food_target_reached', foodCollected: targetCount };
       }
-      return this.huntForFoodIfNeeded(bot, moveNearFn, { force: true });
+      const result = await this.huntForFoodIfNeeded(bot, moveNearFn, { force: true });
+      const gained = Math.max(0, Number(result?.foodCollected) || 0);
+      if (gained > 0) this.tacticalState.foodCollected += gained;
+      if (this.tacticalState.foodCollected >= targetCount) {
+        const total = this.tacticalState.foodCollected;
+        this.setTacticalOrder({ mode: 'idle' });
+        return { ...result, mode: 'hunt_food', foodCollected: total, reason: 'food_target_reached' };
+      }
+      return { ...result, mode: 'hunt_food', foodCollected: this.tacticalState.foodCollected, targetCount };
     }
 
     if (mode === 'idle' && this.shouldHuntForFood(bot)) {

@@ -503,6 +503,10 @@ function validateConfig(config) {
   if (typeof ai.enabled !== 'boolean') {
     errors.push('ai.enabled must be a valid boolean');
   }
+  if (!['ollama', 'none'].includes(ai.provider)) {
+    markCode('AI_PAID_PROVIDER_FORBIDDEN');
+    errors.push('ai.provider must be "ollama" (remote self-hosted inference) or "none" (deterministic mode); cloud AI providers are prohibited');
+  }
   if (ai.ollamaBaseUrl !== null && ai.ollamaBaseUrl !== '') {
     try {
       validateOllamaEndpointPolicy(ai.ollamaBaseUrl, {

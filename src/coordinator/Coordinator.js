@@ -1320,6 +1320,7 @@ class Coordinator {
     botId = '*',
     preferredWeaponStyle = 'auto',
     itemFilter = null,
+    targetCount = null,
     relation = null,
     autoEat = undefined,
     autoArmor = undefined,
@@ -1342,6 +1343,11 @@ class Coordinator {
     }
 
     const cleanMode = String(mode || 'idle').trim().toLowerCase();
+    if (targetCount !== null && targetCount !== undefined &&
+        (!Number.isSafeInteger(Number(targetCount)) || Number(targetCount) < 1 || Number(targetCount) > 10_000)) {
+      throw new DomainError('SCHEMA_VALIDATION_FAILED', 'targetCount must be an integer from 1 to 10000');
+    }
+    const cleanTargetCount = targetCount === null || targetCount === undefined ? null : Number(targetCount);
     let cleanTargetPosition = null;
     if (cleanMode === 'goto') {
       const x = targetPosition?.x;
@@ -1367,6 +1373,7 @@ class Coordinator {
           mode: cleanMode,
           targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
           targetPosition: cleanTargetPosition,
+          targetCount: cleanTargetCount,
           preferredWeaponStyle,
           itemFilter,
           allies,
@@ -1379,6 +1386,7 @@ class Coordinator {
           mode: cleanMode,
           targetPlayer: targetPlayer || null,
           targetPosition: cleanTargetPosition,
+          targetCount: cleanTargetCount,
           preferredWeaponStyle
         });
         enqueued.push(env.commandId);
@@ -1389,6 +1397,7 @@ class Coordinator {
             mode: cleanMode,
             targetPlayer: targetPlayer ? String(targetPlayer).trim() : null,
             targetPosition: cleanTargetPosition,
+            targetCount: cleanTargetCount,
             preferredWeaponStyle,
             itemFilter,
             allies,
@@ -1404,6 +1413,7 @@ class Coordinator {
             mode: cleanMode,
             targetPlayer: targetPlayer || null,
             targetPosition: cleanTargetPosition,
+            targetCount: cleanTargetCount,
             preferredWeaponStyle
           });
         }
@@ -1414,6 +1424,7 @@ class Coordinator {
       mode: cleanMode,
       targetPlayer,
       targetPosition: cleanTargetPosition,
+      targetCount: cleanTargetCount,
       botId,
       preferredWeaponStyle,
       enqueuedCount: enqueued.length
@@ -1424,6 +1435,7 @@ class Coordinator {
       mode: cleanMode,
       targetPlayer,
       targetPosition: cleanTargetPosition,
+      targetCount: cleanTargetCount,
       botId,
       preferredWeaponStyle,
       enqueuedCommandIds: enqueued,
@@ -1440,6 +1452,9 @@ class Coordinator {
     try {
       updated = this._ai.configureProvider({ provider, apiKey, model, baseUrl });
     } catch (err) {
+      if (err.code === 'AI_PAID_PROVIDER_FORBIDDEN') {
+        throw new DomainError('AI_PAID_PROVIDER_FORBIDDEN', err.message || 'AI provider is prohibited by policy');
+      }
       throw new DomainError('SCHEMA_VALIDATION_FAILED', err.message || 'Invalid AI provider settings');
     }
     this._publishPostCommit('system.ai_provider_changed', updated.name, {
