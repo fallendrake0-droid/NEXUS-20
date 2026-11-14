@@ -189,7 +189,7 @@ const AI_PROVIDER_CATALOG = Object.freeze({
     requiresApiKey: false,
     defaultBaseUrl: 'http://192.168.1.100:11434',
     defaultModel: 'qwen2.5:7b-instruct',
-    models: ['qwen2.5:7b-instruct', 'llama3.1:8b', 'mistral:7b', 'gemma2:9b'],
+    models: ['qwen2.5:0.5b', 'qwen2.5:7b-instruct', 'llama3.1:8b', 'mistral:7b', 'gemma2:9b'],
     envKeyName: null
   }
 });

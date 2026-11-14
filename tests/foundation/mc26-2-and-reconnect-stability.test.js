@@ -10,7 +10,7 @@ const { PassThrough } = require('node:stream');
 
 const { loadConfig } = require('../../src/config/loadConfig');
 const { loadDotEnvFile } = require('../../src/config/envFile');
-const { runSetupWizard, formatSavedConfigBanner } = require('../../src/cli/setupWizard');
+const { runSetupWizard, formatSavedConfigBanner, normalizeMasterUrl } = require('../../src/cli/setupWizard');
 const {
   DEFAULT_MINECRAFT_VERSION,
   load26_2Bundle,
@@ -28,6 +28,18 @@ const {
 } = require('../../src/commands/CommandCompleter');
 const { parseExtendedZeroAiIntent } = require('../../src/commands/ZeroAiCommandDeck');
 const { createMaster, enterTerminalAlternateScreen } = require('../../index');
+
+it('Worker setup rejects loopback Master URLs and redacts token-like saved hostnames', () => {
+  assert.equal(normalizeMasterUrl('192.168.1.181:8443'), 'http://192.168.1.181:8443');
+  assert.equal(normalizeMasterUrl('http://127.0.0.1:8443'), '');
+  const banner = formatSavedConfigBanner({
+    SWARM_ROLE: 'worker',
+    SWARM_MASTER_URL: 'http://exampleonetimetoken:8443',
+    SWARM_BOOTSTRAP_TOKEN: 'example-one-time-token'
+  });
+  assert.match(banner, /\[set Phone Master LAN URL\]/);
+  assert.doesNotMatch(banner, /exampleonetimetoken/i);
+});
 
 describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabilizer', () => {
   it('MC26-01: defaults worker.minecraftVersion to 26.2 and spawnStaggerMs to 4500ms in loadConfig & setupWizard', async () => {
@@ -58,6 +70,11 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus20-mc26-wiz-'));
     try {
       const envPath = path.join(tmpDir, '.env');
+      fs.writeFileSync(
+        envPath,
+        'SWARM_ROLE=worker\nSWARM_MASTER_URL=http://oldtesttoken:8443\nSWARM_BOOTSTRAP_TOKEN=old-test-token\n',
+        { mode: 0o600 }
+      );
       const stdin = new PassThrough();
       const stdout = new PassThrough();
       let outText = '';
@@ -75,8 +92,7 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
           'Nexus',                         // 6. bot_prefix
           '1',                             // 7. mode
           '3',                             // 8. performance
-          'no',                            // 9. ai
-          'http://192.168.1.168:8443',     // 10. master_url
+          'http://192.168.1.168:8443',     // 10. master_url (Workers skip AI provider setup)
           'worker-1',                      // 11. worker_id
           'tok_test_123456',               // 12. bootstrap_token
           '',                              // 13. spawn_stagger_ms (accept default 4500)
@@ -94,7 +110,15 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
       const saved = loadDotEnvFile(envPath).values;
       assert.equal(saved.SWARM_MC_VERSION, '26.2');
       assert.equal(saved.SWARM_SPAWN_STAGGER_MS, '4500');
+      assert.equal(saved.SWARM_AI_ENABLED, 'false');
+      assert.equal(saved.SWARM_AI_PROVIDER, 'none');
+      assert.equal(saved.SWARM_MASTER_URL, 'http://192.168.1.168:8443');
+      assert.doesNotMatch(outText, /old-test-token|oldtesttoken/i);
+      assert.equal(saved.SWARM_OLLAMA_URL, undefined);
+      assert.equal(saved.SWARM_OLLAMA_MODEL, undefined);
       assert.match(outText, /\(MC 26\.2\)/);
+      assert.match(outText, /ai: skipped for Worker/i);
+      assert.doesNotMatch(outText, /9\. ai \(/);
       assert.match(formatSavedConfigBanner({}), /\(MC 26\.2\)/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -459,7 +483,10 @@ describe('MC26-2: Minecraft 26.2 Default Protocol & Anti-Reconnect-Loop Stabiliz
       });
       assert.equal(servedDashboard.status, 200);
       const servedHtml = await servedDashboard.text();
-      assert.match(servedHtml, /AI CONTROL CHAT/);
+      assert.match(servedHtml, /<strong>AI CONTROL<\/strong>/);
+      assert.match(servedHtml, /ai-provider-settings/);
+      assert.match(servedHtml, /ai-control-provider-summary/);
+      assert.match(servedHtml, /qwen2\.5:0\.5b/);
       assert.match(servedHtml, /Live Bot Status &amp; Navigation/);
       assert.match(servedHtml, /botMetrics.js/);
       const servedBotMetrics = await fetch(`http://127.0.0.1:${port}/botMetrics.js`, {

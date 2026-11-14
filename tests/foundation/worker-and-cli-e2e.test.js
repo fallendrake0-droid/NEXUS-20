@@ -86,6 +86,22 @@ describe('NEXUS-20 Distributed WorkerHost + Unified CLI End-to-End Suite', () =>
     assert.equal(runner._reconnectTimer, null);
   });
 
+  it('does not reconnect a live Minecraft transport just because the player entity is respawning', async () => {
+    const runner = new BotRunner({
+      workerId: 'worker-respawn-watchdog-test',
+      botId: 'bot-respawn-watchdog-test',
+      driver: {
+        connected: false,
+        transportConnected: true,
+        async disconnect() {}
+      },
+      reconnectBaseMs: 500
+    });
+    assert.equal(runner.ensureConnected(), false);
+    assert.equal(runner._reconnectTimer, null);
+    await runner.stop('test_cleanup');
+  });
+
   it('keeps Master heartbeats moving while a survival food hunt is still in progress and coalesces overlapping ticks', async () => {
     let finishSurvival;
     const survivalPromise = new Promise((resolve) => { finishSurvival = resolve; });

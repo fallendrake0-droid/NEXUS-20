@@ -748,6 +748,16 @@ async function probeMinecraftServer(mp, mcDataMod, mineflayerMod, { host, port, 
  * Lazy real-Mineflayer BotDriver factory (loaded ONLY on WorkerHost when `simulationMode === false`).
  * Never required on the Master Controller (`G-01`).
  */
+function isMineflayerTransportConnected(bot) {
+  if (!bot) return false;
+  const client = bot._client;
+  const socket = client?.socket;
+  if (client?.ended === true || socket?.destroyed === true || socket?.readyState === 'closed') return false;
+  if (socket && typeof socket.destroyed === 'boolean') return !socket.destroyed;
+  // Older/fake drivers may not expose the protocol socket; retain the spawned-entity fallback.
+  return Boolean(bot.entity);
+}
+
 function createMineflayerDriver(options = {}) {
   // Hydrate `minecraft-data` 26.2 (`protocol 776`), `minecraft-protocol`, `prismarine-chunk`, and `mineflayer` BEFORE loading `mineflayer`!
   ensureMinecraft26_2Bootstrap();
@@ -788,6 +798,7 @@ function createMineflayerDriver(options = {}) {
   let bot = null;
   let listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
   let autonomyTimer = null;
+  let respawnTimer = null;
   let busyWorkSection = false;
   let customSchematics = new Map();
   const combatEngine = new CombatAndSurvivalEngine({
@@ -1177,9 +1188,16 @@ function createMineflayerDriver(options = {}) {
     get connected() {
       return Boolean(bot && bot.entity);
     },
+    get transportConnected() {
+      return isMineflayerTransportConnected(bot);
+    },
     async connect() {
       listeners.dispose();
       listeners = new ScopedListeners({ maxListenersPerEvent: 12 });
+      if (respawnTimer) {
+        clearTimeout(respawnTimer);
+        respawnTimer = null;
+      }
       if (bot) {
         try {
           bot.quit('reconnecting');
@@ -1223,6 +1241,27 @@ function createMineflayerDriver(options = {}) {
       let lastProtocolError = '';
       currentBot.on('error', (err) => {
         lastProtocolError = formatDisconnectReason(err);
+      });
+      listeners.on(currentBot, 'death', () => {
+        if (respawnTimer) clearTimeout(respawnTimer);
+        // A dead player can lose `bot.entity` while the TCP session is still healthy.
+        // Ask Minecraft to respawn instead of letting the connection watchdog reconnect it.
+        respawnTimer = setTimeout(() => {
+          respawnTimer = null;
+          if (bot !== currentBot || !isMineflayerTransportConnected(currentBot)) return;
+          try {
+            if (typeof currentBot.respawn === 'function') currentBot.respawn();
+          } catch {
+            // Leave a failed/unsupported respawn to the next server lifecycle event.
+          }
+        }, 1_000);
+        respawnTimer.unref?.();
+      });
+      listeners.on(currentBot, 'spawn', () => {
+        if (respawnTimer) {
+          clearTimeout(respawnTimer);
+          respawnTimer = null;
+        }
       });
 
       if (pathfinderMod && typeof currentBot.loadPlugin === 'function') {
@@ -1277,6 +1316,10 @@ function createMineflayerDriver(options = {}) {
           finishReject(new Error(`Kicked by server: ${cleanReason}`));
         });
         listeners.on(currentBot, 'end', (reason) => {
+          if (respawnTimer) {
+            clearTimeout(respawnTimer);
+            respawnTimer = null;
+          }
           const rawReason = formatDisconnectReason(reason) || 'end';
           const detail =
             lastKickReason
@@ -1303,6 +1346,10 @@ function createMineflayerDriver(options = {}) {
     async disconnect(reason = 'shutdown') {
       stopAutonomyLoop();
       listeners.dispose();
+      if (respawnTimer) {
+        clearTimeout(respawnTimer);
+        respawnTimer = null;
+      }
       if (bot) {
         try {
           bot.quit(reason);
@@ -1924,7 +1971,8 @@ class BotRunner extends EventEmitter {
 
   /**
    * Watchdog fallback for drivers/servers that lose a socket without emitting `end`.
-   * Normal disconnects still enter the same guarded, rate-limited reconnect path.
+   * A live transport wins over a temporarily missing player entity (death/respawn), so
+   * we do not tear down a healthy session and re-login unnecessarily.
    */
   ensureConnected() {
     if (
@@ -1932,7 +1980,8 @@ class BotRunner extends EventEmitter {
       this._kickedOrBanned ||
       this._connecting ||
       this._reconnectTimer ||
-      this._driver.connected
+      this._driver.connected ||
+      this._driver.transportConnected === true
     ) {
       return false;
     }

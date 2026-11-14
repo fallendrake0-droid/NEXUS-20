@@ -17,6 +17,7 @@
     skinsById: {},
     providersCache: [],
     aiFormInitialized: false,
+    aiFormProviderName: null,
     autocompleteDict: null,
     cmdHistory: [],
     cmdHistoryIndex: -1,
@@ -1302,7 +1303,10 @@
         const status = state.lastStatus || await api('/api/v1/status');
         const activeProvider = (status.aiBrain?.providers || []).find((provider) => provider.active);
         if (!activeProvider || !activeProvider.available) {
-          throw new Error('No AI provider is ready. Configure and activate Ollama in System & AI first.');
+          if (activeProvider?.name === 'none') {
+            throw new Error('Zero-AI mode is active. Plain-language AI Control needs remote Ollama; direct Minecraft commands remain available.');
+          }
+          throw new Error('Ollama is not configured. Open AI CONTROL settings, enter its reachable URL and model, then retry.');
         }
         created = await api('/api/v1/tasks', {
           method: 'POST',
@@ -1512,34 +1516,42 @@
     if (!aiBrain || !Array.isArray(aiBrain.providers)) return;
     state.providersCache = aiBrain.providers;
     const sel = el('ai-provider-select');
+    const form = el('ai-provider-form');
     const statusLine = el('ai-provider-status');
     if (!sel) return;
 
-    const currentFocus = document.activeElement === sel;
-    if (!currentFocus) {
-      const prevSelected = state.aiFormInitialized ? sel.value : aiBrain.activeProvider;
+    const editingForm = Boolean(form && form.contains(document.activeElement));
+    const activeMeta = aiBrain.providers.find((p) => p.name === aiBrain.activeProvider);
+    if (!editingForm) {
       clearChildren(sel);
       for (const p of aiBrain.providers) {
         const opt = document.createElement('option');
         opt.value = p.name;
         opt.textContent = (p.label || p.name) + (p.active ? ' [ACTIVE]' : '');
-        if (p.name === prevSelected) opt.selected = true;
+        opt.selected = p.name === aiBrain.activeProvider;
         sel.appendChild(opt);
       }
-      if (!state.aiFormInitialized) {
-        state.aiFormInitialized = true;
+      if (!state.aiFormInitialized || state.aiFormProviderName !== aiBrain.activeProvider) {
         syncAiProviderFields(aiBrain.activeProvider);
       }
+      state.aiFormInitialized = true;
+      state.aiFormProviderName = aiBrain.activeProvider;
     }
 
-    const activeMeta = aiBrain.providers.find((p) => p.name === aiBrain.activeProvider);
+    const controlSummary = el('ai-control-provider-summary');
+    if (controlSummary && activeMeta) {
+      const providerName = activeMeta.name === 'none' ? 'Zero-AI' : (activeMeta.label || 'Ollama');
+      const modelPart = activeMeta.name === 'ollama' && activeMeta.model ? ` · ${activeMeta.model}` : '';
+      controlSummary.textContent = `${providerName}${modelPart}${activeMeta.available || activeMeta.name === 'none' ? '' : ' · setup needed'}`;
+    }
+
     const aiControlStatus = el('ai-control-status');
     if (aiControlStatus) {
       aiControlStatus.textContent = activeMeta?.name === 'none'
-        ? 'Ready: deterministic Zero-AI mode is active; supported tasks work without an LLM.'
+        ? 'Zero-AI mode is active. Plain-language AI Control needs remote Ollama; direct commands remain available.'
         : activeMeta?.available
-          ? 'Ready: private Ollama is configured; AI planning requests are sent from the Master to your Ollama device.'
-          : 'AI not ready. Configure and activate Ollama under System & AI to use plain-language control.';
+          ? `Ollama is configured for ${activeMeta.model || 'the selected model'}. Connectivity is confirmed when a plan request succeeds.`
+          : 'Ollama is not configured. Open Ollama settings and enter its reachable URL and model.';
       aiControlStatus.classList.toggle('ai-control-ready', Boolean(activeMeta?.available || activeMeta?.name === 'none'));
     }
     if (statusLine && activeMeta) {
@@ -1548,8 +1560,8 @@
         (activeMeta.label || activeMeta.name) +
         ' | Model: ' +
         (activeMeta.model || 'n/a') +
-        ' | Key: ' +
-        (activeMeta.hasApiKey ? activeMeta.maskedApiKey : activeMeta.requiresApiKey ? 'Not set (supported tasks use deterministic fallback)' : 'Not required');
+        ' | ' +
+        (activeMeta.hasApiKey ? 'Key: ' + activeMeta.maskedApiKey : activeMeta.requiresApiKey ? 'Key not set' : 'No key required');
     }
   }
 
@@ -1869,8 +1881,12 @@
     }
   });
   el('ai-control-config').addEventListener('click', () => {
-    const systemTab = document.querySelector('.tab[data-tab="system"]');
-    if (systemTab) systemTab.click();
+    const settings = el('ai-provider-settings');
+    if (settings) {
+      settings.open = true;
+      settings.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    el('ai-provider-select')?.focus();
   });
   el('ai-chat-clear').addEventListener('click', () => {
     state.aiChatHistory = [];
@@ -2215,6 +2231,7 @@
 
   // Private Ollama / deterministic AI mode switcher
   el('ai-provider-select').addEventListener('change', (ev) => {
+    state.aiFormProviderName = ev.target.value;
     syncAiProviderFields(ev.target.value);
   });
   el('ai-provider-form').addEventListener('submit', async (ev) => {
@@ -2223,16 +2240,19 @@
       const provider = el('ai-provider-select').value;
       const model = el('ai-model-input').value.trim();
       const baseUrl = el('ai-baseurl-input').value.trim();
+      if (provider === 'ollama' && (!model || !baseUrl)) {
+        throw new Error('For Ollama, enter both the model name (for example qwen2.5:0.5b) and the reachable Ollama URL.');
+      }
       const out = await api('/api/v1/ai/config', {
         method: 'POST',
         body: {
           provider,
-          model: model || undefined,
-          baseUrl: baseUrl || undefined
+          ...(model ? { model } : {}),
+          ...(baseUrl ? { baseUrl } : {})
         }
       });
-      showToast('Switched Active AI Brain -> ' + out.activeProvider + ' (' + (out.updated?.model || 'default') + ')');
-      refreshStatusAndTasks();
+      showToast('Activated ' + (out.activeProvider === 'ollama' ? 'Ollama' : 'Zero-AI') + (out.updated?.model ? ' · ' + out.updated.model : ''));
+      await refreshStatusAndTasks();
     } catch (err) {
       showToast(err.message, true);
     }

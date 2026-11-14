@@ -105,22 +105,37 @@
       </form>
     </section>
 
-    <section class="ai-control-dock" aria-label="AI instruction chat">
+    <section class="ai-control-dock" aria-label="AI control and instruction chat">
       <div class="ai-chat-heading">
         <div class="ai-control-copy">
-          <strong>AI CONTROL CHAT</strong>
-          <span id="ai-control-status" class="muted small-label">Describe a goal in plain language. Configure an AI provider in System &amp; AI.</span>
+          <strong>AI CONTROL</strong>
+          <span id="ai-control-status" class="muted small-label">Checking the active planner…</span>
         </div>
         <div class="ai-chat-heading-actions">
-          <span id="ai-chat-mode-hint" class="muted small-label">AI plans tasks; worker-verified progress appears in Tasks.</span>
+          <span id="ai-chat-mode-hint" class="muted small-label">AI breaks goals into steps; HYBRID scheduling assigns or shares work across available bots.</span>
           <button id="ai-chat-clear" type="button" class="btn ghost small">New chat</button>
-          <button id="ai-control-config" type="button" class="btn ghost small">Configure AI</button>
+          <button id="ai-control-config" type="button" class="btn ghost small" aria-controls="ai-provider-settings">Ollama settings</button>
         </div>
       </div>
+      <details id="ai-provider-settings" class="ai-provider-settings">
+        <summary>
+          <span>AI provider</span>
+          <strong id="ai-control-provider-summary">Loading provider…</strong>
+        </summary>
+        <form id="ai-provider-form" class="inline-form">
+          <label for="ai-provider-select">Provider<select id="ai-provider-select"></select></label>
+          <label for="ai-model-input">Model<input id="ai-model-input" type="text" list="ai-model-suggestions" placeholder="e.g. qwen2.5:0.5b" /></label>
+          <datalist id="ai-model-suggestions"></datalist>
+          <label for="ai-baseurl-input">Ollama URL<input id="ai-baseurl-input" type="url" placeholder="http://ollama-device-ip:11434" /></label>
+          <button type="submit" class="btn primary">Save &amp; Activate</button>
+        </form>
+        <div id="ai-provider-status" class="muted small-label" aria-live="polite"></div>
+        <p class="ai-provider-help">Ollama runs on your Linux/PC device; this Master sends it planning requests. Workers do not need Ollama. Use the Ollama device’s reachable LAN address, not localhost.</p>
+      </details>
       <div id="ai-chat-messages" class="ai-chat-messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="AI task conversation"></div>
       <form id="ai-control-form" class="ai-control-form" autocomplete="off">
         <label class="visually-hidden" for="ai-control-input">Your instruction to the AI planner</label>
-        <textarea id="ai-control-input" rows="2" maxlength="500" required placeholder="Tell the swarm what you want, e.g. Find food, gather wood, make basic tools, then build a small shelter. You can answer the AI's clarification questions here."></textarea>
+        <textarea id="ai-control-input" rows="2" maxlength="500" required placeholder="Tell the swarm what you want, e.g. Gather enough cobblestone and sticks to craft stone tools. The planner makes steps; HYBRID scheduling assigns bots."></textarea>
         <button id="ai-control-submit" type="submit" class="btn accent-red small">Send instruction</button>
       </form>
       <p class="ai-chat-safety-note">The planner may ask before acting when details are unclear. Plans are schema-checked; a task is not complete until worker evidence is verified.</p>
@@ -681,17 +696,9 @@
       <!-- TAB 9: AI BRAIN, PERFORMANCE, LOGS, CONFIG & SECURITY -->
       <section id="tab-system" class="tab-panel hidden">
         <div class="panel crimson-panel">
-          <h2>Private AI Planner (Remote Ollama or Zero-AI)</h2>
-          <p class="muted compact-sub">Use remote self-hosted Ollama over a trusted LAN/VPN, or select Zero-AI deterministic mode. Paid/cloud inference providers are disabled by project policy.</p>
-          <form id="ai-provider-form" class="inline-form">
-            <select id="ai-provider-select"></select>
-            <input id="ai-model-input" type="text" list="ai-model-suggestions" placeholder="Ollama model ID" />
-            <datalist id="ai-model-suggestions"></datalist>
-            <input id="ai-baseurl-input" type="text" placeholder="Remote Ollama URL (LAN/VPN)" />
-            <button type="submit" class="btn primary">Save &amp; Activate Provider</button>
-          </form>
-          <div id="ai-provider-status" class="muted small-label"></div>
-          <p class="alert info compact-sub">Simple connection model: Ollama runs on a separate PC/device. Save that device’s LAN/VPN URL here on the Master (for example <code>http://192.168.1.50:11434</code>). Workers do not connect to Ollama; they only connect to the Master. The model must already be downloaded on the Ollama device.</p>
+          <h2>AI Planner Status</h2>
+          <p class="muted compact-sub">Configure and activate remote Ollama directly in the always-visible AI CONTROL panel above. The live provider/model and runtime telemetry are shown here.</p>
+          <p class="alert info compact-sub">Only remote self-hosted Ollama and deterministic Zero-AI mode are supported. Workers connect to the Master; only the Master connects to Ollama. The model must already be downloaded on the Ollama device.</p>
         </div>
 
         <div class="two-col">

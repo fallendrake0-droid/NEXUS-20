@@ -759,6 +759,12 @@ function validateOllamaEndpointPolicy(rawUrl, options = {}) {
     throw err;
   }
 
+  if (parsed.username || parsed.password) {
+    const err = new Error('Ollama URL must not contain embedded credentials');
+    err.code = 'AI_INVALID_ENDPOINT';
+    throw err;
+  }
+
   const host = parsed.hostname.toLowerCase();
   for (const paidDomain of FORBIDDEN_PAID_DOMAINS) {
     if (host === paidDomain || host.endsWith(`.${paidDomain}`)) {
@@ -1030,9 +1036,7 @@ class AiEfficiencyController {
   }
 
   /**
-   * Runtime hot-reconfiguration of any AI provider (Gemini, ChatGPT/OpenAI, Claude/Anthropic,
-   * Groq, OpenRouter, DeepSeek, xAI Grok, Mistral, Together, Cerebras, Fireworks, Perplexity,
-   * Cohere, LM Studio, Ollama, or `none` Zero-AI).
+   * Runtime hot-reconfiguration of the supported providers: remote self-hosted Ollama or `none` Zero-AI.
    */
   configureProvider({ provider, apiKey, model, baseUrl } = {}) {
     const providerAliases = { chatgpt: 'openai', claude: 'anthropic', grok: 'xai', offline: 'none' };
@@ -1051,7 +1055,7 @@ class AiEfficiencyController {
     if (key === 'ollama') {
       if (baseUrl !== undefined && baseUrl !== null && String(baseUrl).trim() !== '') {
         this._endpoint = validateOllamaEndpointPolicy(String(baseUrl).trim(), {
-          enforceRemoteOnController: false
+          enforceRemoteOnController: this._enforceRemoteOnController
         });
       }
       if (model && String(model).trim()) {

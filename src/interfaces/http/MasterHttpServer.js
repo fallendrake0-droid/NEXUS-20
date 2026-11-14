@@ -980,7 +980,7 @@ class MasterHttpServer {
       return;
     }
 
-    // Multi-Provider AI Brain Switcher (`/api/v1/ai/config` — Gemini, ChatGPT, Claude, Groq, OpenRouter, etc.)
+    // Switch between remote self-hosted Ollama and deterministic Zero-AI (`/api/v1/ai/config`).
     if (method === 'POST' && pathname === '/api/v1/ai/config') {
       const body = await this._readJsonBody(req, 16_384);
       const aiRes = await this._coordinator.updateAiProviderConfig({

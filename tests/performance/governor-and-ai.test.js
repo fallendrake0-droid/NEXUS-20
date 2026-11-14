@@ -185,6 +185,10 @@ test('AiEfficiencyController blocks local phone Ollama and paid cloud endpoints'
     () => validateOllamaEndpointPolicy('https://api.anthropic.com', { enforceRemoteOnController: false }),
     (err) => err.code === 'AI_PAID_PROVIDER_FORBIDDEN'
   );
+  assert.throws(
+    () => validateOllamaEndpointPolicy('http://user:secret@192.168.1.10:11434'),
+    (err) => err.code === 'AI_INVALID_ENDPOINT'
+  );
 
   // Private LAN/VPN Ollama host is permitted
   const ok = validateOllamaEndpointPolicy('https://10.8.0.12:11434', { enforceRemoteOnController: true });
@@ -192,6 +196,10 @@ test('AiEfficiencyController blocks local phone Ollama and paid cloud endpoints'
 
   const ai = new AiEfficiencyController();
   assert.deepEqual(ai.listProviders().map((provider) => provider.name).sort(), ['none', 'ollama']);
+  assert.throws(
+    () => ai.configureProvider({ provider: 'ollama', baseUrl: 'http://127.0.0.1:11434' }),
+    (err) => err.code === 'AI_LOCAL_HOST_FORBIDDEN'
+  );
   assert.throws(() => ai.configureProvider({ provider: 'openai', apiKey: 'sk-must-not-load' }), (err) => {
     assert.equal(err.code, 'AI_PAID_PROVIDER_FORBIDDEN');
     return true;

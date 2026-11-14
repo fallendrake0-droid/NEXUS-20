@@ -93,7 +93,7 @@ function pickChoice(input, map, fallback) {
 /**
  * Normalize a user-entered Master URL (e.g. `192.168.1.168` -> `http://192.168.1.168:8443`).
  */
-function normalizeMasterUrl(input, fallback = 'http://192.168.1.168:8443') {
+function normalizeMasterUrl(input, fallback = '') {
   let s = String(input ?? '').trim();
   if (!s) return fallback;
   if (!/^https?:\/\//i.test(s)) {
@@ -101,13 +101,34 @@ function normalizeMasterUrl(input, fallback = 'http://192.168.1.168:8443') {
   }
   try {
     const u = new URL(s);
-    if (!u.port && u.protocol === 'http:') {
-      u.port = '8443';
-    }
+    const hostname = u.hostname.toLowerCase().replace(/\.$/, '');
+    if (
+      !['http:', 'https:'].includes(u.protocol) ||
+      !hostname ||
+      u.username ||
+      u.password ||
+      hostname === 'localhost' ||
+      hostname === '0.0.0.0' ||
+      hostname === '::1' ||
+      hostname === '[::1]' ||
+      hostname === '[::]' ||
+      /^127\./.test(hostname)
+    ) return fallback;
+    if (!u.port && u.protocol === 'http:') u.port = '8443';
     return u.toString().replace(/\/+$/, '');
   } catch {
     return fallback;
   }
+}
+
+function getSavedMasterUrl(values = {}) {
+  const normalized = normalizeMasterUrl(values.SWARM_MASTER_URL, '');
+  if (!normalized) return '';
+  const host = new URL(normalized).hostname.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const token = String(values.SWARM_BOOTSTRAP_TOKEN || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  // A bootstrap token was accidentally used as a URL in some older setup flows. Never
+  // display or silently reuse that value as the Master hostname.
+  return token && host === token ? '' : normalized;
 }
 
 /**
@@ -141,13 +162,15 @@ async function promptMissingWorkerEnrollment({
       ].join('\n')
     );
 
-    const prevUrl = currentEnv.SWARM_MASTER_URL || '';
-    const suggestedUrl =
-      prevUrl && !prevUrl.includes('100.115.92.')
-        ? prevUrl
-        : 'http://192.168.1.168:8443';
-    const rawUrl = await ask('Phone Master IP or URL', suggestedUrl);
-    const masterUrl = normalizeMasterUrl(rawUrl, suggestedUrl);
+    const suggestedUrl = getSavedMasterUrl(currentEnv);
+    const rawUrl = await ask(
+      'Phone Master IP or URL (use its reachable LAN IP, e.g. http://192.168.1.181:8443)',
+      suggestedUrl
+    );
+    const masterUrl = normalizeMasterUrl(rawUrl, '');
+    if (!masterUrl) {
+      throw new Error('Enter a reachable Phone Master URL; do not use localhost, 0.0.0.0, or the Ollama address.');
+    }
 
     let bootToken = '';
     while (!bootToken) {
@@ -191,7 +214,7 @@ function formatSavedConfigBanner(values = {}) {
     ? `enabled (${values.SWARM_AI_PROVIDER || 'ollama'})`
     : 'built-in deterministic commands (£0)';
   const endpoint = (values.SWARM_ROLE || 'master') === 'worker'
-    ? `Master -> ${values.SWARM_MASTER_URL || 'http://192.168.1.168:8443'}`
+    ? `Master -> ${getSavedMasterUrl(values) || '[set Phone Master LAN URL]'}`
     : `Control Centre -> http://${values.SWARM_BIND_HOST || '127.0.0.1'}:${values.SWARM_PORT || '8443'}`;
 
   return [
@@ -241,9 +264,9 @@ async function promptQuickStartOrEdit({ input = process.stdin, output = process.
  *   6. bot_prefix    (Sticky username prefix -> Nexus_01, Nexus_02 so bots NEVER lose items!)
  *   7. mode          (HYBRID / SYNCHRONIZED / DISTRIBUTED)
  *   8. performance   (ULTRA_LOW / LOW / BALANCED / PERFORMANCE / MAXIMUM_THROUGHPUT)
- *   9. ai            (Enable remote Ollama AI? yes/no + URL + model)
- *  10. network/auth  (Phone LAN IP & port for Master, or Master URL & Bootstrap Token for Worker)
- *  11. chat          (Optional in-game !swarm chat control)
+ *   9. ai            (Master-only: remote Ollama URL + model, or deterministic mode)
+ *  10. network/auth  (Phone LAN IP & port for Master, or Phone Master URL & Worker token)
+ *  11. chat          (Optional in-game !swarm chat control for Master roles)
  */
 async function runSetupWizard({
   envFilePath = path.resolve(process.cwd(), '.env'),
@@ -405,32 +428,38 @@ async function runSetupWizard({
       prevPerf
     );
 
-    // 9. AI BRAIN (remote self-hosted Ollama only, or deterministic Zero-AI)
-    const configuredProvider = String(existing.SWARM_AI_PROVIDER || '').trim().toLowerCase();
-    const prevProvider = ['ollama', 'none'].includes(configuredProvider)
-      ? configuredProvider
-      : existing.SWARM_AI_ENABLED === 'true'
-        ? 'ollama'
-        : 'none';
-    const aiRaw = (
-      await ask('\n9. ai (ollama = remote self-hosted inference; none = deterministic mode)', prevProvider)
-    )
-      .trim()
-      .toLowerCase();
-
+    // 9. AI BRAIN: only the Master talks to Ollama. Workers inherit planning from the Master.
     let aiEnabled = false;
     let aiProvider = 'none';
-    let ollamaUrl = existing.SWARM_OLLAMA_URL || '';
-    let ollamaModel = existing.SWARM_OLLAMA_MODEL || 'qwen2.5:3b';
+    let ollamaUrl = '';
+    let ollamaModel = '';
+    if (actualRole === 'worker') {
+      output.write('\n9. ai: skipped for Worker; configure Ollama on the Phone Master instead.\n');
+    } else {
+      const configuredProvider = String(existing.SWARM_AI_PROVIDER || '').trim().toLowerCase();
+      const prevProvider = ['ollama', 'none'].includes(configuredProvider)
+        ? configuredProvider
+        : existing.SWARM_AI_ENABLED === 'true'
+          ? 'ollama'
+          : 'none';
+      const aiRaw = (
+        await ask('\n9. ai (ollama = remote self-hosted inference; none = deterministic mode)', prevProvider)
+      )
+        .trim()
+        .toLowerCase();
 
-    if (aiRaw === 'ollama' || isYes(aiRaw, false)) {
-      aiEnabled = true;
-      aiProvider = 'ollama';
-      ollamaUrl = await ask(
-        '   9a. ollama_url (Remote PC Ollama URL, e.g. http://192.168.1.50:11434)',
-        ollamaUrl || 'http://192.168.1.50:11434'
-      );
-      ollamaModel = await ask('   9b. ollama_model (Ollama model name)', ollamaModel);
+      if (aiRaw === 'ollama' || isYes(aiRaw, false)) {
+        aiEnabled = true;
+        aiProvider = 'ollama';
+        ollamaUrl = await ask(
+          '   9a. ollama_url (Remote PC Ollama URL, e.g. http://192.168.1.50:11434)',
+          ollamaUrl || existing.SWARM_OLLAMA_URL || 'http://192.168.1.50:11434'
+        );
+        ollamaModel = await ask(
+          '   9b. ollama_model (Ollama model name)',
+          existing.SWARM_OLLAMA_MODEL || 'qwen2.5:3b'
+        );
+      }
     }
 
     const baseDir = path.dirname(path.resolve(envFilePath));
@@ -562,17 +591,17 @@ async function runSetupWizard({
         }
       }
     } else {
-      // Worker PC / Debian setup: never default to ChromeOS Crostini's own 100.115.92.x VM NAT IP
-      const nonCrostiniLanIp = lanIp && !lanIp.startsWith('100.115.92.') ? lanIp : '192.168.1.168';
-      const defaultMasterUrl =
-        existing.SWARM_MASTER_URL && !existing.SWARM_MASTER_URL.includes('100.115.92.')
-          ? existing.SWARM_MASTER_URL
-          : `http://${nonCrostiniLanIp}:8443`;
+      // Require the Master's actual reachable LAN/VPN address. Never guess a host IP on behalf
+      // of a Worker: Crostini's 100.115.92.x address belongs to the Linux VM, not the phone.
+      const defaultMasterUrl = getSavedMasterUrl(existing);
       const rawMasterUrl = await ask(
-        '\n10. master_url (Phone Master IP or URL, e.g. http://192.168.1.168:8443)',
+        '\n10. master_url (Phone Master LAN/VPN URL, e.g. http://192.168.1.181:8443)',
         defaultMasterUrl
       );
-      const masterUrl = normalizeMasterUrl(rawMasterUrl, defaultMasterUrl);
+      const masterUrl = normalizeMasterUrl(rawMasterUrl, '');
+      if (!masterUrl) {
+        throw new Error('Enter the Phone Master LAN/VPN URL; localhost, 0.0.0.0, and Ollama URLs cannot be used here.');
+      }
       const workerId = await ask(
         '11. worker_id (Unique ID for this Worker PC)',
         existing.SWARM_WORKER_ID || 'worker-1'
@@ -581,9 +610,10 @@ async function runSetupWizard({
       const absStatePath = path.resolve(path.dirname(envFilePath), statePath);
       const hasSavedState = fs.existsSync(absStatePath);
       const tokenPrompt = hasSavedState
-        ? `12. bootstrap_token (Already enrolled in ${statePath} — press Enter to reuse, or paste new token)`
-        : '12. bootstrap_token (Paste "Worker Token" from your Phone Master terminal)';
-      const bootToken = await ask(tokenPrompt, existing.SWARM_BOOTSTRAP_TOKEN || '');
+        ? `12. bootstrap_token (Already enrolled in ${statePath} — press Enter to reuse saved credentials, or paste a fresh token)`
+        : '12. bootstrap_token (Paste a fresh one-time Worker Token from the Phone Master)';
+      // Never show a previously saved secret in the prompt's [default] text.
+      const bootToken = await ask(tokenPrompt, '');
       const staggerMs = clampInt(
         await ask('13. spawn_stagger_ms (Delay in ms between bots joining Aternos)', existing.SWARM_SPAWN_STAGGER_MS || '4500'),
         0,
